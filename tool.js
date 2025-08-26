@@ -411,10 +411,15 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+
+
+  
   // --- example pattern for future modules (keep appending below this line) ---
 
+
+  
 /* =====================================================================
-   Auto Arranger — Draft 1 Guard / Module Layer (append-only, hotfix)
+   Auto Arranger — Draft 1 Guard / Module Layer (append-only, loop-safe)
    ===================================================================== */
 (function () {
   const AA = (window.AA = window.AA || {});
@@ -426,23 +431,35 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // --- event bus ---
   const listeners = {};
-  AA.on = (evt, fn) => ((listeners[evt] ||= []).push(fn), () => AA.off(evt, fn));
+  AA.on  = (evt, fn) => ((listeners[evt] ||= []).push(fn), () => AA.off(evt, fn));
   AA.off = (evt, fn) => { const a = listeners[evt]; if (!a) return; const i = a.indexOf(fn); if (i>-1) a.splice(i,1); };
-  AA.emit = (evt, payload) => (listeners[evt]||[]).forEach(fn => { try{ fn(payload); }catch(e){ console.error("[AA] listener error:",evt,e);} });
+  AA.emit = (evt, payload) => (listeners[evt]||[]).forEach(fn => { try{ fn(payload); }catch(e){ console.error("[AA] listener error:", evt, e); } });
 
-  // --- storage patch (emit only when keys are present) ---
+  // --- suspension helper to prevent re-entrant emits while mutating state ---
+  AA.__suspend = false;
+  AA.suspendEvents = fn => { try { AA.__suspend = true; return fn(); } finally { AA.__suspend = false; } };
+
+  // --- storage patch with TRANSITION-based emits (prev -> next) ---
   const STATE_KEY = "autoArranger_extractedParts";
   const CP_KEY = "autoArranger_checkpoints";
   const _setItem = sessionStorage.setItem.bind(sessionStorage);
   sessionStorage.setItem = function (k, v) {
+    const prevRaw = sessionStorage.getItem(k);
     _setItem(k, v);
-    if (k !== STATE_KEY) return;
+    if (k !== STATE_KEY || AA.__suspend) return;
+
     try {
-      const nextObj = v ? JSON.parse(v) : {};
-      if (nextObj && typeof nextObj === "object") {
-        if (nextObj.parts) AA.emit("parts:extracted", nextObj);
-        if (Array.isArray(nextObj.instrumentSelections)) AA.emit("instruments:saved", nextObj);
-      }
+      const prev = prevRaw ? JSON.parse(prevRaw) : {};
+      const next = v ? JSON.parse(v) : {};
+
+      const prevHasParts = !!prev?.parts;
+      const nextHasParts = !!next?.parts;
+      const prevHasInst  = Array.isArray(prev?.instrumentSelections);
+      const nextHasInst  = Array.isArray(next?.instrumentSelections);
+
+      if (!prevHasParts && nextHasParts) AA.emit("parts:extracted", next);
+      if (!prevHasInst  && nextHasInst ) AA.emit("instruments:saved", next);
+      // (Do NOT emit on subsequent writes that merely add results, to avoid loops)
     } catch (e) {
       console.error("[AA] Failed to parse state on setItem:", e);
     }
@@ -469,7 +486,7 @@ document.addEventListener("DOMContentLoaded", () => {
   AA.safe = (moduleName, fn) => {
     try { return fn(); }
     catch (err) {
-      console.error(`[AA] Module "${moduleName}" failed:`, err);
+      console.error(`[AA] Module "${moduleName}" failed:`, err?.stack || err);
       AA.restoreCheckpoint("draft-1");
       alert(`"${moduleName}" hit an error. Restored to Draft 1 state.`);
     }
@@ -482,7 +499,7 @@ document.addEventListener("DOMContentLoaded", () => {
 })();
 
 /* =====================================================================
-   Module: assignParts (append-only, hotfix)
+   Module: assignParts (append-only, loop-safe)
    ===================================================================== */
 (function () {
   if (!window.AA) return;
@@ -496,10 +513,8 @@ document.addEventListener("DOMContentLoaded", () => {
     6: "6 Bass"
   };
 
-  // normalize names defensively (trim, collapse spaces)
   const norm = s => String(s ?? "").replace(/\s+/g," ").trim();
 
-  // allow a few common variants just in case
   const NAME_TO_NUM = new Map([
     ["Melody",1],
     ["Harmony I",2],["Harmony 1",2],
@@ -525,70 +540,54 @@ document.addEventListener("DOMContentLoaded", () => {
   AA.on("instruments:saved", () => AA.safe("assignParts", runAssignParts));
   window.runAssignParts = runAssignParts;
 
-  document.getElementById("backToSong") && document.getElementById("backToSong").addEventListener("click", hidePanel);
-  document.getElementById("backButton") && document.getElementById("backButton").addEventListener("click", hidePanel);
+  document.getElementById("backToSong")?.addEventListener("click", hidePanel);
+  document.getElementById("backButton")?.addEventListener("click", hidePanel);
 
   function runAssignParts() {
     const raw = sessionStorage.getItem(STATE_KEY);
     if (!raw) return;
+
     let state;
     try { state = JSON.parse(raw); } catch (e) { console.error("[assignParts] bad JSON state", e); return; }
 
     const selections = Array.isArray(state.instrumentSelections) ? state.instrumentSelections : [];
     if (!selections.length) { hidePanel(); return; }
 
-    const expanded = expandSelections(selections); // [{name, instrumentPart, Octave, ...}]
+    const expanded = expandSelections(selections);
 
     const fixed = [];
     const numeric = [];
     for (const it of expanded) {
       const partNum = NAME_TO_NUM.get(norm(it.instrumentPart)) ?? 99;
       if (partNum >= 7) {
-        fixed.push({
-          ...it,
-          sortRaw: null,
-          sortDisplay: "—",
-          assignedPart: norm(it.instrumentPart)
-        });
+        fixed.push({ ...it, sortRaw: null, sortDisplay: "—", assignedPart: norm(it.instrumentPart) });
       } else if (partNum >= 1 && partNum <= 6) {
         const octave = toSignedInt(it.Octave);
-        const sortRaw = (partNum) - octave;
-        numeric.push({
-          ...it,
-          sortRaw,
-          sortDisplay: "",
-          assignedPart: ""
-        });
+        const sortRaw = partNum - octave; // subtract positive, add abs(negative)
+        numeric.push({ ...it, sortRaw, sortDisplay: "", assignedPart: "" });
       } else {
-        // Unknown label: treat as fixed passthrough
-        fixed.push({
-          ...it,
-          sortRaw: null,
-          sortDisplay: "—",
-          assignedPart: norm(it.instrumentPart) || "(Unknown)"
-        });
+        fixed.push({ ...it, sortRaw: null, sortDisplay: "—", assignedPart: norm(it.instrumentPart) || "(Unknown)" });
       }
     }
 
-    // sort numeric by sortRaw asc, then name A→Z
     numeric.sort((a,b) => (a.sortRaw - b.sortRaw) || a.name.localeCompare(b.name));
-
-    // decimals for tie-breaks
     applyTieBreakDecimals(numeric);
 
-    // assignments for numeric
     const assignedNumeric = assignNumericParts(numeric);
 
-    // final list: numeric (by number/decimal), then fixed (alpha)
     assignedNumeric.sort((a,b) => (a.sortRaw - b.sortRaw) || compareSortDisplay(a.sortDisplay,b.sortDisplay));
     fixed.sort((a,b) => a.name.localeCompare(b.name));
+
     const finalList = [...assignedNumeric, ...fixed];
 
-    // persist + render
-    state.assignedResults = finalList.map(({ name, instrumentPart, Octave, sortDisplay, assignedPart }) => ({
-      name, instrumentPart, Octave, sortNumber: sortDisplay, assignedPart
-    }));
-    sessionStorage.setItem(STATE_KEY, JSON.stringify(state));
+    // persist WITHOUT re-emitting instruments:saved
+    AA.suspendEvents(() => {
+      state.assignedResults = finalList.map(({ name, instrumentPart, Octave, sortDisplay, assignedPart }) => ({
+        name, instrumentPart, Octave, sortNumber: sortDisplay, assignedPart
+      }));
+      sessionStorage.setItem(STATE_KEY, JSON.stringify(state));
+    });
+
     renderAssignmentsPanel(finalList);
   }
 
@@ -612,7 +611,6 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function toSignedInt(v) {
-    // handle numbers or strings like "+2", "-1", or en-dash "–1"
     if (typeof v === "number" && Number.isFinite(v)) return v|0;
     const s = String(v ?? "").replace(/\u2013|\u2014/g,"-").trim(); // normalize en/em dash
     const n = parseInt(s, 10);
@@ -641,11 +639,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const taken = new Set();
 
-    // 1) lowest -> 1
+    // 1) lowest -> 1 Melody
     list[0].assignedPart = NUM_LABEL[1];
     taken.add(list[0].name);
 
-    // 2) highest -> 6 (if exists)
+    // 2) highest -> 6 Bass (if exists)
     if (list.length >= 2) {
       const hi = list.length - 1;
       if (!taken.has(list[hi].name)) {
@@ -657,15 +655,16 @@ document.addEventListener("DOMContentLoaded", () => {
     // 3) next four lowest -> 2,4,3,5
     const remaining = list.filter(x => !taken.has(x.name));
     for (let i=0; i<Math.min(4, remaining.length); i++) {
-      remaining[i].assignedPart = NUM_LABEL[INITIAL_FOUR[i]];
+      const labels = [2,4,3,5];
+      remaining[i].assignedPart = NUM_LABEL[labels[i]];
       taken.add(remaining[i].name);
     }
 
     // 4) rest -> cycle 1,6,2,4,3,5
     const rest = list.filter(x => !taken.has(x.name));
+    const cycle = [1,6,2,4,3,5];
     for (let i=0; i<rest.length; i++) {
-      rest[i].assignedPart = NUM_LABEL[CYCLE[i % CYCLE.length]];
-      taken.add(rest[i].name);
+      rest[i].assignedPart = NUM_LABEL[cycle[i % cycle.length]];
     }
 
     return list;
@@ -709,6 +708,7 @@ document.addEventListener("DOMContentLoaded", () => {
         document.body.appendChild(panel);
       }
     }
+
     const tbody = panel.querySelector("tbody");
     tbody.innerHTML = "";
     for (const row of list) {
@@ -727,6 +727,8 @@ document.addEventListener("DOMContentLoaded", () => {
   function hidePanel(){ const p = document.getElementById("aa-assignments-panel"); if (p) p.style.display = "none"; }
   function esc(s){ return String(s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 })();
+
+
 
   
   // AA.on("instruments:saved", (state) => {
