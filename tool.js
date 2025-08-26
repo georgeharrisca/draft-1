@@ -3,17 +3,19 @@
    Draft 1 flow: Library → Song → (auto-extract happens next section)
    ------------------------------------------------------------------------- */
 
-/* ---------- Storage key ---------- */
-const STATE_KEY = "autoArranger_extractedParts";
+// Global singletons to avoid "already declared" when the file loads twice
+window.AUTO_ARRANGER_STATE_KEY = window.AUTO_ARRANGER_STATE_KEY || "autoArranger_extractedParts";
+const STATE_KEY = window.AUTO_ARRANGER_STATE_KEY;
 
-/* ---------- Resolve data files relative to tool.js ---------- */
-const DATA_BASE = (() => {
+window.AUTO_ARRANGER_DATA_BASE = window.AUTO_ARRANGER_DATA_BASE || (function () {
   try {
     const me = Array.from(document.scripts).find(s => (s.src || "").includes("tool.js"))?.src;
     if (!me) return ".";
     return me.substring(0, me.lastIndexOf("/"));
   } catch { return "."; }
 })();
+const DATA_BASE = window.AUTO_ARRANGER_DATA_BASE;
+
 
 /* Small fetch helper with better errors */
 async function fetchJson(url) {
@@ -95,6 +97,8 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 async function initDraft1UI(){
+ if (window.AUTO_ARRANGER_UI_BOOTED) return;
+  window.AUTO_ARRANGER_UI_BOOTED = true;
   // Fetch library packs and instruments
   const [packs, instruments] = await Promise.all([loadLibraryIndex(), loadInstrumentData()]);
   mergeState({ libraryPacks: packs, instrumentData: instruments });
