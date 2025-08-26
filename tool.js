@@ -1387,6 +1387,8 @@ function renderInstrumentSelectors() {
   function escapeReg(s){ return String(s).replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&"); }
 })();
 
+
+
 /* =====================================================================
    Module: finalViewer (append-only) — centered UI + Back (clear processing)
    - Dropdown sorted by P-order; Score pinned on top
@@ -1585,25 +1587,35 @@ function renderInstrumentSelectors() {
 
     let lastXml = "";
 
-    btnVis.addEventListener("click", async () => {
-      const choice = select.value;
-      const { xml } = pickXml(choice);
-      if (!xml) { alert("No XML found to visualize."); return; }
+  btnVis.addEventListener("click", async () => {
+  const choice = select.value;
+  const { xml } = pickXml(choice);
+  if (!xml) { alert("No XML found to visualize."); return; }
 
-      try {
-        lastXml = xml;
-        const processed = transformXmlForSlashes(xml);
-        await osmd.load(processed);
-        osmd.render();
+  try {
+    lastXml = xml;
+    const processed = transformXmlForSlashes(xml);
 
-        btnPDF.disabled = false;
-        btnXML.disabled = false;
-        osmdBox.style.background = "#ffffff";
-      } catch (e) {
-        console.error("[finalViewer] render failed", e);
-        alert("Failed to render this selection.");
-      }
-    });
+    // reset zoom before measuring/fit
+    if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
+    await osmd.load(processed);
+    await osmd.render();
+
+    // wait a frame so SVG sizes are final, then fit vertically
+    await new Promise(r => requestAnimationFrame(r));
+    fitScoreToHeight(osmd, osmdBox);
+
+    btnPDF.disabled = false;
+    btnXML.disabled = false;
+    osmdBox.style.background = "#ffffff";
+  } catch (e) {
+    console.error("[finalViewer] render failed", e);
+    alert("Failed to render this selection.");
+  }
+});
+
+    window.addEventListener("resize", () => fitScoreToHeight(osmd, osmdBox));
+
 
     btnPDF.addEventListener("click", async () => {
       if (!lastXml) return alert("Load a score/part first.");
@@ -1681,6 +1693,31 @@ function renderInstrumentSelectors() {
     const m = String(xml || "").match(/<score-part\s+id="([^"]+)"/i);
     return m ? m[1] : null;
     }
+
+  function fitScoreToHeight(osmd, host) {
+  const svg = host.querySelector("svg");
+  if (!svg) return;
+
+  const maxH = host.clientHeight;
+  if (!maxH) return;
+
+  let svgH = 0;
+  try { svgH = svg.getBBox().height; } catch {}
+  if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
+  if (!svgH) return;
+
+  const current = typeof osmd.zoom === "number" ? osmd.zoom : 1;
+  let target = Math.min(current, maxH / svgH);
+
+  if (!isFinite(target) || target <= 0) target = 1;
+  target = Math.max(0.3, Math.min(1.5, target));
+
+  if (Math.abs(target - current) > 0.01) {
+    osmd.zoom = target;
+    osmd.render();
+  }
+}
+
 
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
   function safe(s){ return String(s||"").replace(/[\/\\:?*"<>|]+/g,"-"); }
