@@ -414,15 +414,11 @@ document.addEventListener("DOMContentLoaded", () => {
   // --- example pattern for future modules (keep appending below this line) ---
 
 /* =====================================================================
-   Auto Arranger — Draft 1 Guard / Module Layer (append-only)
-   - Event bus + checkpoints
-   - Emits on any update:
-       "parts:extracted"      when parts payload is present in sessionStorage
-       "instruments:saved"    when instrumentSelections is present
+   Auto Arranger — Draft 1 Guard / Module Layer (append-only, hotfix)
    ===================================================================== */
 (function () {
   const AA = (window.AA = window.AA || {});
-  if (AA.__guardInstalled) return; // avoid double-install
+  if (AA.__guardInstalled) return;
   AA.__guardInstalled = true;
 
   AA.VERSION = "draft-1";
@@ -430,13 +426,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // --- event bus ---
   const listeners = {};
-  AA.on = function (evt, fn) { (listeners[evt] ||= []).push(fn); return () => AA.off(evt, fn); };
-  AA.off = function (evt, fn) { const a = listeners[evt]; if (!a) return; const i = a.indexOf(fn); if (i>-1) a.splice(i,1); };
-  AA.emit = function (evt, payload) {
-    (listeners[evt] || []).forEach(fn => { try { fn(payload); } catch (e) { console.error("[AA] listener error:", evt, e); } });
-  };
+  AA.on = (evt, fn) => ((listeners[evt] ||= []).push(fn), () => AA.off(evt, fn));
+  AA.off = (evt, fn) => { const a = listeners[evt]; if (!a) return; const i = a.indexOf(fn); if (i>-1) a.splice(i,1); };
+  AA.emit = (evt, payload) => (listeners[evt]||[]).forEach(fn => { try{ fn(payload); }catch(e){ console.error("[AA] listener error:",evt,e);} });
 
-  // --- patch sessionStorage.setItem to emit lifecycle events ---
+  // --- storage patch (emit only when keys are present) ---
   const STATE_KEY = "autoArranger_extractedParts";
   const CP_KEY = "autoArranger_checkpoints";
   const _setItem = sessionStorage.setItem.bind(sessionStorage);
@@ -445,22 +439,24 @@ document.addEventListener("DOMContentLoaded", () => {
     if (k !== STATE_KEY) return;
     try {
       const nextObj = v ? JSON.parse(v) : {};
-      if (nextObj.parts) AA.emit("parts:extracted", nextObj);
-      if (nextObj.instrumentSelections) AA.emit("instruments:saved", nextObj);
-    } catch { /* no-op */ }
+      if (nextObj && typeof nextObj === "object") {
+        if (nextObj.parts) AA.emit("parts:extracted", nextObj);
+        if (Array.isArray(nextObj.instrumentSelections)) AA.emit("instruments:saved", nextObj);
+      }
+    } catch (e) {
+      console.error("[AA] Failed to parse state on setItem:", e);
+    }
   };
 
-  // --- checkpoints (JSON only) ---
-  AA.saveCheckpoint = function (name) {
-    const raw = sessionStorage.getItem(STATE_KEY);
-    if (!raw) return false;
+  // --- checkpoints ---
+  AA.saveCheckpoint = (name) => {
+    const raw = sessionStorage.getItem(STATE_KEY); if (!raw) return false;
     const all = JSON.parse(sessionStorage.getItem(CP_KEY) || "{}");
-    all[name] = raw;
-    _setItem(CP_KEY, JSON.stringify(all));
+    all[name] = raw; _setItem(CP_KEY, JSON.stringify(all));
     if (AA.DEBUG) console.log("[AA] checkpoint saved:", name);
     return true;
   };
-  AA.restoreCheckpoint = function (name) {
+  AA.restoreCheckpoint = (name) => {
     const all = JSON.parse(sessionStorage.getItem(CP_KEY) || "{}");
     if (!all[name]) return false;
     sessionStorage.setItem(STATE_KEY, all[name]);
@@ -468,11 +464,9 @@ document.addEventListener("DOMContentLoaded", () => {
     return true;
   };
 
-  // auto-save "draft-1" once instruments are saved (safe revert point)
   AA.on("instruments:saved", () => AA.saveCheckpoint("draft-1"));
 
-  // safe wrapper for future modules
-  AA.safe = function (moduleName, fn) {
+  AA.safe = (moduleName, fn) => {
     try { return fn(); }
     catch (err) {
       console.error(`[AA] Module "${moduleName}" failed:`, err);
@@ -481,26 +475,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
 
-  // quick keyboard restore: Ctrl + Shift + D
   document.addEventListener("keydown", (e) => {
     const key = (e.key || "").toLowerCase();
-    if (e.ctrlKey && e.shiftKey && key === "d") {
-      AA.restoreCheckpoint("draft-1");
-    }
+    if (e.ctrlKey && e.shiftKey && key === "d") AA.restoreCheckpoint("draft-1");
   });
 })();
 
 /* =====================================================================
-   Module: assignParts (append-only)
-   - Expands quantities into numbered instruments
-   - Computes sortNumber (base 1..6, then minus Octave) with tie-break decimals
-   - Assigns assignedPart per rules:
-       * Fixed parts 7..15 => assignedPart = instrumentPart
-       * Lowest numeric => 1 Melody
-       * (if ≥2) Highest numeric => 6 Bass
-       * Next four lowest => 2,4,3,5
-       * Remaining (low→high) => cycle {1,6,2,4,3,5}
-   - Renders a results table in a new panel
+   Module: assignParts (append-only, hotfix)
    ===================================================================== */
 (function () {
   if (!window.AA) return;
@@ -514,129 +496,140 @@ document.addEventListener("DOMContentLoaded", () => {
     6: "6 Bass"
   };
 
-  const NAME_TO_NUM = {
-    "Melody": 1,
-    "Harmony I": 2,
-    "Harmony II": 3,
-    "Counter Melody": 4,
-    "Counter Melody Harmony": 5,
-    "Bass": 6,
-    "Groove": 7,
-    "Chords": 8,
-    "Drum Kit": 9,
-    "Melody & Bass": 10,
-    "Melody & Chords": 11,
-    "Chords & Bass": 12,
-    "Melody & Chords & Bass": 13,
-    "Timpani": 14,
-    "Triangle": 15
-  };
+  // normalize names defensively (trim, collapse spaces)
+  const norm = s => String(s ?? "").replace(/\s+/g," ").trim();
 
-  const INITIAL_FOUR = [2,4,3,5];     // after low & high
-  const CYCLE = [1,6,2,4,3,5];        // repeated for the remainder
+  // allow a few common variants just in case
+  const NAME_TO_NUM = new Map([
+    ["Melody",1],
+    ["Harmony I",2],["Harmony 1",2],
+    ["Harmony II",3],["Harmony 2",3],
+    ["Counter Melody",4],
+    ["Counter Melody Harmony",5],
+    ["Bass",6],
+    ["Groove",7],
+    ["Chords",8],
+    ["Drum Kit",9],["Drumkit",9],
+    ["Melody & Bass",10],
+    ["Melody & Chords",11],
+    ["Chords & Bass",12],
+    ["Melody & Chords & Bass",13],
+    ["Timpani",14],
+    ["Triangle",15],
+  ]);
+
+  const INITIAL_FOUR = [2,4,3,5];
+  const CYCLE = [1,6,2,4,3,5];
   const STATE_KEY = "autoArranger_extractedParts";
 
-  // Run when instruments are saved
   AA.on("instruments:saved", () => AA.safe("assignParts", runAssignParts));
-
-  // also expose for manual re-run if needed
   window.runAssignParts = runAssignParts;
 
-  // Hide panel when navigating back
-  document.getElementById("backToSong")?.addEventListener("click", hidePanel);
-  document.getElementById("backButton")?.addEventListener("click", hidePanel);
+  document.getElementById("backToSong") && document.getElementById("backToSong").addEventListener("click", hidePanel);
+  document.getElementById("backButton") && document.getElementById("backButton").addEventListener("click", hidePanel);
 
   function runAssignParts() {
     const raw = sessionStorage.getItem(STATE_KEY);
     if (!raw) return;
-    const state = JSON.parse(raw);
-    const selections = state.instrumentSelections || [];
+    let state;
+    try { state = JSON.parse(raw); } catch (e) { console.error("[assignParts] bad JSON state", e); return; }
+
+    const selections = Array.isArray(state.instrumentSelections) ? state.instrumentSelections : [];
     if (!selections.length) { hidePanel(); return; }
 
-    const expanded = expandSelections(selections); // [{name, instrumentPart, Octave, clef, transpose}]
-    // partition into fixed (7..15) and numeric (1..6)
+    const expanded = expandSelections(selections); // [{name, instrumentPart, Octave, ...}]
+
     const fixed = [];
     const numeric = [];
     for (const it of expanded) {
-      const partNum = NAME_TO_NUM[it.instrumentPart] || 99;
+      const partNum = NAME_TO_NUM.get(norm(it.instrumentPart)) ?? 99;
       if (partNum >= 7) {
         fixed.push({
           ...it,
           sortRaw: null,
           sortDisplay: "—",
-          assignedPart: it.instrumentPart
+          assignedPart: norm(it.instrumentPart)
         });
-      } else {
-        const base = partNum;                 // 1..6
-        const octave = parseInt(it.Octave || 0, 10) || 0;
-        const sortRaw = base - octave;        // subtract positive, add abs(negative)
+      } else if (partNum >= 1 && partNum <= 6) {
+        const octave = toSignedInt(it.Octave);
+        const sortRaw = (partNum) - octave;
         numeric.push({
           ...it,
-          sortRaw, // number (can be negative / >6)
-          sortDisplay: "", // to fill after tie-break
+          sortRaw,
+          sortDisplay: "",
           assignedPart: ""
+        });
+      } else {
+        // Unknown label: treat as fixed passthrough
+        fixed.push({
+          ...it,
+          sortRaw: null,
+          sortDisplay: "—",
+          assignedPart: norm(it.instrumentPart) || "(Unknown)"
         });
       }
     }
 
-    // sort numeric by sortRaw, then name A→Z
+    // sort numeric by sortRaw asc, then name A→Z
     numeric.sort((a,b) => (a.sortRaw - b.sortRaw) || a.name.localeCompare(b.name));
 
-    // assign tie-break decimals: for same integer sortRaw, order A→Z → .1, .2,… ; singleton gets .0
+    // decimals for tie-breaks
     applyTieBreakDecimals(numeric);
 
-    // assignment
+    // assignments for numeric
     const assignedNumeric = assignNumericParts(numeric);
 
-    // final list for rendering: numeric (by sortRaw asc then decimals), then fixed (alphabetical)
+    // final list: numeric (by number/decimal), then fixed (alpha)
     assignedNumeric.sort((a,b) => (a.sortRaw - b.sortRaw) || compareSortDisplay(a.sortDisplay,b.sortDisplay));
     fixed.sort((a,b) => a.name.localeCompare(b.name));
-
     const finalList = [...assignedNumeric, ...fixed];
 
-    // persist results alongside state
+    // persist + render
     state.assignedResults = finalList.map(({ name, instrumentPart, Octave, sortDisplay, assignedPart }) => ({
       name, instrumentPart, Octave, sortNumber: sortDisplay, assignedPart
     }));
     sessionStorage.setItem(STATE_KEY, JSON.stringify(state));
-
-    // render
     renderAssignmentsPanel(finalList);
   }
 
   function expandSelections(selections) {
     const out = [];
     for (const s of selections) {
-      const qty = Math.max(0, parseInt(s.quantity || 0,10));
-      for (let i=1; i<=qty; i++){
+      const qty = Math.max(0, parseInt(s.quantity || 0, 10) || 0);
+      const baseName = norm(s.name || "");
+      for (let i = 1; i <= qty; i++) {
         out.push({
-          name: qty > 1 ? `${s.name} ${i}` : s.name,
-          instrumentPart: s.instrumentPart,
-          Octave: parseInt(s.Octave || 0,10) || 0,
+          name: qty > 1 ? `${baseName} ${i}` : baseName,
+          instrumentPart: norm(s.instrumentPart),
+          Octave: toSignedInt(s.Octave),
           clef: s.clef ?? null,
           transpose: s.transpose ?? null
         });
       }
     }
-    // alphabetize for stable tie-breaks downstream
     out.sort((a,b)=> a.name.localeCompare(b.name));
     return out;
   }
 
+  function toSignedInt(v) {
+    // handle numbers or strings like "+2", "-1", or en-dash "–1"
+    if (typeof v === "number" && Number.isFinite(v)) return v|0;
+    const s = String(v ?? "").replace(/\u2013|\u2014/g,"-").trim(); // normalize en/em dash
+    const n = parseInt(s, 10);
+    return Number.isFinite(n) ? n : 0;
+  }
+
   function applyTieBreakDecimals(arr) {
-    if (!arr.length) return;
-    // group by sortRaw (exact number)
     let i = 0;
     while (i < arr.length) {
       const base = arr[i].sortRaw;
       let j = i;
-      const group = [];
-      while (j < arr.length && arr[j].sortRaw === base) { group.push(arr[j]); j++; }
-      if (group.length === 1) {
-        group[0].sortDisplay = `${base.toFixed(1)}`.replace(/\.0+$/,".0"); // always .0
+      while (j < arr.length && arr[j].sortRaw === base) j++;
+      const count = j - i;
+      if (count === 1) {
+        arr[i].sortDisplay = `${base.toFixed(1)}`.replace(/\.0+$/,".0");
       } else {
-        // alphabetical already ensured by prior sort; assign .1, .2, …
-        group.forEach((g,idx) => g.sortDisplay = `${base}.${idx+1}`);
+        for (let k=0; k<count; k++) arr[i+k].sortDisplay = `${base}.${k+1}`;
       }
       i = j;
     }
@@ -644,43 +637,34 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function assignNumericParts(listIn) {
     const list = listIn.map(x => ({...x}));
-    if (list.length === 0) return list;
+    if (!list.length) return list;
 
     const taken = new Set();
 
-    // 1) lowest -> 1 Melody
-    const lowIdx = 0;
-    list[lowIdx].assignedPart = NUM_LABEL[1];
-    taken.add(list[lowIdx].name);
+    // 1) lowest -> 1
+    list[0].assignedPart = NUM_LABEL[1];
+    taken.add(list[0].name);
 
-    // 2) (if ≥2) highest -> 6 Bass
+    // 2) highest -> 6 (if exists)
     if (list.length >= 2) {
-      const highIdx = list.length - 1;
-      if (!taken.has(list[highIdx].name)) {
-        list[highIdx].assignedPart = NUM_LABEL[6];
-        taken.add(list[highIdx].name);
+      const hi = list.length - 1;
+      if (!taken.has(list[hi].name)) {
+        list[hi].assignedPart = NUM_LABEL[6];
+        taken.add(list[hi].name);
       }
     }
 
-    // remaining, from low→high
+    // 3) next four lowest -> 2,4,3,5
     const remaining = list.filter(x => !taken.has(x.name));
-
-    // 3) next four: 2,4,3,5
-    const firstFour = remaining.slice(0, 4);
-    for (let i=0; i<firstFour.length; i++){
-      const labelNum = [2,4,3,5][i];
-      if (labelNum) {
-        firstFour[i].assignedPart = NUM_LABEL[labelNum];
-        taken.add(firstFour[i].name);
-      }
+    for (let i=0; i<Math.min(4, remaining.length); i++) {
+      remaining[i].assignedPart = NUM_LABEL[INITIAL_FOUR[i]];
+      taken.add(remaining[i].name);
     }
 
-    // 4) the rest: cycle 1,6,2,4,3,5
+    // 4) rest -> cycle 1,6,2,4,3,5
     const rest = list.filter(x => !taken.has(x.name));
-    const CYCLE = [1,6,2,4,3,5];
-    for (let i=0; i<rest.length; i++){
-      const labelNum = CYCLE[i % CYCLE.length];
-      rest[i].assignedPart = NUM_LABEL[labelNum];
+    for (let i=0; i<rest.length; i++) {
+      rest[i].assignedPart = NUM_LABEL[CYCLE[i % CYCLE.length]];
       taken.add(rest[i].name);
     }
 
@@ -689,13 +673,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function compareSortDisplay(a, b) {
     const na = parseFloat(a), nb = parseFloat(b);
-    if (!isNaN(na) && !isNaN(nb)) return na - nb;
+    if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
     return String(a).localeCompare(String(b));
   }
 
   function renderAssignmentsPanel(list) {
     const root = document.getElementById("aa-modules-root") || document.body;
-
     let panel = document.getElementById("aa-assignments-panel");
     if (!panel) {
       panel = document.createElement("section");
@@ -726,15 +709,14 @@ document.addEventListener("DOMContentLoaded", () => {
         document.body.appendChild(panel);
       }
     }
-
     const tbody = panel.querySelector("tbody");
     tbody.innerHTML = "";
     for (const row of list) {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td style="padding:8px; border-bottom:1px solid var(--line);">${escape(row.name)}</td>
-        <td style="padding:8px; border-bottom:1px solid var(--line); color:var(--muted);">${escape(row.sortDisplay || "—")}</td>
-        <td style="padding:8px; border-bottom:1px solid var(--line);"><strong>${escape(row.assignedPart || "")}</strong></td>
+        <td style="padding:8px; border-bottom:1px solid var(--line);">${esc(row.name)}</td>
+        <td style="padding:8px; border-bottom:1px solid var(--line); color:var(--muted);">${esc(row.sortDisplay || "—")}</td>
+        <td style="padding:8px; border-bottom:1px solid var(--line);"><strong>${esc(row.assignedPart || "")}</strong></td>
       `;
       tbody.appendChild(tr);
     }
@@ -742,12 +724,8 @@ document.addEventListener("DOMContentLoaded", () => {
     panel.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  function hidePanel(){
-    const p = document.getElementById("aa-assignments-panel");
-    if (p) p.style.display = "none";
-  }
-
-  function escape(s){ return String(s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+  function hidePanel(){ const p = document.getElementById("aa-assignments-panel"); if (p) p.style.display = "none"; }
+  function esc(s){ return String(s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 })();
 
   
