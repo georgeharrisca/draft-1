@@ -282,6 +282,30 @@ function normalizeLibraryData(data, baseUrl) {
     packs.push({ name: String(name || "Pack"), songs });
   };
 
+function normalizeInstrumentData(data) {
+  // Accept:
+  // 1) [ { name, instrumentPart, sortingOctave, clef, transpose, scoreOrder }, ... ]
+  if (Array.isArray(data)) return data;
+
+  // 2) { instruments: [ ... ] }  or  { items: [ ... ] }
+  if (Array.isArray(data?.instruments)) return data.instruments;
+  if (Array.isArray(data?.items))       return data.items;
+
+  // 3) { "Violin": { ...meta }, "Flute": { ... } }
+  if (data && typeof data === "object") {
+    return Object.entries(data).map(([name, meta]) => ({
+      name,
+      instrumentPart: meta.instrumentPart ?? meta.part ?? "",
+      sortingOctave: Number(meta.sortingOctave ?? meta.octave ?? 0),
+      clef: meta.clef ?? null,
+      transpose: meta.transpose ?? null,
+      scoreOrder: Number(meta.scoreOrder ?? meta.order ?? 999),
+    }));
+  }
+  return [];
+}
+
+   
   if (Array.isArray(data?.packs)) { data.packs.forEach(p => addPack(p?.name, p?.songs || p?.files || p?.items)); return packs; }
   if (Array.isArray(data))        { data.forEach(p => addPack(p?.name, p?.songs || p?.files || p?.items));     return packs; }
   if (data && typeof data === "object") {
@@ -312,12 +336,25 @@ async function loadInstrumentData(){
     `${DATA_BASE}/instrumentData.json`,
     `${ROOT_BASE}/data/instrumentData.json`,
     `${DATA_BASE}/data/instrumentData.json`,
-    './instrumentData.json', 'instrumentData.json'
+    './instrumentData.json',
+    'instrumentData.json'
   ];
   const { data, url } = await tryJson(candidates);
-  mergeState({ instrumentJsonUrl: url });
-  return Array.isArray(data) ? data : [];
+  const normalized = normalizeInstrumentData(data);
+
+  mergeState({ instrumentJsonUrl: url, instrumentData: normalized });
+
+  if (!normalized.length) {
+    console.warn("[AA] instrumentData.json loaded but no instruments recognized. Raw:", data);
+  } else {
+    console.log(`[AA] instruments loaded: ${normalized.length} from`, url);
+  }
+
+  // let the UI know it can repopulate if needed
+  AA.emit("data:instrumentData", normalized);
+  return normalized;
 }
+
 
 
 /* ============================================================================
@@ -437,10 +474,9 @@ function extractPartsFromScore(xmlText){
 
 
 /* ============================================================================
-   I) STEP 3: INSTRUMENT PICKER UI (auto-inject left/right panes if missing)
+   I) STEP 3: INSTRUMENT PICKER UI (left list → Add; right list → Selections)
    ========================================================================== */
 (function(){
-  // Build markup if it's not already in the HTML
   function ensureInstrumentPickerMarkup(){
     const host = document.getElementById("step3");
     if (!host) return;
@@ -455,15 +491,15 @@ function extractPartsFromScore(xmlText){
     if (!needBuild) return;
 
     host.insertAdjacentHTML("beforeend", `
-      <div id="aa-pickers" class="aa-grid" style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-top:12px;">
-        <div class="aa-pane" style="background:#1116; padding:12px; border-radius:10px;">
-          <div style="font-weight:700; margin-bottom:8px;">Instruments</div>
-          <select id="instrumentList" size="10" style="width:100%; height:220px;"></select>
+      <div id="aa-pickers" class="aa-grid" style="margin-top:12px;">
+        <div class="aa-pane">
+          <h4>Instruments</h4>
+          <select id="instrumentList" size="10"></select>
           <button id="btnAddInstrument" class="aa-btn" style="margin-top:10px;">Add to Score</button>
         </div>
-        <div class="aa-pane" style="background:#1116; padding:12px; border-radius:10px;">
-          <div style="font-weight:700; margin-bottom:8px;">Selections</div>
-          <select id="selectionsList" size="10" style="width:100%; height:220px;"></select>
+        <div class="aa-pane">
+          <h4>Selections</h4>
+          <select id="selectionsList" size="10"></select>
           <div style="display:flex; gap:10px; margin-top:10px;">
             <button id="btnRemoveSelected" class="aa-btn">Remove</button>
             <button id="btnSaveSelections" class="aa-btn aa-accent">Save Selections</button>
@@ -473,7 +509,6 @@ function extractPartsFromScore(xmlText){
     `);
   }
 
-  // Wire up the picker (idempotent)
   function setupInstrumentPicker(){
     ensureInstrumentPickerMarkup();
 
@@ -482,20 +517,33 @@ function extractPartsFromScore(xmlText){
     const listRight = document.getElementById("selectionsList");
     const btnRemove = document.getElementById("btnRemoveSelected");
     const btnSave   = document.getElementById("btnSaveSelections");
+    const note      = document.getElementById("instStatus");
     if (!listLeft || !btnAdd || !listRight || !btnRemove || !btnSave) return;
 
-    if (listLeft.dataset.wired === "1") return; // already wired once
+    // --- populate function (can be called multiple times) ---
+    function populateLeftList(){
+      const s = getState();
+      const instruments = Array.isArray(s.instrumentData) ? s.instrumentData : [];
+      if (instruments.length) {
+        listLeft.innerHTML = instruments.map(ins =>
+          `<option value="${escapeHtml(ins.name)}">${escapeHtml(ins.name)}</option>`
+        ).join("");
+        if (note) note.textContent = "";
+      } else {
+        listLeft.innerHTML = "";
+        if (note) note.textContent = "No instruments found in instrumentData.json.";
+      }
+    }
+    populateLeftList();
+
+    // Re-populate whenever instrument data loads/changes
+    AA.on("data:instrumentData", populateLeftList);
+
+    // --- wire handlers only once ---
+    if (listLeft.dataset.wired === "1") return;
     listLeft.dataset.wired = "1";
 
     const stateSel = { selections: [] };
-
-    // Populate left list from instrumentData in state
-    const s = getState();
-    const instruments = Array.isArray(s.instrumentData) ? s.instrumentData : [];
-    listLeft.innerHTML = instruments.map(ins =>
-      `<option value="${escapeHtml(ins.name)}">${escapeHtml(ins.name)}</option>`
-    ).join("");
-
     const baseOf = (name) => String(name).replace(/\s+\d+$/, "");
 
     function refreshRight(){
@@ -512,7 +560,6 @@ function extractPartsFromScore(xmlText){
     function removeSelection(label){
       const i = stateSel.selections.indexOf(label);
       if (i>=0) stateSel.selections.splice(i,1);
-      // Renumber remaining of same base
       const b = baseOf(label);
       const idxs = stateSel.selections
         .map((n,i)=>({n,i}))
@@ -556,17 +603,10 @@ function extractPartsFromScore(xmlText){
     });
   }
 
-  // Set up when the DOM is ready (if panes already exist)
-  document.addEventListener("DOMContentLoaded", () => {
-    setupInstrumentPicker();
-  });
-
-  // Also set up whenever the wizard moves to the instruments stage
-  AA.on("wizard:stage", (stage) => {
-    if (stage === "instruments") setupInstrumentPicker();
-  });
+  // Set up initially and whenever we switch to the instruments stage
+  document.addEventListener("DOMContentLoaded", setupInstrumentPicker);
+  AA.on("wizard:stage", (stage) => { if (stage === "instruments") setupInstrumentPicker(); });
 })();
-
 
 
 /* ============================================================================
