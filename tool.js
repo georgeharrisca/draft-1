@@ -386,6 +386,7 @@ function renderInstrumentSelectors() {
             Octave: meta.Octave,
             clef: meta.clef ?? null,
             transpose: meta.transpose ?? null,
+            scoreOrder: meta.scoreOrder, 
             assignedPart: ""               // placeholder
           });
         }
@@ -1163,97 +1164,99 @@ function renderInstrumentSelectors() {
 
 
 /* =====================================================================
-   Module: reassignPartIdsBySort (append-only, backend-only)
-   - Input:
-       state.assignedResults[]   -> has instrument "name" and "sortNumber"
-       state.arrangedFiles[]     -> [{ instrumentName, xml, ... }]
-   - Behavior:
-       * Order arrangedFiles by ascending numeric sortNumber
-         (missing / non-numeric => Infinity; tie-break by instrumentName).
-       * For file #k in that order, set new part id = `Pk`.
-       * Replace all occurrences of the old id string in the XML with `Pk`.
-   - Output:
-       state.arrangedFiles[] updated:
-          - xml (with new ids)
-          - newPartId: "P1" | "P2" | ...
-       state.partIdMap: [{ instrumentName, newPartId, sortNumber }]
-       state.reassignDone = true
+   Module: reassignPartIdsByScoreOrder (append-only, backend-only)
+   - Orders arranged single-part XMLs by scoreOrder (with decimals for duplicates)
+   - Assigns P1..Pn in that order by replacing all occurrences of old id
    ===================================================================== */
 (function(){
   if (!window.AA) return;
   const STATE_KEY = "autoArranger_extractedParts";
 
-  // Start after instruments are saved (arrange module already runs on same event)
-  AA.on("instruments:saved", () => AA.safe("reassignPartIdsBySort", run));
+  // Fallback base order (used if instrumentSelections lacks scoreOrder)
+  const FALLBACK_ORDER = {
+    "Piccolo": 1,
+    "Flute": 2,
+    "Oboe": 3,
+    "Bb Clarinet": 4,
+    "Bassoon": 5,
+    "Violin": 6,
+    "Viola": 7,
+    "Cello": 8,
+    "Double Bass": 9
+  };
+
+  // Run after the pipeline kicks off (arrange/rename modules also listen here)
+  AA.on("instruments:saved", () => AA.safe("reassignPartIdsByScoreOrder", run));
 
   function run() {
     const raw = sessionStorage.getItem(STATE_KEY);
     if (!raw) return;
 
     let state;
-    try { state = JSON.parse(raw); } catch (e) { console.error("[reassignPartIdsBySort] bad JSON state", e); return; }
+    try { state = JSON.parse(raw); } catch (e) { console.error("[reassignPartIdsByScoreOrder] bad JSON", e); return; }
 
-    const assigned = Array.isArray(state.assignedResults) ? state.assignedResults : [];
     const arranged = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
+    if (!arranged.length) return;
 
-    if (!arranged.length || !assigned.length) return;
-
-    // Quick lookup: instrumentName -> numeric sort key
-    const sortKeyByName = new Map();
-    for (const a of assigned) {
-      const num = parseFloat(a.sortNumber);
-      const key = Number.isFinite(num) ? num : Number.POSITIVE_INFINITY; // fixed parts go last
-      sortKeyByName.set(a.name, key);
+    // Build base score order map from selections (preferred)
+    const baseOrder = new Map();
+    if (Array.isArray(state.instrumentSelections)) {
+      for (const s of state.instrumentSelections) {
+        if (s?.name) {
+          const v = Number(s.scoreOrder);
+          if (Number.isFinite(v)) baseOrder.set(String(s.name), v);
+        }
+      }
+    }
+    // Fill any gaps from fallback
+    for (const [k,v] of Object.entries(FALLBACK_ORDER)) {
+      if (!baseOrder.has(k)) baseOrder.set(k, v);
     }
 
-    // Build sortable list referencing arranged entries
-    const list = arranged.map((f, idx) => ({
-      idx,
-      ref: f,
-      name: f.instrumentName,
-      sortKey: sortKeyByName.get(f.instrumentName) ?? Number.POSITIVE_INFINITY
-    }));
+    // Compute effective scoreOrder for each arranged file:
+    // baseScore + (instance # / 10), e.g., Violin 2 => 6 + 0.2 = 6.2
+    const rows = arranged.map((f, idx) => {
+      const base = (f.baseName || String(f.instrumentName).replace(/\s+\d+$/, "")).trim();
+      const baseVal = baseOrder.get(base);
+      const m = String(f.instrumentName).match(/\s+(\d+)$/);   // trailing number
+      const instIdx = m ? parseInt(m[1], 10) : 0;
+      const eff = (Number.isFinite(baseVal) ? baseVal : Number.POSITIVE_INFINITY) + (instIdx > 0 ? instIdx/10 : 0);
+      return { idx, f, effOrder: eff, name: f.instrumentName };
+    });
 
-    // Asc by sortKey, tie-break by instrumentName
-    list.sort((a,b) => (a.sortKey - b.sortKey) || String(a.name).localeCompare(String(b.name)));
+    rows.sort((a,b) => (a.effOrder - b.effOrder) || String(a.name).localeCompare(String(b.name)));
 
-    // Reassign IDs in that order
     const partIdMap = [];
-    for (let i = 0; i < list.length; i++) {
-      const entry = list[i];
-      const file = entry.ref;
-
-      // Find old part id from <score-part id="...">
+    for (let i = 0; i < rows.length; i++) {
+      const file = rows[i].f;
+      const newId = `P${i+1}`;
       const m = String(file.xml).match(/<score-part\s+id="([^"]+)"/i);
       if (!m) {
-        console.warn(`[reassignPartIdsBySort] Could not locate <score-part id> in ${file.instrumentName}`);
+        console.warn("[reassignPartIdsByScoreOrder] Missing <score-part id> for", file.instrumentName);
         continue;
       }
       const oldId = m[1];
-      const newId = `P${i+1}`;
 
-      // Replace all occurrences of oldId with newId (covers <score-part id> and <part id>)
-      const newXml = file.xml.split(oldId).join(newId);
-
-      // Mutate arrangedFiles entry
-      file.xml = newXml;
+      // Replace ALL occurrences of oldId (covers <score-part id>, <part id>, and any references)
+      file.xml = file.xml.split(oldId).join(newId);
       file.newPartId = newId;
 
       partIdMap.push({
         instrumentName: file.instrumentName,
-        sortNumber: sortKeyByName.get(file.instrumentName),
+        baseName: file.baseName,
+        scoreOrder: rows[i].effOrder,
         newPartId: newId
       });
     }
 
-    // Persist without re-emitting lifecycle events
     AA.suspendEvents(() => {
       state.arrangedFiles = arranged;
       state.partIdMap = partIdMap;
-      state.reassignDone = true;
+      state.reassignByScoreDone = true;
       sessionStorage.setItem(STATE_KEY, JSON.stringify(state));
     });
 
-    if (AA.DEBUG) console.log("[AA] partIdMap:", partIdMap);
+    if (AA.DEBUG) console.log("[AA] reassignByScoreDone:", true, partIdMap);
   }
 })();
+
