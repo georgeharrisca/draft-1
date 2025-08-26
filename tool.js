@@ -314,7 +314,8 @@ let selectionOrder = [];    // keeps first-seen order of instrument names
     renderTrail();
   });
 
-  saveInstruments.addEventListener("click", () => {
+// Save instrument selections (two-pane UI)
+saveInstruments.addEventListener("click", () => {
   // Build selections from selectionCounts
   const selections = [];
   for (const [name, qty] of Object.entries(selectionCounts)) {
@@ -323,7 +324,7 @@ let selectionOrder = [];    // keeps first-seen order of instrument names
       if (meta) {
         selections.push({
           name: meta.name,
-          quantity: qty,                 // <-- counts from right pane
+          quantity: qty,                 // counts from right pane
           instrumentPart: meta.instrumentPart,
           Octave: meta.Octave,
           clef: meta.clef ?? null,
@@ -338,8 +339,9 @@ let selectionOrder = [];    // keeps first-seen order of instrument names
   const prevState = prevRaw ? JSON.parse(prevRaw) : {};
   const prevHadInst = Array.isArray(prevState.instrumentSelections);
 
-  const state = { ...prevState, instrumentSelections: selections };
-  sessionStorage.setItem("autoArranger_extractedParts", JSON.stringify(state));
+  // use a different identifier to avoid any duplicate 'state' declarations
+  const nextState = { ...prevState, instrumentSelections: selections };
+  sessionStorage.setItem("autoArranger_extractedParts", JSON.stringify(nextState));
 
   instStatus.textContent = selections.length
     ? `Saved ${selections.reduce((a,c)=>a+c.quantity,0)} instruments.`
@@ -352,11 +354,12 @@ let selectionOrder = [];    // keeps first-seen order of instrument names
   stateTrail.instrumentsDone = selections.length > 0;
   renderTrail();
 
-  // If guard won’t emit (because instrumentSelections already existed), emit manually
-  if (prevHadInst) {
-    window.AA && AA.emit && AA.emit("instruments:saved", state);
+  // If guard won’t auto-emit (because instrumentSelections already existed), emit manually
+  if (prevHadInst && window.AA?.emit) {
+    AA.emit("instruments:saved", nextState);
   }
 });
+
 
 
     const prev = sessionStorage.getItem("autoArranger_extractedParts");
