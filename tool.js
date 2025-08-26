@@ -1046,3 +1046,98 @@ function renderInstrumentSelectors() {
     return new XMLSerializer().serializeToString(xmlDoc);
   }
 })();
+/* =====================================================================
+   Module: reassignPartIdsBySort (append-only, backend-only)
+   - Input:
+       state.assignedResults[]   -> has instrument "name" and "sortNumber"
+       state.arrangedFiles[]     -> [{ instrumentName, xml, ... }]
+   - Behavior:
+       * Order arrangedFiles by ascending numeric sortNumber
+         (missing / non-numeric => Infinity; tie-break by instrumentName).
+       * For file #k in that order, set new part id = `Pk`.
+       * Replace all occurrences of the old id string in the XML with `Pk`.
+   - Output:
+       state.arrangedFiles[] updated:
+          - xml (with new ids)
+          - newPartId: "P1" | "P2" | ...
+       state.partIdMap: [{ instrumentName, newPartId, sortNumber }]
+       state.reassignDone = true
+   ===================================================================== */
+(function(){
+  if (!window.AA) return;
+  const STATE_KEY = "autoArranger_extractedParts";
+
+  // Start after instruments are saved (arrange module already runs on same event)
+  AA.on("instruments:saved", () => AA.safe("reassignPartIdsBySort", run));
+
+  function run() {
+    const raw = sessionStorage.getItem(STATE_KEY);
+    if (!raw) return;
+
+    let state;
+    try { state = JSON.parse(raw); } catch (e) { console.error("[reassignPartIdsBySort] bad JSON state", e); return; }
+
+    const assigned = Array.isArray(state.assignedResults) ? state.assignedResults : [];
+    const arranged = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
+
+    if (!arranged.length || !assigned.length) return;
+
+    // Quick lookup: instrumentName -> numeric sort key
+    const sortKeyByName = new Map();
+    for (const a of assigned) {
+      const num = parseFloat(a.sortNumber);
+      const key = Number.isFinite(num) ? num : Number.POSITIVE_INFINITY; // fixed parts go last
+      sortKeyByName.set(a.name, key);
+    }
+
+    // Build sortable list referencing arranged entries
+    const list = arranged.map((f, idx) => ({
+      idx,
+      ref: f,
+      name: f.instrumentName,
+      sortKey: sortKeyByName.get(f.instrumentName) ?? Number.POSITIVE_INFINITY
+    }));
+
+    // Asc by sortKey, tie-break by instrumentName
+    list.sort((a,b) => (a.sortKey - b.sortKey) || String(a.name).localeCompare(String(b.name)));
+
+    // Reassign IDs in that order
+    const partIdMap = [];
+    for (let i = 0; i < list.length; i++) {
+      const entry = list[i];
+      const file = entry.ref;
+
+      // Find old part id from <score-part id="...">
+      const m = String(file.xml).match(/<score-part\s+id="([^"]+)"/i);
+      if (!m) {
+        console.warn(`[reassignPartIdsBySort] Could not locate <score-part id> in ${file.instrumentName}`);
+        continue;
+      }
+      const oldId = m[1];
+      const newId = `P${i+1}`;
+
+      // Replace all occurrences of oldId with newId (covers <score-part id> and <part id>)
+      const newXml = file.xml.split(oldId).join(newId);
+
+      // Mutate arrangedFiles entry
+      file.xml = newXml;
+      file.newPartId = newId;
+
+      partIdMap.push({
+        instrumentName: file.instrumentName,
+        sortNumber: sortKeyByName.get(file.instrumentName),
+        newPartId: newId
+      });
+    }
+
+    // Persist without re-emitting lifecycle events
+    AA.suspendEvents(() => {
+      state.arrangedFiles = arranged;
+      state.partIdMap = partIdMap;
+      state.reassignDone = true;
+      sessionStorage.setItem(STATE_KEY, JSON.stringify(state));
+    });
+
+    if (AA.DEBUG) console.log("[AA] partIdMap:", partIdMap);
+  }
+})();
