@@ -1390,8 +1390,10 @@ function renderInstrumentSelectors() {
 
 
 /* =====================================================================
-   Module: finalViewer (append-only) — centered UI + Back (clear processing)
+   Module: finalViewer (append-only)
+   - Centered UI; Back clears processing & returns to instrument selection
    - Dropdown sorted by P-order; Score pinned on top
+   - Shrink-to-fit vertically for OSMD rendering (no vertical scroll)
    ===================================================================== */
 (function () {
   if (!window.AA) return;
@@ -1402,6 +1404,9 @@ function renderInstrumentSelectors() {
   async function bootWhenReady() {
     const ok = await waitForState(s => s.arrangeDone && s.renameDone && s.reassignByScoreDone && s.combineDone);
     if (!ok) return;
+
+    // Guard: if a viewer already exists, don't create another
+    if (document.getElementById('aa-viewer')) return;
 
     // libs in repo root
     await ensureLib("opensheetmusicdisplay", "./opensheetmusicdisplay.min.js");
@@ -1415,12 +1420,7 @@ function renderInstrumentSelectors() {
     try { return JSON.parse(sessionStorage.getItem(STATE_KEY) || "{}"); }
     catch { return {}; }
   }
-
-  function setState(next) {
-    AA.suspendEvents(() => {
-      sessionStorage.setItem(STATE_KEY, JSON.stringify(next));
-    });
-  }
+  function setState(next) { AA.suspendEvents(() => sessionStorage.setItem(STATE_KEY, JSON.stringify(next))); }
 
   function waitForState(predicate, timeoutMs = 120000) {
     return new Promise(resolve => {
@@ -1443,19 +1443,19 @@ function renderInstrumentSelectors() {
       document.head.appendChild(script);
     });
   }
-
-  function lookupGlobal(name) {
-    return name.split(".").reduce((obj, key) => (obj && obj[key] != null ? obj[key] : null), window);
-  }
+  function lookupGlobal(name) { return name.split(".").reduce((o,k)=> (o && o[k]!=null ? o[k] : null), window); }
 
   // ---------- UI ----------
   function buildViewerUI() {
+    // de-dupe: ensure only one overlay exists
+    document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
+
     const state = getState();
-    const songName = state?.song || "Auto Arranger Result";
+    const songName = state?.selectedSong?.name || state?.song || "Auto Arranger Result";
     const partsRaw = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
     const hasScore = typeof state.combinedScoreXml === "string" && state.combinedScoreXml.length > 0;
 
-    // Sort parts by P-number (P1, P2, …) — mirrors ID assignment
+    // Sort parts by P-number (P1, P2, …)
     const parts = sortPartsByPid(partsRaw);
 
     // Fullscreen overlay (no vertical scroll)
@@ -1482,7 +1482,7 @@ function renderInstrumentSelectors() {
       background: #e5e7eb; color: #111; font: 600 13px system-ui; cursor: pointer;
       box-shadow: 0 2px 8px rgba(0,0,0,.06);
     `;
-    backBtn.addEventListener("click", () => backToInstrumentSelection(state, wrap));
+    backBtn.addEventListener("click", () => backToInstrumentSelection(state));
     wrap.appendChild(backBtn);
 
     // Card
@@ -1558,7 +1558,7 @@ function renderInstrumentSelectors() {
     `;
     card.appendChild(styleBtn);
 
-    // OSMD host
+    // OSMD host (fills remaining height; horizontal scroll allowed)
     const osmdBox = document.createElement("div");
     osmdBox.id = "aa-osmd-box";
     osmdBox.style.cssText = `
@@ -1578,6 +1578,9 @@ function renderInstrumentSelectors() {
       autoResize: true, backend: "svg", drawingParameters: "default"
     });
 
+    // Re-fit on window resize
+    window.addEventListener("resize", () => fitScoreToHeight(osmd, osmdBox));
+
     // Controls references
     const btnVis = btnRow.querySelector("#aa-btn-visualize");
     const btnPDF = btnRow.querySelector("#aa-btn-pdf");
@@ -1587,35 +1590,31 @@ function renderInstrumentSelectors() {
 
     let lastXml = "";
 
-  btnVis.addEventListener("click", async () => {
-  const choice = select.value;
-  const { xml } = pickXml(choice);
-  if (!xml) { alert("No XML found to visualize."); return; }
+    // Visualize with shrink-to-fit vertically
+    btnVis.addEventListener("click", async () => {
+      const choice = select.value;
+      const { xml } = pickXml(choice);
+      if (!xml) { alert("No XML found to visualize."); return; }
 
-  try {
-    lastXml = xml;
-    const processed = transformXmlForSlashes(xml);
+      try {
+        lastXml = xml;
+        const processed = transformXmlForSlashes(xml);
 
-    // reset zoom before measuring/fit
-    if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
-    await osmd.load(processed);
-    await osmd.render();
+        if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
+        await osmd.load(processed);
+        await osmd.render();
 
-    // wait a frame so SVG sizes are final, then fit vertically
-    await new Promise(r => requestAnimationFrame(r));
-    fitScoreToHeight(osmd, osmdBox);
+        await new Promise(r => requestAnimationFrame(r));
+        fitScoreToHeight(osmd, osmdBox);
 
-    btnPDF.disabled = false;
-    btnXML.disabled = false;
-    osmdBox.style.background = "#ffffff";
-  } catch (e) {
-    console.error("[finalViewer] render failed", e);
-    alert("Failed to render this selection.");
-  }
-});
-
-    window.addEventListener("resize", () => fitScoreToHeight(osmd, osmdBox));
-
+        btnPDF.disabled = false;
+        btnXML.disabled = false;
+        osmdBox.style.background = "#ffffff";
+      } catch (e) {
+        console.error("[finalViewer] render failed", e);
+        alert("Failed to render this selection.");
+      }
+    });
 
     btnPDF.addEventListener("click", async () => {
       if (!lastXml) return alert("Load a score/part first.");
@@ -1641,7 +1640,7 @@ function renderInstrumentSelectors() {
         try {
           const processed = transformXmlForSlashes(p.xml);
           await osmd.load(processed);
-          osmd.render();
+          await osmd.render();
 
           const { canvas, w, h } = await snapshotCanvas(osmdBox);
           if (!doc) {
@@ -1692,32 +1691,7 @@ function renderInstrumentSelectors() {
   function extractPidFromXml(xml) {
     const m = String(xml || "").match(/<score-part\s+id="([^"]+)"/i);
     return m ? m[1] : null;
-    }
-
-  function fitScoreToHeight(osmd, host) {
-  const svg = host.querySelector("svg");
-  if (!svg) return;
-
-  const maxH = host.clientHeight;
-  if (!maxH) return;
-
-  let svgH = 0;
-  try { svgH = svg.getBBox().height; } catch {}
-  if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
-  if (!svgH) return;
-
-  const current = typeof osmd.zoom === "number" ? osmd.zoom : 1;
-  let target = Math.min(current, maxH / svgH);
-
-  if (!isFinite(target) || target <= 0) target = 1;
-  target = Math.max(0.3, Math.min(1.5, target));
-
-  if (Math.abs(target - current) > 0.01) {
-    osmd.zoom = target;
-    osmd.render();
   }
-}
-
 
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
   function safe(s){ return String(s||"").replace(/[\/\\:?*"<>|]+/g,"-"); }
@@ -1738,10 +1712,8 @@ function renderInstrumentSelectors() {
   }
 
   function snapshotCanvas(container) {
-    return html2canvas(container, {
-      scale: 2,
-      backgroundColor: "#ffffff"
-    }).then(canvas => ({ canvas, w: canvas.width, h: canvas.height }));
+    return html2canvas(container, { scale: 2, backgroundColor: "#ffffff" })
+      .then(canvas => ({ canvas, w: canvas.width, h: canvas.height }));
   }
 
   function downloadText(str, filename, mime) {
@@ -1754,19 +1726,21 @@ function renderInstrumentSelectors() {
   }
 
   // Back button behavior: clear processing + navigate back to Step 3 with same Library/Song selected
-  async function backToInstrumentSelection(prevState, wrapEl) {
+  async function backToInstrumentSelection(prevState) {
     try {
-      const packName = prevState?.pack || "";
-      const songName = prevState?.song || "";
+      const packName = prevState?.pack || prevState?.selectedPack?.name || "";
+      const songName = prevState?.song || prevState?.selectedSong?.name || "";
 
-      // Clear processing, keep only minimal context (pack & song optional, parts will be re-extracted)
+      // Clear processing, keep only minimal context (pack & song optional)
       setState({ pack: packName, song: songName, timestamp: Date.now() });
 
-      // Hide viewer & loading
-      wrapEl?.remove();
+      // remove any and all viewer overlays that might exist
+      document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
+
+      // Hide loading overlay if any
       if (typeof window.hideArrangingLoading === "function") window.hideArrangingLoading();
 
-      // Show step 1 so we can drive UI transitions
+      // Show step 1 initially (to reuse existing UI flow)
       const step1 = document.getElementById("step1");
       const step2 = document.getElementById("step2");
       const step3 = document.getElementById("step3");
@@ -1774,11 +1748,10 @@ function renderInstrumentSelectors() {
       step2?.classList.add("hidden");
       step3?.classList.add("hidden");
 
-      // Try to auto-reselect Library and Song to land in Instruments (fresh)
+      // Auto-reselect Library and Song (dispatches real change events)
       await reselectLibraryAndSong(packName, songName);
 
-      // Finally, ensure we’re on Step 3 (instrument selection); the app’s
-      // songSelect change handler will have auto-extracted parts and brought us here.
+      // Land on Step 3 (instrument selection)
       document.getElementById("step3")?.classList.remove("hidden");
       const dots = document.querySelectorAll(".stepper .dot");
       if (dots && dots.length) dots.forEach((d,i)=>d.classList.toggle("active", i<=2));
@@ -1789,17 +1762,14 @@ function renderInstrumentSelectors() {
 
   async function reselectLibraryAndSong(packName, songName) {
     const libSel = document.getElementById("librarySelect");
-    if (!libSel) return;
-
-    // Select library by visible text
-    if (packName) {
+    if (libSel && packName) {
       for (let i=0; i<libSel.options.length; i++) {
         if (libSel.options[i].textContent === packName) { libSel.selectedIndex = i; break; }
       }
       libSel.dispatchEvent(new Event("change", { bubbles: true }));
     }
 
-    // Wait until songSelect is populated, then choose song and trigger change
+    // Wait until songSelect is populated
     await waitFor(() => {
       const el = document.getElementById("songSelect");
       return el && el.options && el.options.length > 1;
@@ -1822,6 +1792,31 @@ function renderInstrumentSelectors() {
         else if (Date.now() - start > timeoutMs) { clearInterval(iv); resolve(false); }
       }, interval);
     });
+  }
+
+  // Shrink-to-fit vertically
+  function fitScoreToHeight(osmd, host) {
+    const svg = host.querySelector("svg");
+    if (!svg) return;
+
+    const maxH = host.clientHeight;
+    if (!maxH) return;
+
+    let svgH = 0;
+    try { svgH = svg.getBBox().height; } catch {}
+    if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
+    if (!svgH) return;
+
+    const current = typeof osmd.zoom === "number" ? osmd.zoom : 1;
+    let target = Math.min(current, maxH / svgH);
+
+    if (!isFinite(target) || target <= 0) target = 1;
+    target = Math.max(0.3, Math.min(1.5, target));
+
+    if (Math.abs(target - current) > 0.01) {
+      osmd.zoom = target;
+      osmd.render();
+    }
   }
 
   // Slash-note transform (safe no-op for most files)
@@ -1855,7 +1850,7 @@ function renderInstrumentSelectors() {
           const styles = measure.getElementsByTagName("measure-style");
           for (const style of styles) {
             const slash = style.getElementsByTagName("slash")[0];
-              if (slash) {
+            if (slash) {
               const type = slash.getAttribute("type");
               if (type === "start") insideSlash = true;
               if (type === "stop") insideSlash = false;
@@ -1902,3 +1897,4 @@ function renderInstrumentSelectors() {
     } catch { return xmlString; }
   }
 })();
+
