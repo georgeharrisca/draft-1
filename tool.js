@@ -1,12 +1,30 @@
-/* =========================================================================
-   Auto Arranger - tool.js (Top + Draft 1 flow up to XML extraction & picker)
-   ------------------------------------------------------------------------- */
+/* =============================================================================
+   AUTO ARRANGER • tool.js  (Draft 1 core flow only)
+   Sections:
+     A) Global singletons & constants
+     B) Generic helpers (DOM, state, fetch)
+     C) Event bus
+     D) Wizard visibility helper
+     E) Boot + initDraft1UI (with strict state validation)
+     F) Library & Instrument loaders (+ normalizers)
+     G) Song population & change handlers
+     H) XML extraction (single-part render)
+     I) Step 3 Instrument Picker UI
+     J) Pipeline reset (pre-module stub)
+   -----------------------------------------------------------------------------
+   NOTE: Ensure your HTML has:  <style>.hidden{display:none!important}</style>
+   ========================================================================== */
 
-/* ---------- Global singletons (avoid "already declared") ---------- */
+
+/* ============================================================================
+   A) GLOBAL SINGLETONS & CONSTANTS
+   ========================================================================== */
+
+// Avoid "already declared" errors across hot reloads / multiple script tags
 window.AUTO_ARRANGER_STATE_KEY  = window.AUTO_ARRANGER_STATE_KEY  || "autoArranger_extractedParts";
 const STATE_KEY = window.AUTO_ARRANGER_STATE_KEY;
 
-// Resolve data files
+// Resolve relative URLs (script folder) and site root (Netlify/GitHub Pages)
 window.AUTO_ARRANGER_DATA_BASE = window.AUTO_ARRANGER_DATA_BASE || (function () {
   try {
     const me = Array.from(document.scripts).find(s => (s.src || "").includes("tool.js"))?.src;
@@ -16,21 +34,50 @@ window.AUTO_ARRANGER_DATA_BASE = window.AUTO_ARRANGER_DATA_BASE || (function () 
 })();
 const DATA_BASE = window.AUTO_ARRANGER_DATA_BASE;
 
-// Also compute the site root (works on GH Pages / subpaths)
 const ROOT_BASE = new URL('.', document.baseURI).href.replace(/\/$/, "");
 
-// ---- Wizard visibility helper ----
-function setWizardStage(stage /* 'library' | 'song' | 'instruments' */){
-  const s1 = document.getElementById("step1");
-  const s2 = document.getElementById("step2");
-  const s3 = document.getElementById("step3");
-  if (s1) s1.classList.toggle("hidden", stage !== "library");
-  if (s2) s2.classList.toggle("hidden", stage !== "song");
-  if (s3) s3.classList.toggle("hidden", stage !== "instruments");
+
+/* ============================================================================
+   B) GENERIC HELPERS (DOM, STATE, FETCH)
+   ========================================================================== */
+
+function qs(id){ return document.getElementById(id); }
+function ce(tag, props){ const el = document.createElement(tag); if(props) Object.assign(el, props); return el; }
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
+
+// Tolerant selectors (support alternate ids if your HTML changes)
+function libSelectEl(){ return qs("librarySelect") || qs("libraryPackSelect") || document.querySelector('select[data-role="library"]'); }
+function songSelectEl(){ return qs("songSelect")    || qs("songSelectDropdown") || document.querySelector('select[data-role="song"]'); }
+
+// Session state helpers
+function getState() {
+  try { return JSON.parse(sessionStorage.getItem(STATE_KEY) || "{}"); }
+  catch { return {}; }
 }
+function setState(next) {
+  AA.suspendEvents(() => sessionStorage.setItem(STATE_KEY, JSON.stringify(next)));
+}
+function mergeState(patch) { setState({ ...getState(), ...patch }); }
 
+// Optional: uncomment during debugging to force a fresh session on reload
+// sessionStorage.removeItem(STATE_KEY);
 
-/* ---------- Robust fetch helpers ---------- */
+// Loading overlay (used later when modules are reattached)
+function showArrangingLoading() {
+  if (qs("aa-loading")) return;
+  const pad = ce("div");
+  pad.id = "aa-loading";
+  pad.style.cssText = `
+    position:fixed; inset:0; z-index:9999; display:flex; align-items:center; justify-content:center;
+    background:rgba(255,255,255,.96); font:700 18px/1.2 system-ui,Arial; color:#111;
+  `;
+  pad.textContent = "Arranging Custom Score...";
+  document.body.appendChild(pad);
+  window.hideArrangingLoading = () => pad.remove();
+}
+window.hideArrangingLoading = window.hideArrangingLoading || function(){};
+
+// Fetch helpers (robust with diagnostics)
 async function fetchJson(url) {
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) {
@@ -46,7 +93,6 @@ async function fetchJson(url) {
     throw e;
   }
 }
-
 async function tryJson(paths){
   for (const url of paths) {
     try {
@@ -61,9 +107,11 @@ async function tryJson(paths){
   throw new Error("All candidate paths failed for JSON.");
 }
 
-/* =========================================================================
-   Tiny event bus + helpers
-   ------------------------------------------------------------------------- */
+
+/* ============================================================================
+   C) LIGHTWEIGHT EVENT BUS
+   ========================================================================== */
+
 window.AA = window.AA || (function(){
   const listeners = new Map();
   let suspendDepth = 0;
@@ -82,66 +130,45 @@ window.AA = window.AA || (function(){
     },
     safe(name, fn){
       try { fn(); }
-      catch(e){ console.error(`[AA] Module "${name}" failed:`, e); }
+      catch(e){ console.error(`[AA] Module \"${name}\" failed:`, e); }
     },
     suspendEvents(fn){ suspendDepth++; try { fn(); } finally { suspendDepth--; } }
   };
   return API;
 })();
 
-/* =========================================================================
-   State, DOM helpers, loading overlay
-   ------------------------------------------------------------------------- */
-function getState() {
-  try { return JSON.parse(sessionStorage.getItem(STATE_KEY) || "{}"); }
-  catch { return {}; }
+
+/* ============================================================================
+   D) WIZARD VISIBILITY HELPER
+   ========================================================================== */
+// stage ∈ 'library' | 'song' | 'instruments'
+function setWizardStage(stage){
+  const s1 = qs("step1"), s2 = qs("step2"), s3 = qs("step3");
+  if (s1) s1.classList.toggle("hidden", stage !== "library");
+  if (s2) s2.classList.toggle("hidden", stage !== "song");
+  if (s3) s3.classList.toggle("hidden", stage !== "instruments");
 }
-function setState(next) { AA.suspendEvents(() => sessionStorage.setItem(STATE_KEY, JSON.stringify(next))); }
-function mergeState(patch) { setState({ ...getState(), ...patch }); }
 
-function qs(id){ return document.getElementById(id); }
-function ce(tag, props){ const el = document.createElement(tag); if(props) Object.assign(el, props); return el; }
 
-function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
+/* ============================================================================
+   E) BOOT + INIT (STRICT STATE VALIDATION; NO AUTO-ADVANCE)
+   ========================================================================== */
 
-/* Selectors tolerant to id differences */
-function libSelectEl(){ return document.getElementById("librarySelect") || document.getElementById("libraryPackSelect") || document.querySelector('select[data-role="library"]'); }
-function songSelectEl(){ return document.getElementById("songSelect") || document.getElementById("songSelectDropdown") || document.querySelector('select[data-role="song"]'); }
-
-/* Loading overlay (used later in pipeline) */
-function showArrangingLoading() {
-  if (qs("aa-loading")) return;
-  const pad = ce("div");
-  pad.id = "aa-loading";
-  pad.style.cssText = `
-    position:fixed; inset:0; z-index:9999; display:flex; align-items:center; justify-content:center;
-    background:rgba(255,255,255,.96); font:700 18px/1.2 system-ui,Arial; color:#111;
-  `;
-  pad.textContent = "Arranging Custom Score...";
-  document.body.appendChild(pad);
-  window.hideArrangingLoading = () => pad.remove();
-}
-window.hideArrangingLoading = window.hideArrangingLoading || function(){};
-
-/* =========================================================================
-   Boot: wire Draft-1 UI (Library → Song → auto-extract → Instruments)
-   ------------------------------------------------------------------------- */
 document.addEventListener("DOMContentLoaded", () => {
   initDraft1UI().catch(e => console.error("[initDraft1UI]", e));
 });
 
 async function initDraft1UI(){
-  // guard against double-boot
   if (window.AUTO_ARRANGER_UI_BOOTED) return;
   window.AUTO_ARRANGER_UI_BOOTED = true;
 
   console.log("[AA] DATA_BASE =", DATA_BASE, "| ROOT_BASE =", ROOT_BASE);
 
-  // Load packs + instruments
+  // Load library packs & instrument meta
   const [packs, instruments] = await Promise.all([loadLibraryIndex(), loadInstrumentData()]);
   mergeState({ libraryPacks: packs, instrumentData: instruments });
 
-  // Hook up selects
+  // Hook selects
   const libSel  = libSelectEl();
   const songSel = songSelectEl();
 
@@ -159,32 +186,39 @@ async function initDraft1UI(){
     console.warn("[AA] Could not find song select element (id='songSelect' or 'songSelectDropdown').");
   }
 
-  // Decide which step to show
-  const s = getState();
-  if (s.packIndex == null) {
-    // Nothing chosen yet
+  // -------- Decide which step to show (validate saved state; DO NOT auto-advance)
+  const st = getState();
+
+  const validPack =
+    Number.isInteger(st.packIndex) &&
+    (Array.isArray(packs) && Boolean(packs[st.packIndex]));
+
+  const validSong =
+    validPack &&
+    Number.isInteger(st.songIndex) &&
+    Array.isArray(packs[st.packIndex].songs) &&
+    Boolean(packs[st.packIndex].songs[st.songIndex]);
+
+  const haveParts = Array.isArray(st.parts) && st.parts.length > 0;
+
+  if (!validPack) {
+    mergeState({ packIndex: null, pack: null, songIndex: null, song: null, parts: [] });
     setWizardStage("library");
-  } else if (s.songIndex == null) {
-    // Library chosen; restore selection and show Song step
+  } else if (!validSong) {
     if (libSel) {
-      libSel.value = String(s.packIndex);
-      populateSongsForPack(s.packIndex);
+      libSel.value = String(st.packIndex);
+      populateSongsForPack(st.packIndex);
     }
+    mergeState({ songIndex: null, song: null, parts: [] });
     setWizardStage("song");
   } else {
-    // Both chosen; restore and either show instruments or re-extract
+    // Both picks valid: restore them, but only show instruments if parts already exist
     if (libSel) {
-      libSel.value = String(s.packIndex);
-      populateSongsForPack(s.packIndex);
+      libSel.value = String(st.packIndex);
+      populateSongsForPack(st.packIndex);
     }
-    if (songSel) songSel.value = String(s.songIndex);
-
-    if (Array.isArray(s.parts) && s.parts.length) {
-      setWizardStage("instruments");
-    } else {
-      setWizardStage("song");   // show song step while we re-extract
-      onSongChosen();           // triggers extraction and then shows instruments
-    }
+    if (songSel) songSel.value = String(st.songIndex);
+    setWizardStage(haveParts ? "instruments" : "song");
   }
 
   if (!packs.length) {
@@ -193,26 +227,26 @@ async function initDraft1UI(){
 }
 
 
-/* ------------ Library & Instrument loaders ------------ */
-/* Helpers used by the loaders */
+/* ============================================================================
+   F) LIBRARY & INSTRUMENT LOADERS (+ NORMALIZERS)
+   ========================================================================== */
 
-function basename(path) {
-  const m = String(path || "").split(/[\\/]/).pop();
-  return m || "";
-}
-function stripExt(name) {
-  return String(name || "").replace(/\.[^.]+$/, "");
-}
+// Normalizer helpers
+function basename(path) { const m = String(path || "").split(/[\\/]/).pop(); return m || ""; }
+function stripExt(name) { return String(name || "").replace(/\.[^.]+$/, ""); }
 function absolutizeUrl(u, baseUrl) {
   try {
     if (/^https?:\/\//i.test(u)) return u;
-    // baseUrl is the JSON file URL; resolve relative to that file’s folder
     const b = new URL(baseUrl, location.href);
     const folder = b.href.replace(/\/[^\/]*$/, "/");
     return new URL(String(u).replace(/^\.\//, ""), folder).href;
   } catch { return u; }
 }
 function normalizeLibraryData(data, baseUrl) {
+  // Accept:
+  // 1) { packs: [ { name, songs:[{name,url}|string] } ] }
+  // 2) [ { name, songs:[...] } ]
+  // 3) { "Pack Name": [ "file.xml" | {name,url} ] }
   const packs = [];
   const addPack = (name, items) => {
     const arr = Array.isArray(items) ? items : [];
@@ -223,65 +257,45 @@ function normalizeLibraryData(data, baseUrl) {
       } else if (item && typeof item === "object") {
         let url = item.url || item.path || "";
         if (url) url = absolutizeUrl(url, baseUrl);
-        const name = item.name || stripExt(basename(url)) || "Untitled";
-        return { name, url };
+        const nm = item.name || stripExt(basename(url)) || "Untitled";
+        return { name: nm, url };
       }
       return null;
     }).filter(Boolean);
     packs.push({ name: String(name || "Pack"), songs });
   };
 
-  // Shape 1: { packs: [...] }
-  if (Array.isArray(data?.packs)) {
-    data.packs.forEach(p => addPack(p?.name, p?.songs || p?.files || p?.items));
-    return packs;
-  }
-  // Shape 2: [ ... ]
-  if (Array.isArray(data)) {
-    data.forEach(p => addPack(p?.name, p?.songs || p?.files || p?.items));
-    return packs;
-  }
-  // Shape 3: { "Pack Name": [ ... ], ... }
+  if (Array.isArray(data?.packs)) { data.packs.forEach(p => addPack(p?.name, p?.songs || p?.files || p?.items)); return packs; }
+  if (Array.isArray(data))        { data.forEach(p => addPack(p?.name, p?.songs || p?.files || p?.items));     return packs; }
   if (data && typeof data === "object") {
-    Object.entries(data).forEach(([name, items]) => {
-      if (Array.isArray(items)) addPack(name, items);
-    });
+    Object.entries(data).forEach(([name, items]) => { if (Array.isArray(items)) addPack(name, items); });
     return packs;
   }
   return [];
 }
 
-// --- replace your loadLibraryIndex with this robust version ---
+// Loaders (probe multiple likely paths & casings)
 async function loadLibraryIndex(){
   const candidates = [
     `${ROOT_BASE}/libraryData.json`,
     `${ROOT_BASE}/librarydata.json`,
     `${DATA_BASE}/libraryData.json`,
     `${DATA_BASE}/librarydata.json`,
-    './libraryData.json',
-    './librarydata.json',
-    'libraryData.json',
-    'librarydata.json'
+    './libraryData.json', './librarydata.json', 'libraryData.json', 'librarydata.json'
   ];
   const { data, url } = await tryJson(candidates);
   mergeState({ libraryJsonUrl: url });
-
   const packs = normalizeLibraryData(data, url);
-  if (!packs.length) {
-    console.warn("[AA] libraryData.json loaded but no packs were recognized. Check its structure.", data);
-  }
+  if (!packs.length) console.warn("[AA] libraryData.json loaded but no packs recognized. Raw:", data);
   return packs;
 }
-
 async function loadInstrumentData(){
-  // Expects an array: [{ name, instrumentPart, sortingOctave, clef, transpose, scoreOrder }, ...]
   const candidates = [
     `${ROOT_BASE}/instrumentData.json`,
     `${DATA_BASE}/instrumentData.json`,
     `${ROOT_BASE}/data/instrumentData.json`,
     `${DATA_BASE}/data/instrumentData.json`,
-    './instrumentData.json',
-    'instrumentData.json'
+    './instrumentData.json', 'instrumentData.json'
   ];
   const { data, url } = await tryJson(candidates);
   mergeState({ instrumentJsonUrl: url });
@@ -289,7 +303,10 @@ async function loadInstrumentData(){
 }
 
 
-/* ------------ Populate songs & selection handlers ------------ */
+/* ============================================================================
+   G) SONG POPULATION & CHANGE HANDLERS
+   ========================================================================== */
+
 function populateSongsForPack(packIndex){
   const packs = getState().libraryPacks || [];
   const pack = packs[packIndex];
@@ -307,38 +324,40 @@ function onLibraryChosen(){
 
   const packs = getState().libraryPacks || [];
   const pack = packs[idx];
-  mergeState({ packIndex: idx, pack: pack?.name || "", songIndex: null, song: null, parts: [] });
 
+  mergeState({ packIndex: idx, pack: pack?.name || "", songIndex: null, song: null, parts: [] });
   populateSongsForPack(idx);
 
-  // Go to Step 2
-  qs("step2")?.classList.remove("hidden");
-  qs("step1")?.classList.add("hidden");
+  // Move to Step 2 (Song)
+  setWizardStage("song");
 
-  const songSel = songSelectEl();
-  if (songSel) songSel.value = "";
+  const sSel = songSelectEl();
+  if (sSel) sSel.value = "";
 }
 
 async function onSongChosen(){
   const s = getState();
-  const pack = (s.libraryPacks || [])[s.packIndex];
+  const packs = s.libraryPacks || [];
+  const pack  = packs[s.packIndex];
   if (!pack) return;
 
-  const songSel = songSelectEl();
-  const songIdx = parseInt(songSel?.value || "", 10);
+  const sSel = songSelectEl();
+  const songIdx = parseInt(sSel?.value || "", 10);
   if (!Number.isFinite(songIdx)) return;
 
   const song = pack.songs[songIdx];
   mergeState({ songIndex: songIdx, song: song?.name || "", selectedSong: song });
 
-  // Auto extract parts, then proceed to instruments
+  // Fetch & extract; then move to instruments
   if (song?.url) {
     try {
-      const text = await fetch(song.url, { cache: "no-store" }).then(r => r.text());
+      const text  = await fetch(song.url, { cache: "no-store" }).then(r => r.text());
       const parts = extractPartsFromScore(text);
       mergeState({ parts });
-      qs("step3")?.classList.remove("hidden");
-      qs("step2")?.classList.add("hidden");
+      if (!Array.isArray(parts) || !parts.length) {
+        console.warn("[AA] Extracted 0 parts from the selected song.");
+      }
+      setWizardStage("instruments");
     } catch (e) {
       console.error("[extractPartsFromScore]", e);
       alert("Failed to extract parts from this song.");
@@ -346,16 +365,18 @@ async function onSongChosen(){
   }
 }
 
-/* =========================================================================
-   XML extraction (single-part scores from selected file)
-   ------------------------------------------------------------------------- */
+
+/* ============================================================================
+   H) XML EXTRACTION (SINGLE-PART SCORES FROM SELECTED FILE)
+   ========================================================================== */
+
 function extractPartsFromScore(xmlText){
   const parser = new DOMParser();
   const doc = parser.parseFromString(xmlText, "application/xml");
   const serializer = new XMLSerializer();
 
   const scoreParts = Array.from(doc.querySelectorAll("score-part"));
-  const partList = Array.from(doc.querySelectorAll("part"));
+  const partList   = Array.from(doc.querySelectorAll("part"));
 
   const out = [];
 
@@ -371,7 +392,7 @@ function extractPartsFromScore(xmlText){
 
     // Build a single-part score-partwise
     const newDoc = document.implementation.createDocument("", "", null);
-    const score = newDoc.createElement("score-partwise");
+    const score  = newDoc.createElement("score-partwise");
 
     // Copy some header metadata if present
     const root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
@@ -397,35 +418,36 @@ function extractPartsFromScore(xmlText){
   return out;
 }
 
-/* =========================================================================
-   Step 3: Instrument Picker UI (left list → Add; right list → Selections)
-   - Uses instrumentData.json (fields: name, instrumentPart, sortingOctave, clef, transpose, scoreOrder)
-   ------------------------------------------------------------------------- */
+
+/* ============================================================================
+   I) STEP 3: INSTRUMENT PICKER UI (LEFT LIST → ADD; RIGHT LIST → SELECTIONS)
+   ========================================================================== */
+
 (function(){
   document.addEventListener("DOMContentLoaded", () => {
-    // Wire only if the UI exists
-    const listLeft = qs("instrumentList");
-    const btnAdd = qs("btnAddInstrument");
+    // Wire only if the UI exists on this page
+    const listLeft  = qs("instrumentList");
+    const btnAdd    = qs("btnAddInstrument");
     const listRight = qs("selectionsList");
     const btnRemove = qs("btnRemoveSelected");
-    const btnSave = qs("btnSaveSelections");
+    const btnSave   = qs("btnSaveSelections");
     if (!listLeft || !btnAdd || !listRight || !btnRemove || !btnSave) return;
 
-    const stateSel = { selections: [] }; // instance labels (e.g., "Violin", "Violin 2")
+    const stateSel = { selections: [] }; // instance labels (“Violin”, “Violin 2”, ...)
 
-    // Populate left list when instrumentData is ready
+    // Populate left list from instrumentData
     (async () => {
       const s = getState();
       const instruments = Array.isArray(s.instrumentData) ? s.instrumentData : [];
       if (instruments.length) {
         listLeft.innerHTML = instruments.map(ins => `<option value="${escapeHtml(ins.name)}">${escapeHtml(ins.name)}</option>`).join("");
       } else {
-        // if instrumentData loaded later, you could listen/refresh here
         console.warn("[AA] instrumentData missing; ensure instrumentData.json is reachable.");
       }
     })();
 
-    function baseOf(name){ return String(name).replace(/\s+\d+$/, ""); }
+    const baseOf = (name) => String(name).replace(/\s+\d+$/, "");
+
     function refreshRight(){
       listRight.innerHTML = stateSel.selections.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
     }
@@ -438,17 +460,14 @@ function extractPartsFromScore(xmlText){
     function removeSelection(label){
       const i = stateSel.selections.indexOf(label);
       if (i>=0) stateSel.selections.splice(i,1);
-      // Renumber the remaining of same base
+      // Renumber remaining of same base
       const b = baseOf(label);
       const idxs = stateSel.selections
         .map((n,i)=>({n,i}))
         .filter(x => baseOf(x.n) === b)
         .map(x=>x.i);
-      if (idxs.length === 1) {
-        stateSel.selections[idxs[0]] = b;
-      } else if (idxs.length > 1) {
-        idxs.forEach((ii,k)=> stateSel.selections[ii] = `${b} ${k+1}`);
-      }
+      if (idxs.length === 1)      stateSel.selections[idxs[0]] = b;
+      else if (idxs.length > 1)   idxs.forEach((ii,k)=> stateSel.selections[ii] = `${b} ${k+1}`);
       refreshRight();
     }
 
@@ -477,33 +496,29 @@ function extractPartsFromScore(xmlText){
           clef: meta.clef ?? null,
           transpose: meta.transpose ?? null,
           scoreOrder: Number(meta.scoreOrder)||999,
-          assignedPart: ""                      // placeholder
+          assignedPart: ""                      // placeholder for later modules
         };
       });
       mergeState({ instrumentSelections });
-      // Next module will listen for this:
-      // showArrangingLoading(); // enable once pipeline continues
       AA.emit("instruments:saved");
     });
   });
 })();
 
 
+/* ============================================================================
+   J) PIPELINE RESET (RUNS RIGHT AFTER "SAVE SELECTIONS")
+   - Keeps context, clears downstream artifacts
+   - Leave overlay call commented until modules are re-attached
+   ========================================================================== */
 
-
-/* =========================================================================
-   Pipeline reset/boot (runs immediately after "Save Selections")
-   - Clears any previous processing artifacts
-   - Shows the "Arranging Custom Score..." overlay
-   ------------------------------------------------------------------------- */
 (function(){
   AA.on("instruments:saved", () => AA.safe("pipelineReset", reset));
 
   function reset(){
     const s = getState();
-    // Keep only selection/context; clear downstream artifacts
     setState({
-      // context we keep
+      // keep context
       packIndex: s.packIndex,
       pack: s.pack,
       songIndex: s.songIndex,
@@ -513,34 +528,23 @@ function extractPartsFromScore(xmlText){
       instrumentData: s.instrumentData,
       instrumentSelections: s.instrumentSelections,
 
-      // clear/initialize pipeline outputs
+      // clear downstream
       parts: Array.isArray(s.parts) ? s.parts : [],
       assignedResults: [],
       groupedAssignments: [],
       arrangedFiles: [],
       combinedScoreXml: "",
 
-      // stage flags
+      // flags
       arrangeDone: false,
       renameDone: false,
       reassignByScoreDone: false,
       combineDone: false,
 
-      // timestamp for debugging
       timestamp: Date.now()
     });
 
-    // Show loading screen while the modules run
-    showArrangingLoading();
+    // When modules are reattached, uncomment this to show the loading overlay
+    // showArrangingLoading();
   }
 })();
-
-
-
-
-
-
-
-
-
-
