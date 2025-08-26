@@ -142,12 +142,29 @@ window.AA = window.AA || (function(){
    D) WIZARD VISIBILITY HELPER
    ========================================================================== */
 // stage ∈ 'library' | 'song' | 'instruments'
-function setWizardStage(stage){
-  const s1 = qs("step1"), s2 = qs("step2"), s3 = qs("step3");
+// ---- Wizard visibility + progress dots + stage event ----
+function setWizardStage(stage /* 'library' | 'song' | 'instruments' */){
+  const s1 = document.getElementById("step1");
+  const s2 = document.getElementById("step2");
+  const s3 = document.getElementById("step3");
   if (s1) s1.classList.toggle("hidden", stage !== "library");
   if (s2) s2.classList.toggle("hidden", stage !== "song");
   if (s3) s3.classList.toggle("hidden", stage !== "instruments");
+
+  // update step dots
+  updateStepDots(stage);
+
+  // notify listeners (e.g., instrument-picker setup)
+  AA.emit("wizard:stage", stage);
 }
+
+// Tolerant dot updater: supports .aa-step-dot OR .step-dot OR [data-step-dot]
+function updateStepDots(stage){
+  const idx = stage === "library" ? 0 : stage === "song" ? 1 : 2;
+  const dots = document.querySelectorAll(".aa-step-dot, .step-dot, [data-step-dot]");
+  dots.forEach((el, i) => el.classList.toggle("active", i === idx));
+}
+
 
 
 /* ============================================================================
@@ -420,36 +437,71 @@ function extractPartsFromScore(xmlText){
 
 
 /* ============================================================================
-   I) STEP 3: INSTRUMENT PICKER UI (LEFT LIST → ADD; RIGHT LIST → SELECTIONS)
+   I) STEP 3: INSTRUMENT PICKER UI (auto-inject left/right panes if missing)
    ========================================================================== */
-
 (function(){
-  document.addEventListener("DOMContentLoaded", () => {
-    // Wire only if the UI exists on this page
-    const listLeft  = qs("instrumentList");
-    const btnAdd    = qs("btnAddInstrument");
-    const listRight = qs("selectionsList");
-    const btnRemove = qs("btnRemoveSelected");
-    const btnSave   = qs("btnSaveSelections");
+  // Build markup if it's not already in the HTML
+  function ensureInstrumentPickerMarkup(){
+    const host = document.getElementById("step3");
+    if (!host) return;
+
+    const needBuild =
+      !document.getElementById("instrumentList") ||
+      !document.getElementById("selectionsList") ||
+      !document.getElementById("btnAddInstrument") ||
+      !document.getElementById("btnRemoveSelected") ||
+      !document.getElementById("btnSaveSelections");
+
+    if (!needBuild) return;
+
+    host.insertAdjacentHTML("beforeend", `
+      <div id="aa-pickers" class="aa-grid" style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-top:12px;">
+        <div class="aa-pane" style="background:#1116; padding:12px; border-radius:10px;">
+          <div style="font-weight:700; margin-bottom:8px;">Instruments</div>
+          <select id="instrumentList" size="10" style="width:100%; height:220px;"></select>
+          <button id="btnAddInstrument" class="aa-btn" style="margin-top:10px;">Add to Score</button>
+        </div>
+        <div class="aa-pane" style="background:#1116; padding:12px; border-radius:10px;">
+          <div style="font-weight:700; margin-bottom:8px;">Selections</div>
+          <select id="selectionsList" size="10" style="width:100%; height:220px;"></select>
+          <div style="display:flex; gap:10px; margin-top:10px;">
+            <button id="btnRemoveSelected" class="aa-btn">Remove</button>
+            <button id="btnSaveSelections" class="aa-btn aa-accent">Save Selections</button>
+          </div>
+        </div>
+      </div>
+    `);
+  }
+
+  // Wire up the picker (idempotent)
+  function setupInstrumentPicker(){
+    ensureInstrumentPickerMarkup();
+
+    const listLeft  = document.getElementById("instrumentList");
+    const btnAdd    = document.getElementById("btnAddInstrument");
+    const listRight = document.getElementById("selectionsList");
+    const btnRemove = document.getElementById("btnRemoveSelected");
+    const btnSave   = document.getElementById("btnSaveSelections");
     if (!listLeft || !btnAdd || !listRight || !btnRemove || !btnSave) return;
 
-    const stateSel = { selections: [] }; // instance labels (“Violin”, “Violin 2”, ...)
+    if (listLeft.dataset.wired === "1") return; // already wired once
+    listLeft.dataset.wired = "1";
 
-    // Populate left list from instrumentData
-    (async () => {
-      const s = getState();
-      const instruments = Array.isArray(s.instrumentData) ? s.instrumentData : [];
-      if (instruments.length) {
-        listLeft.innerHTML = instruments.map(ins => `<option value="${escapeHtml(ins.name)}">${escapeHtml(ins.name)}</option>`).join("");
-      } else {
-        console.warn("[AA] instrumentData missing; ensure instrumentData.json is reachable.");
-      }
-    })();
+    const stateSel = { selections: [] };
+
+    // Populate left list from instrumentData in state
+    const s = getState();
+    const instruments = Array.isArray(s.instrumentData) ? s.instrumentData : [];
+    listLeft.innerHTML = instruments.map(ins =>
+      `<option value="${escapeHtml(ins.name)}">${escapeHtml(ins.name)}</option>`
+    ).join("");
 
     const baseOf = (name) => String(name).replace(/\s+\d+$/, "");
 
     function refreshRight(){
-      listRight.innerHTML = stateSel.selections.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+      listRight.innerHTML = stateSel.selections
+        .map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`)
+        .join("");
     }
     function addSelection(baseName){
       const count = stateSel.selections.filter(n => baseOf(n) === baseName).length;
@@ -490,20 +542,31 @@ function extractPartsFromScore(xmlText){
         const meta = metaIndex[base] || {};
         return {
           name: base,
-          instanceLabel: label,                 // "Violin 2"
+          instanceLabel: label,
           instrumentPart: meta.instrumentPart || "",
           sortingOctave: Number(meta.sortingOctave)||0,
           clef: meta.clef ?? null,
           transpose: meta.transpose ?? null,
           scoreOrder: Number(meta.scoreOrder)||999,
-          assignedPart: ""                      // placeholder for later modules
+          assignedPart: ""
         };
       });
       mergeState({ instrumentSelections });
       AA.emit("instruments:saved");
     });
+  }
+
+  // Set up when the DOM is ready (if panes already exist)
+  document.addEventListener("DOMContentLoaded", () => {
+    setupInstrumentPicker();
+  });
+
+  // Also set up whenever the wizard moves to the instruments stage
+  AA.on("wizard:stage", (stage) => {
+    if (stage === "instruments") setupInstrumentPicker();
   });
 })();
+
 
 
 /* ============================================================================
