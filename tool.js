@@ -341,3 +341,83 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch { return null; }
   }
 });
+/* ========== Auto Arranger: Draft 1 Guard/Module Layer (append-only) ========== */
+(function () {
+  const AA = (window.AA = window.AA || {});
+  AA.VERSION = "draft-1";
+  AA.DEBUG = false; // set true for verbose console logs
+
+  // --- tiny event bus ---
+  const listeners = {};
+  AA.on = function (evt, fn) { (listeners[evt] ||= []).push(fn); return () => AA.off(evt, fn); };
+  AA.off = function (evt, fn) { const a = listeners[evt]; if (!a) return; const i = a.indexOf(fn); if (i > -1) a.splice(i, 1); };
+  AA.emit = function (evt, payload) {
+    (listeners[evt] || []).forEach(fn => { try { fn(payload); } catch (e) { console.error("[AA] listener error:", evt, e); } });
+  };
+
+  // --- observe sessionStorage writes to our state key (no edits to core code needed) ---
+  const STATE_KEY = "autoArranger_extractedParts";
+  const CP_KEY = "autoArranger_checkpoints";
+  const _setItem = sessionStorage.setItem.bind(sessionStorage);
+  sessionStorage.setItem = function (k, v) {
+    const prev = sessionStorage.getItem(k);
+    _setItem(k, v);
+    if (k !== STATE_KEY) return;
+    try {
+      const prevObj = prev ? JSON.parse(prev) : {};
+      const nextObj = v ? JSON.parse(v) : {};
+      // fire events when parts first appear and when instrumentSelections first appear
+      if (!prevObj.parts && nextObj.parts) AA.emit("parts:extracted", nextObj);
+      if (!prevObj.instrumentSelections && nextObj.instrumentSelections) AA.emit("instruments:saved", nextObj);
+    } catch { /* no-op */ }
+  };
+
+  // --- checkpoints (save/restore JSON state only) ---
+  AA.saveCheckpoint = function (name) {
+    const raw = sessionStorage.getItem(STATE_KEY);
+    if (!raw) return false;
+    const all = JSON.parse(sessionStorage.getItem(CP_KEY) || "{}");
+    all[name] = raw;
+    _setItem(CP_KEY, JSON.stringify(all)); // use original to avoid re-triggering events
+    if (AA.DEBUG) console.log("[AA] checkpoint saved:", name);
+    return true;
+  };
+  AA.restoreCheckpoint = function (name) {
+    const all = JSON.parse(sessionStorage.getItem(CP_KEY) || "{}");
+    if (!all[name]) return false;
+    sessionStorage.setItem(STATE_KEY, all[name]); // will re-run our patched setItem
+    if (AA.DEBUG) console.log("[AA] checkpoint restored:", name);
+    return true;
+  };
+
+  // --- automatically save "draft-1" once instruments are saved (the current working milestone) ---
+  AA.on("instruments:saved", () => AA.saveCheckpoint("draft-1"));
+
+  // --- safe wrapper for future modules ---
+  AA.safe = function (moduleName, fn) {
+    try { return fn(); }
+    catch (err) {
+      console.error(`[AA] Module "${moduleName}" failed:`, err);
+      AA.restoreCheckpoint("draft-1");
+      alert(`"${moduleName}" hit an error. Restored to Draft 1 state.`);
+    }
+  };
+
+  // --- quick keyboard restore: Ctrl + Shift + D ---
+  document.addEventListener("keydown", (e) => {
+    const key = (e.key || "").toLowerCase();
+    if (e.ctrlKey && e.shiftKey && key === "d") {
+      AA.restoreCheckpoint("draft-1");
+    }
+  });
+
+  // --- example pattern for future modules (keep appending below this line) ---
+  // AA.on("instruments:saved", (state) => {
+  //   AA.safe("assignParts", () => {
+  //     const s = JSON.parse(sessionStorage.getItem(STATE_KEY));
+  //     // ...compute new fields here...
+  //     sessionStorage.setItem(STATE_KEY, JSON.stringify(s));
+  //   });
+  // });
+
+})();
