@@ -2,30 +2,41 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MusicXML Part Assigner</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Auto Arranger (Draft 1)</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .hidden { display: none; }
+    button { margin-top: 10px; padding: 8px 14px; }
+    select { min-width: 280px; padding: 6px; }
+    .note { color: #555; font-size: 0.9em; margin-top: 8px; }
+    .error { color: #b00020; }
+  </style>
 </head>
 <body>
-  <h1>MusicXML Part Assigner</h1>
+  <h1>Auto Arranger (Draft 1)</h1>
 
-  <!-- File input -->
-  <input type="file" id="fileInput" multiple />
-  <button id="processButton">Process</button>
+  <!-- Step 1: Select Library Pack -->
+  <div id="step1">
+    <p><strong>Select Library Pack:</strong></p>
+    <select id="librarySelect" aria-label="Select Library Pack">
+      <option value="">Loading packs…</option>
+    </select>
+    <div id="packsStatus" class="note" role="status" aria-live="polite"></div>
+  </div>
 
-  <h2>Assignments</h2>
-  <table border="1" id="outputTable">
-    <thead>
-      <tr>
-        <th>Instrument</th>
-        <th>Octave</th>
-        <th>Sort Number</th>
-        <th>Assigned Part</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  </table>
+  <!-- Step 2: Select Song -->
+  <div id="step2" class="hidden">
+    <p><strong>Select Song:</strong></p>
+    <select id="songSelect" aria-label="Select Song">
+      <option value="">-- Choose a Song --</option>
+    </select>
+    <br /><br />
+    <button id="backButton" type="button">Back</button>
+    <button id="extractButton" type="button" disabled>Extract Parts Data</button>
+    <div id="status" class="note" role="status" aria-live="polite"></div>
+  </div>
 
-  <!-- External script -->
-  <script src="tool.js"></script>
+  <script src="tool.js?v=1"></script>
 </body>
 </html>
