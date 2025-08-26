@@ -8,14 +8,14 @@ document.addEventListener("DOMContentLoaded", () => {
   const statusEl = document.getElementById("status");
   const packsStatus = document.getElementById("packsStatus");
 
-  let libraryData = {}; // will be filled from JSON
+  // stepper dots (purely visual)
+  const dots = document.querySelectorAll(".stepper .dot");
+  const setStep = (n) => {
+    dots.forEach((d, i) => d.classList.toggle("active", i <= n));
+  };
 
-  // ---- Load library packs JSON ----
-  // If deploying all files together (Netlify/GitHub Pages), this relative path works:
+  let libraryData = {};
   const INDEX_URL = "./libraryData.json";
-
-  // If you prefer to fetch from raw GitHub, replace INDEX_URL with your raw URL:
-  // const INDEX_URL = "https://raw.githubusercontent.com/<user>/<repo>/main/libraryData.json";
 
   init();
 
@@ -26,7 +26,6 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       libraryData = await res.json();
 
-      // Populate Library Pack dropdown from JSON keys
       librarySelect.innerHTML = '<option value="">-- Choose a Library Pack --</option>';
       Object.keys(libraryData).forEach(packName => {
         const opt = document.createElement("option");
@@ -35,23 +34,21 @@ document.addEventListener("DOMContentLoaded", () => {
         librarySelect.appendChild(opt);
       });
       packsStatus.textContent = "";
+      setStep(0);
     } catch (err) {
       console.error("Failed to load libraryData.json:", err);
       librarySelect.innerHTML = '<option value="">(Failed to load packs)</option>';
       packsStatus.textContent = "Could not load library packs. Ensure libraryData.json is deployed.";
-      packsStatus.classList.add("error");
+      packsStatus.classList.add("err");
     }
   }
 
-  // Step 1 → Step 2: populate songs for selected pack
   librarySelect.addEventListener("change", () => {
     const pack = librarySelect.value;
     if (!pack) return;
 
     songSelect.innerHTML = '<option value="">-- Choose a Song --</option>';
-
-    const songs = libraryData[pack] || [];
-    songs.forEach(song => {
+    (libraryData[pack] || []).forEach(song => {
       const opt = document.createElement("option");
       opt.value = song.url;
       opt.textContent = song.name;
@@ -62,15 +59,14 @@ document.addEventListener("DOMContentLoaded", () => {
     statusEl.textContent = "";
     step1.classList.add("hidden");
     step2.classList.remove("hidden");
+    setStep(1);
   });
 
-  // Enable Extract button when a song is chosen
   songSelect.addEventListener("change", () => {
     extractButton.disabled = !songSelect.value;
     statusEl.textContent = "";
   });
 
-  // Back to Step 1
   backButton.addEventListener("click", () => {
     step2.classList.add("hidden");
     step1.classList.remove("hidden");
@@ -78,9 +74,9 @@ document.addEventListener("DOMContentLoaded", () => {
     songSelect.innerHTML = "";
     extractButton.disabled = true;
     statusEl.textContent = "";
+    setStep(0);
   });
 
-  // Extract Parts Data: fetch XML, split into parts, store in sessionStorage
   extractButton.addEventListener("click", async () => {
     const songUrl = songSelect.value;
     if (!songUrl) {
@@ -102,35 +98,35 @@ document.addEventListener("DOMContentLoaded", () => {
         timestamp: Date.now(),
         pack: packName,
         song: songName,
-        parts: partsPayload.parts,        // [{ id, partName, xml }]
-        scoreMeta: partsPayload.scoreMeta // { movementTitle, composer, workTitle }
+        parts: partsPayload.parts,
+        scoreMeta: partsPayload.scoreMeta
       };
 
-      // Store for the next step (transient; cleared when tab closes)
       sessionStorage.setItem("autoArranger_extractedParts", JSON.stringify(state));
-
       statusEl.textContent = "Parts data ready for the next step.";
+      statusEl.classList.remove("err");
+      statusEl.classList.add("ok");
+      setStep(2);
     } catch (err) {
       console.error(err);
       statusEl.textContent = "Failed to extract parts.";
+      statusEl.classList.remove("ok");
+      statusEl.classList.add("err");
     } finally {
       extractButton.disabled = false;
     }
   });
 
   // ---- Helpers ----
-
   function extractParts(xmlText) {
     const parser = new DOMParser();
     const xml = parser.parseFromString(xmlText, "application/xml");
 
-    // Basic meta
     const movementTitle = textOrNull(xml.querySelector("movement-title"));
     const composer = textOrNull(xml.querySelector("identification creator[type='composer']")) ||
                      textOrNull(xml.querySelector("identification > creator"));
     const workTitle = textOrNull(xml.querySelector("work > work-title"));
 
-    // Map score-part IDs to names
     const partList = Array.from(xml.querySelectorAll("score-part"));
     const idToName = new Map();
     partList.forEach(sp => {
@@ -139,7 +135,6 @@ document.addEventListener("DOMContentLoaded", () => {
       idToName.set(id, pn);
     });
 
-    // Build single-part MusicXML docs
     const parts = Array.from(xml.querySelectorAll("part")).map((partEl, idx) => {
       const id = partEl.getAttribute("id") || `P${idx+1}`;
       const partName = idToName.get(id) || `Part ${idx+1}`;
@@ -157,7 +152,6 @@ document.addEventListener("DOMContentLoaded", () => {
     return node ? (node.textContent || "").trim() : null;
   }
 
-  // Produce a minimal valid MusicXML document for a single <part>
   function buildSinglePartXml(fullDoc, partEl, partId, partName) {
     const serialize = node => new XMLSerializer().serializeToString(node);
     const optional = node => node ? serialize(node) : "";
