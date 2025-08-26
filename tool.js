@@ -70,6 +70,28 @@ function showArrangingLoading() {
 }
 window.hideArrangingLoading = window.hideArrangingLoading || function(){};
 
+// Resolve data files relative to the tool.js location
+const DATA_BASE = (() => {
+  try {
+    const me = Array.from(document.scripts).find(s => (s.src||"").includes("tool.js"))?.src;
+    if (!me) return ".";                       // fallback: current folder
+    return me.substring(0, me.lastIndexOf("/"));
+  } catch { return "."; }
+})();
+
+async function fetchJson(url) {
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) {
+    const txt = await res.text().catch(()=> "");
+    throw new Error(`Fetch failed ${res.status} ${res.statusText} for ${url}\n${txt.slice(0,180)}`);
+  }
+  try { return await res.json(); }
+  catch (e) {
+    const raw = await (await fetch(url, { cache: "no-store" })).text().catch(()=> "");
+    console.error("[AutoArranger] JSON parse error at", url, "payload:", raw.slice(0,500));
+    throw e;
+  }
+}
 
 
 /* =========================================================================
