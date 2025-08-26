@@ -1,0 +1,65 @@
+[
+  {
+    "name": "Violin",
+    "instrumentPart": "Melody",
+    "Octave": 1,
+    "clef": "treble",
+    "transpose": null
+  },
+  {
+    "name": "Viola",
+    "instrumentPart": "Harmony II",
+    "Octave": 0,
+    "clef": "alto",
+    "transpose": null
+  },
+  {
+    "name": "Cello",
+    "instrumentPart": "Counter Melody",
+    "Octave": -1,
+    "clef": "bass",
+    "transpose": null
+  },
+  {
+    "name": "Double Bass",
+    "instrumentPart": "Bass",
+    "Octave": -2,
+    "clef": "bass",
+    "transpose": "<transpose><diatonic>0</diatonic><chromatic>12</chromatic></transpose>"
+  },
+  {
+    "name": "Piccolo",
+    "instrumentPart": "Melody",
+    "Octave": 2,
+    "clef": "treble",
+    "transpose": "<transpose><diatonic>0</diatonic><chromatic>-12</chromatic></transpose>"
+  },
+  {
+    "name": "Flute",
+    "instrumentPart": "Melody",
+    "Octave": 1,
+    "clef": "treble",
+    "transpose": null
+  },
+  {
+    "name": "Bb Clarinet",
+    "instrumentPart": "Harmony I",
+    "Octave": 1,
+    "clef": "treble",
+    "transpose": "<transpose><diatonic>0</diatonic><chromatic>2</chromatic></transpose>"
+  },
+  {
+    "name": "Oboe",
+    "instrumentPart": "Harmony II",
+    "Octave": 1,
+    "clef": "treble",
+    "transpose": null
+  },
+  {
+    "name": "Bassoon",
+    "instrumentPart": "Counter Melody",
+    "Octave": -1,
+    "clef": "bass",
+    "transpose": null
+  }
+]
