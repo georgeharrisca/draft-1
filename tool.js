@@ -19,19 +19,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const saveInstruments = document.getElementById("saveInstruments");
   const instStatus = document.getElementById("instStatus");
 
-  // ---- Header & Theme elements ----
-  const logoImg = document.getElementById("logoImg");
-  const openTheme = document.getElementById("openTheme");
-  const themeModal = document.getElementById("themeModal");
-  const closeTheme = document.getElementById("closeTheme");
-  const logoFile = document.getElementById("logoFile");
-  const logoUrl = document.getElementById("logoUrl");
-  const paletteFile = document.getElementById("paletteFile");
-  const brandColorInput = document.getElementById("brandColor");
-  const applyTheme = document.getElementById("applyTheme");
-  const resetTheme = document.getElementById("resetTheme");
-  const paletteCanvas = document.getElementById("paletteCanvas");
-
   // ---- Stepper dots (visual only) ----
   const dots = document.querySelectorAll(".stepper .dot");
   const setStep = (n) => dots.forEach((d,i)=>d.classList.toggle("active", i<=n));
@@ -59,11 +46,6 @@ document.addEventListener("DOMContentLoaded", () => {
   init();
 
   async function init() {
-    // Default hero logo if no theme override
-    if (!logoImg.getAttribute("src")) {
-      logoImg.src = "Auto Arranger Logo.jpg"; // A♪ on steel
-    }
-
     // Show only Step 1
     step1.classList.remove("hidden");
     step2.classList.add("hidden");
@@ -74,14 +56,7 @@ document.addEventListener("DOMContentLoaded", () => {
     stateTrail.instrumentsDone = false;
     renderTrail();
 
-    // Load theme from localStorage
-    loadSavedTheme();
-
-    // Load data
     await Promise.all([loadLibraryData(), loadInstrumentData()]);
-
-    // Keyboard close modal (esc)
-    document.addEventListener("keydown", (e)=>{ if(e.key==="Escape") closeThemeModal(); });
   }
 
   async function loadLibraryData() {
@@ -353,132 +328,7 @@ document.addEventListener("DOMContentLoaded", () => {
       .replace(/'/g,"&apos;");
   }
 
-  // ====== THEME & BRANDING ======
-  openTheme.addEventListener("click", openThemeModal);
-  closeTheme.addEventListener("click", closeThemeModal);
-  function openThemeModal(){ themeModal.classList.add("open"); themeModal.setAttribute("aria-hidden","false"); }
-  function closeThemeModal(){ themeModal.classList.remove("open"); themeModal.setAttribute("aria-hidden","true"); }
-
-  logoFile.addEventListener("change", async () => {
-    const f = logoFile.files?.[0]; if(!f) return;
-    const dataUrl = await fileToDataURL(f);
-    setLogo(dataUrl);
-    saveTheme({ logoDataUrl: dataUrl });
-  });
-  logoUrl.addEventListener("change", () => {
-    const url = logoUrl.value.trim();
-    if (!url) return;
-    setLogo(url);
-    saveTheme({ logoDataUrl: url });
-  });
-
-  paletteFile.addEventListener("change", async () => {
-    const f = paletteFile.files?.[0]; if(!f) return;
-    const img = await fileToImage(f);
-    const dom = getDominantColorFromImage(img, paletteCanvas);
-    if (dom) {
-      const hex = rgbToHex(dom.r, dom.g, dom.b);
-      brandColorInput.value = hex;
-      applyBrand(hex);
-      saveTheme({ brand: hex });
-    }
-  });
-
-  applyTheme.addEventListener("click", () => {
-    const hex = brandColorInput.value || "#FC950D";
-    applyBrand(hex);
-    saveTheme({ brand: hex });
-  });
-
-  resetTheme.addEventListener("click", () => {
-    applyBrand("#FC950D");
-    setLogo("Auto Arranger Logo.jpg"); // reset to A♪ on steel
-    localStorage.removeItem("autoArranger_theme");
-  });
-
-  function loadSavedTheme() {
-    try {
-      const raw = localStorage.getItem("autoArranger_theme");
-      if (!raw) { setLogo(logoImg.getAttribute("src") || "Auto Arranger Logo.jpg"); return; }
-      const t = JSON.parse(raw);
-      if (t.brand) { brandColorInput.value = t.brand; applyBrand(t.brand); }
-      if (t.logoDataUrl) setLogo(t.logoDataUrl); else setLogo(logoImg.getAttribute("src") || "Auto Arranger Logo.jpg");
-    } catch {
-      setLogo(logoImg.getAttribute("src") || "Auto Arranger Logo.jpg");
-    }
-  }
-
-  function saveTheme(patch) {
-    const raw = localStorage.getItem("autoArranger_theme");
-    const curr = raw ? JSON.parse(raw) : {};
-    const next = { ...curr, ...patch };
-    localStorage.setItem("autoArranger_theme", JSON.stringify(next));
-  }
-
-  function setLogo(src){ if (src) logoImg.src = src; }
-
-  function applyBrand(hex){
-    const {r,g,b} = hexToRgb(hex);
-    const b600 = rgbToHex(...scaleRgb(r,g,b,0.88));
-    const b700 = rgbToHex(...scaleRgb(r,g,b,0.75));
-    document.documentElement.style.setProperty("--brand", hex);
-    document.documentElement.style.setProperty("--brand-600", b600);
-    document.documentElement.style.setProperty("--brand-700", b700);
-  }
-  function scaleRgb(r,g,b,fac){ return [Math.round(r*fac), Math.round(g*fac), Math.round(b*fac)]; }
-
-  // Color utils & palette extraction
-  function fileToDataURL(file){
-    return new Promise((res,rej)=>{
-      const fr = new FileReader();
-      fr.onload = ()=>res(fr.result);
-      fr.onerror = rej;
-      fr.readAsDataURL(file);
-    });
-  }
-  function fileToImage(file){
-    return new Promise((res,rej)=>{
-      const fr = new FileReader();
-      fr.onload = ()=>{
-        const img = new Image();
-        img.onload = ()=>res(img);
-        img.onerror = rej;
-        img.src = fr.result;
-      };
-      fr.onerror = rej;
-      fr.readAsDataURL(file);
-    });
-  }
-  function getDominantColorFromImage(img, canvas){
-    const size = 64; canvas.width = size; canvas.height = size;
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(img, 0, 0, size, size);
-    const { data } = ctx.getImageData(0,0,size,size);
-
-    const bins = new Map();
-    for (let i=0; i<data.length; i+=4){
-      const a = data[i+3]; if (a < 16) continue;
-      const r = data[i]>>5, g=data[i+1]>>5, b=data[i+2]>>5;
-      const key = (r<<6) | (g<<3) | b;
-      bins.set(key, (bins.get(key)||0)+1);
-    }
-    if (bins.size===0) return null;
-    let bestKey = null, bestCount = -1;
-    for (const [k,c] of bins) if (c>bestCount){ bestCount=c; bestKey=k; }
-    const r = ((bestKey>>6)&0x7)*36 + 18;
-    const g = ((bestKey>>3)&0x7)*36 + 18;
-    const b = (bestKey&0x7)*36 + 18;
-    return { r, g, b };
-  }
-  function rgbToHex(r,g,b){ return "#"+[r,g,b].map(x=>x.toString(16).padStart(2,"0")).join(""); }
-  function hexToRgb(hex){
-    const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-    if(!m) return {r:252,g:149,b:13};
-    return { r:parseInt(m[1],16), g:parseInt(m[2],16), b:parseInt(m[3],16) };
-  }
-
-  // ====== XML helpers reused above ======
-  function textOrNull(node) { return node ? (node.textContent || "").trim() : null; }
+  // Parse a MusicXML <transpose> snippet to get the <chromatic> value (number), else null
   function getChromaticFromTranspose(transposeXml) {
     if (!transposeXml || typeof transposeXml !== "string") return null;
     try {
