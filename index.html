@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MusicXML Part Assigner</title>
+</head>
+<body>
+  <h1>MusicXML Part Assigner</h1>
+
+  <!-- File input -->
+  <input type="file" id="fileInput" multiple />
+  <button id="processButton">Process</button>
+
+  <h2>Assignments</h2>
+  <table border="1" id="outputTable">
+    <thead>
+      <tr>
+        <th>Instrument</th>
+        <th>Sort Number</th>
+        <th>Assigned Part</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <!-- External script -->
+  <script src="tool.js"></script>
+</body>
+</html>
