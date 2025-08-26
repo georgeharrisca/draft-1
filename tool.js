@@ -38,11 +38,10 @@ document.addEventListener("DOMContentLoaded", () => {
   let libraryData = {};
   let instrumentData = [];
 
-// Selection state for the two-pane UI
-let selectionCounts = {};   // { "Violin": 3, "Cello": 1, ... }
-let selectionOrder = [];    // keeps first-seen order of instrument names
+  // ---- Two-pane selection state (Step 3)
+  let selectionCounts = {};   // { "Violin": 3, "Cello": 1, ... }
+  let selectionOrder = [];    // keeps first-seen order of instrument names
 
-  
   // JSON endpoints (relative or swap to raw GitHub)
   const LIBRARY_INDEX_URL = "./libraryData.json";
   const INSTRUMENT_INDEX_URL = "./instrumentData.json";
@@ -161,102 +160,18 @@ let selectionOrder = [];    // keeps first-seen order of instrument names
       statusEl.classList.remove("err");
       statusEl.classList.add("ok");
 
-   function renderInstrumentSelectors() {
-  // reset current selections each time we enter step 3
-  selectionCounts = {};
-  selectionOrder = [];
-
-  // Build two-pane UI
-  instrumentGrid.innerHTML = `
-    <div class="two-pane">
-      <div class="pane" id="paneLeft">
-        <h4>Instruments</h4>
-        <ul id="instList" class="list" role="listbox" aria-label="Available instruments"></ul>
-        <div class="row" style="margin-top:12px;">
-          <button id="addToScore" class="btn" type="button" disabled>Add to Score</button>
-        </div>
-      </div>
-      <div class="pane" id="paneRight">
-        <h4>Selections</h4>
-        <ul id="selList" class="list" aria-live="polite"></ul>
-      </div>
-    </div>
-  `;
-
-  const instList = document.getElementById("instList");
-  const selList  = document.getElementById("selList");
-  const addBtn   = document.getElementById("addToScore");
-
-  // Populate left list (no backend data shown)
-  instrumentData.forEach(inst => {
-    const li = document.createElement("li");
-    li.textContent = inst.name;
-    li.setAttribute("tabindex", "0");
-    li.dataset.name = inst.name;
-    instList.appendChild(li);
-  });
-
-  let selectedName = null;
-  function setActive(li) {
-    instList.querySelectorAll("li").forEach(n => n.classList.remove("active"));
-    if (li) {
-      li.classList.add("active");
-      selectedName = li.dataset.name;
-      addBtn.disabled = false;
-    } else {
-      selectedName = null;
-      addBtn.disabled = true;
-    }
-  }
-
-  instList.addEventListener("click", (e) => {
-    const li = e.target.closest("li");
-    if (!li) return;
-    setActive(li);
-  });
-  instList.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      const li = e.target.closest("li");
-      if (!li) return;
-      e.preventDefault();
-      setActive(li);
+      // Go to instruments
+      renderInstrumentSelectors();
+      step2.classList.add("hidden");
+      step3.classList.remove("hidden");
+      setStep(2);
+    } catch (err) {
+      console.error(err);
+      statusEl.textContent = "Failed to extract parts.";
+      statusEl.classList.remove("ok");
+      statusEl.classList.add("err");
     }
   });
-
-  addBtn.addEventListener("click", () => {
-    if (!selectedName) return;
-    if (!selectionCounts[selectedName]) {
-      selectionCounts[selectedName] = 0;
-      selectionOrder.push(selectedName);
-    }
-    selectionCounts[selectedName] += 1;
-    renderSelections();
-  });
-
-  function renderSelections() {
-    selList.innerHTML = "";
-    if (!selectionOrder.length) {
-      const empty = document.createElement("div");
-      empty.className = "sel-empty";
-      empty.textContent = "No selections yet";
-      selList.appendChild(empty);
-      return;
-    }
-    // For each instrument, render N numbered rows: Violin 1, Violin 2, ...
-    for (const name of selectionOrder) {
-      const count = selectionCounts[name] || 0;
-      for (let i = 1; i <= count; i++) {
-        const li = document.createElement("li");
-        li.textContent = count > 1 ? `${name} ${i}` : name;
-        selList.appendChild(li);
-      }
-    }
-  }
-
-  // initial empty state
-  renderSelections();
-}
-
 
   // Back Step 2 → Step 1
   backButton.addEventListener("click", () => {
@@ -273,35 +188,108 @@ let selectionOrder = [];    // keeps first-seen order of instrument names
     stateTrail.song = "";
     stateTrail.instrumentsDone = false;
     renderTrail();
+
+    // Hide assignments panel if any (from appended modules)
+    const p = document.getElementById("aa-assignments-panel");
+    if (p) p.style.display = "none";
   });
 
-  // ====== Step 3: Instruments UI ======
+  // ====== Step 3: Instruments UI (two-pane) ======
   function renderInstrumentSelectors() {
-    instrumentGrid.innerHTML = "";
+    // reset current selections each time we enter step 3
+    selectionCounts = {};
+    selectionOrder = [];
+
+    // Build two-pane UI
+    instrumentGrid.innerHTML = `
+      <div class="two-pane">
+        <div class="pane" id="paneLeft">
+          <h4>Instruments</h4>
+          <ul id="instList" class="list" role="listbox" aria-label="Available instruments"></ul>
+          <div class="row" style="margin-top:12px;">
+            <button id="addToScore" class="btn" type="button" disabled>Add to Score</button>
+          </div>
+        </div>
+        <div class="pane" id="paneRight">
+          <h4>Selections</h4>
+          <ul id="selList" class="list" aria-live="polite"></ul>
+        </div>
+      </div>
+    `;
+
+    const instList = document.getElementById("instList");
+    const selList  = document.getElementById("selList");
+    const addBtn   = document.getElementById("addToScore");
+
+    // Populate left list (no backend data shown)
     instrumentData.forEach(inst => {
-      const chrom = getChromaticFromTranspose(inst.transpose);
-      const chromDisplay = chrom === null ? "—" : (chrom > 0 ? `+${chrom}` : `${chrom}`);
-
-      const wrapper = document.createElement("div");
-      wrapper.className = "inst-item";
-      wrapper.innerHTML = `
-        <h4>${escapeHtml(inst.name)}</h4>
-        <div class="note">
-          Part: ${escapeHtml(inst.instrumentPart)} • Octave: ${inst.Octave >= 0 ? "+"+inst.Octave : inst.Octave}<br>
-          Clef: ${escapeHtml(inst.clef || "—")} • Transpose: ${chromDisplay}
-        </div>
-        <div style="margin-top:8px;">
-          <label for="qty_${cssId(inst.name)}" style="margin:0 0 6px 0;">Quantity</label>
-          <input id="qty_${cssId(inst.name)}" type="number" min="0" step="1" value="0" />
-        </div>
-      `;
-      instrumentGrid.appendChild(wrapper);
+      const li = document.createElement("li");
+      li.textContent = inst.name;
+      li.setAttribute("tabindex", "0");
+      li.dataset.name = inst.name;
+      instList.appendChild(li);
     });
-    instStatus.textContent = "";
-  }
 
-  function cssId(s){ return s.replace(/\s+/g, "_").replace(/[^\w\-]/g, ""); }
-  function escapeHtml(s){ return String(s ?? "").replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])); }
+    let selectedName = null;
+    function setActive(li) {
+      instList.querySelectorAll("li").forEach(n => n.classList.remove("active"));
+      if (li) {
+        li.classList.add("active");
+        selectedName = li.dataset.name;
+        addBtn.disabled = false;
+      } else {
+        selectedName = null;
+        addBtn.disabled = true;
+      }
+    }
+
+    instList.addEventListener("click", (e) => {
+      const li = e.target.closest("li");
+      if (!li) return;
+      setActive(li);
+    });
+    instList.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        const li = e.target.closest("li");
+        if (!li) return;
+        e.preventDefault();
+        setActive(li);
+      }
+    });
+
+    addBtn.addEventListener("click", () => {
+      if (!selectedName) return;
+      if (!selectionCounts[selectedName]) {
+        selectionCounts[selectedName] = 0;
+        selectionOrder.push(selectedName);
+      }
+      selectionCounts[selectedName] += 1;
+      renderSelections();
+    });
+
+    function renderSelections() {
+      selList.innerHTML = "";
+      if (!selectionOrder.length) {
+        const empty = document.createElement("div");
+        empty.className = "sel-empty";
+        empty.textContent = "No selections yet";
+        selList.appendChild(empty);
+        return;
+      }
+      // For each instrument, render N numbered rows: Violin 1, Violin 2, ...
+      for (const name of selectionOrder) {
+        const count = selectionCounts[name] || 0;
+        for (let i = 1; i <= count; i++) {
+          const li = document.createElement("li");
+          li.textContent = count > 1 ? `${name} ${i}` : name;
+          selList.appendChild(li);
+        }
+      }
+    }
+
+    // initial empty state
+    renderSelections();
+  }
 
   // Back Step 3 → Step 2
   backToSong.addEventListener("click", () => {
@@ -312,60 +300,40 @@ let selectionOrder = [];    // keeps first-seen order of instrument names
     // Breadcrumb back to library > song
     stateTrail.instrumentsDone = false;
     renderTrail();
+
+    // Hide assignments panel if visible (from appended modules)
+    const p = document.getElementById("aa-assignments-panel");
+    if (p) p.style.display = "none";
   });
 
-// Save instrument selections (two-pane UI)
-saveInstruments.addEventListener("click", () => {
-  // Build selections from selectionCounts
-  const selections = [];
-  for (const [name, qty] of Object.entries(selectionCounts)) {
-    if (qty > 0) {
-      const meta = instrumentData.find(i => i.name === name);
-      if (meta) {
-        selections.push({
-          name: meta.name,
-          quantity: qty,                 // counts from right pane
-          instrumentPart: meta.instrumentPart,
-          Octave: meta.Octave,
-          clef: meta.clef ?? null,
-          transpose: meta.transpose ?? null,
-          assignedPart: ""               // placeholder
-        });
+  // Save instrument selections (two-pane UI)
+  saveInstruments.addEventListener("click", () => {
+    // Build selections from selectionCounts
+    const selections = [];
+    for (const [name, qty] of Object.entries(selectionCounts)) {
+      if (qty > 0) {
+        const meta = instrumentData.find(i => i.name === name);
+        if (meta) {
+          selections.push({
+            name: meta.name,
+            quantity: qty,                 // counts from right pane
+            instrumentPart: meta.instrumentPart,
+            Octave: meta.Octave,
+            clef: meta.clef ?? null,
+            transpose: meta.transpose ?? null,
+            assignedPart: ""               // placeholder
+          });
+        }
       }
     }
-  }
 
-  const prevRaw = sessionStorage.getItem("autoArranger_extractedParts");
-  const prevState = prevRaw ? JSON.parse(prevRaw) : {};
-  const prevHadInst = Array.isArray(prevState.instrumentSelections);
+    const prevRaw = sessionStorage.getItem("autoArranger_extractedParts");
+    const prevState = prevRaw ? JSON.parse(prevRaw) : {};
+    const prevHadInst = Array.isArray(prevState.instrumentSelections);
 
-  // use a different identifier to avoid any duplicate 'state' declarations
-  const nextState = { ...prevState, instrumentSelections: selections };
-  sessionStorage.setItem("autoArranger_extractedParts", JSON.stringify(nextState));
-
-  instStatus.textContent = selections.length
-    ? `Saved ${selections.reduce((a,c)=>a+c.quantity,0)} instruments.`
-    : "No instruments selected.";
-  instStatus.classList.remove("err");
-  instStatus.classList.add("ok");
-  setStep(3);
-
-  // Breadcrumb
-  stateTrail.instrumentsDone = selections.length > 0;
-  renderTrail();
-
-  // If guard won’t auto-emit (because instrumentSelections already existed), emit manually
-  if (prevHadInst && window.AA?.emit) {
-    AA.emit("instruments:saved", nextState);
-  }
-});
-
-
-
-    const prev = sessionStorage.getItem("autoArranger_extractedParts");
-    const state = prev ? JSON.parse(prev) : {};
-    state.instrumentSelections = selections;
-    sessionStorage.setItem("autoArranger_extractedParts", JSON.stringify(state));
+    // Use a different identifier to avoid any duplicate 'state' declarations
+    const nextState = { ...prevState, instrumentSelections: selections };
+    sessionStorage.setItem("autoArranger_extractedParts", JSON.stringify(nextState));
 
     instStatus.textContent = selections.length
       ? `Saved ${selections.reduce((a,c)=>a+c.quantity,0)} instruments.`
@@ -374,9 +342,14 @@ saveInstruments.addEventListener("click", () => {
     instStatus.classList.add("ok");
     setStep(3);
 
-    // Breadcrumb: add "Instruments Selected"
+    // Breadcrumb
     stateTrail.instrumentsDone = selections.length > 0;
     renderTrail();
+
+    // If guard won’t auto-emit (because instrumentSelections already existed), emit manually
+    if (prevHadInst && window.AA?.emit) {
+      AA.emit("instruments:saved", nextState);
+    }
   });
 
   // ====== MusicXML extraction helpers ======
@@ -447,88 +420,9 @@ saveInstruments.addEventListener("click", () => {
       .replace(/'/g,"&apos;");
   }
 
-  // Parse a MusicXML <transpose> snippet to get the <chromatic> value (number), else null
-  function getChromaticFromTranspose(transposeXml) {
-    if (!transposeXml || typeof transposeXml !== "string") return null;
-    try {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(`<root>${transposeXml}</root>`, "application/xml");
-      const chromNode = doc.querySelector("chromatic");
-      if (!chromNode) return null;
-      const n = parseInt(chromNode.textContent.trim(), 10);
-      return Number.isFinite(n) ? n : null;
-    } catch { return null; }
-  }
+  function escapeHtml(s){ return String(s ?? "").replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])); }
 });
-/* ========== Auto Arranger: Draft 1 Guard/Module Layer (append-only) ========== */
-(function () {
-  const AA = (window.AA = window.AA || {});
-  AA.VERSION = "draft-1";
-  AA.DEBUG = false; // set true for verbose console logs
 
-  // --- tiny event bus ---
-  const listeners = {};
-  AA.on = function (evt, fn) { (listeners[evt] ||= []).push(fn); return () => AA.off(evt, fn); };
-  AA.off = function (evt, fn) { const a = listeners[evt]; if (!a) return; const i = a.indexOf(fn); if (i > -1) a.splice(i, 1); };
-  AA.emit = function (evt, payload) {
-    (listeners[evt] || []).forEach(fn => { try { fn(payload); } catch (e) { console.error("[AA] listener error:", evt, e); } });
-  };
-
-  // --- observe sessionStorage writes to our state key (no edits to core code needed) ---
-  const STATE_KEY = "autoArranger_extractedParts";
-  const CP_KEY = "autoArranger_checkpoints";
-  const _setItem = sessionStorage.setItem.bind(sessionStorage);
-  sessionStorage.setItem = function (k, v) {
-    const prev = sessionStorage.getItem(k);
-    _setItem(k, v);
-    if (k !== STATE_KEY) return;
-    try {
-      const prevObj = prev ? JSON.parse(prev) : {};
-      const nextObj = v ? JSON.parse(v) : {};
-      // fire events when parts first appear and when instrumentSelections first appear
-      if (!prevObj.parts && nextObj.parts) AA.emit("parts:extracted", nextObj);
-      if (!prevObj.instrumentSelections && nextObj.instrumentSelections) AA.emit("instruments:saved", nextObj);
-    } catch { /* no-op */ }
-  };
-
-  // --- checkpoints (save/restore JSON state only) ---
-  AA.saveCheckpoint = function (name) {
-    const raw = sessionStorage.getItem(STATE_KEY);
-    if (!raw) return false;
-    const all = JSON.parse(sessionStorage.getItem(CP_KEY) || "{}");
-    all[name] = raw;
-    _setItem(CP_KEY, JSON.stringify(all)); // use original to avoid re-triggering events
-    if (AA.DEBUG) console.log("[AA] checkpoint saved:", name);
-    return true;
-  };
-  AA.restoreCheckpoint = function (name) {
-    const all = JSON.parse(sessionStorage.getItem(CP_KEY) || "{}");
-    if (!all[name]) return false;
-    sessionStorage.setItem(STATE_KEY, all[name]); // will re-run our patched setItem
-    if (AA.DEBUG) console.log("[AA] checkpoint restored:", name);
-    return true;
-  };
-
-  // --- automatically save "draft-1" once instruments are saved (the current working milestone) ---
-  AA.on("instruments:saved", () => AA.saveCheckpoint("draft-1"));
-
-  // --- safe wrapper for future modules ---
-  AA.safe = function (moduleName, fn) {
-    try { return fn(); }
-    catch (err) {
-      console.error(`[AA] Module "${moduleName}" failed:`, err);
-      AA.restoreCheckpoint("draft-1");
-      alert(`"${moduleName}" hit an error. Restored to Draft 1 state.`);
-    }
-  };
-
-  // --- quick keyboard restore: Ctrl + Shift + D ---
-  document.addEventListener("keydown", (e) => {
-    const key = (e.key || "").toLowerCase();
-    if (e.ctrlKey && e.shiftKey && key === "d") {
-      AA.restoreCheckpoint("draft-1");
-    }
-  });
 
 
   
