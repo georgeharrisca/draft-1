@@ -806,3 +806,84 @@ function renderInstrumentSelectors() {
     if (ov) ov.style.display = "none";
   };
 })();
+/* =====================================================================
+   Module: groupAssignmentsToParts (append-only)
+   - Requires: state.parts (extracted from song), state.assignedResults (from assignParts)
+   - Produces: state.groupedAssignments = [
+       { partName, partId, instruments: [
+           { name, assignedPart, instrumentPart, sortNumber, Octave }
+         ] }
+     ]
+   - No UI; data is stored for the next processing step.
+   ===================================================================== */
+(function(){
+  if (!window.AA) return;
+  const STATE_KEY = "autoArranger_extractedParts";
+  const norm = s => String(s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+
+  // Run right after instruments are saved. This listener is registered
+  // AFTER the assignParts module, so it fires after assignments are computed.
+  AA.on("instruments:saved", () => AA.safe("groupAssignmentsToParts", groupNow));
+
+  function groupNow() {
+    const raw = sessionStorage.getItem(STATE_KEY);
+    if (!raw) return;
+
+    let state;
+    try { state = JSON.parse(raw); } catch (e) { console.error("[groupAssignmentsToParts] bad JSON state", e); return; }
+
+    const parts = Array.isArray(state.parts) ? state.parts : [];
+    const assigned = Array.isArray(state.assignedResults) ? state.assignedResults : [];
+
+    if (!parts.length || !assigned.length) {
+      // Either the song didn't extract or assignments aren't ready; nothing to do.
+      return;
+    }
+
+    // Build initial groups directly from the score's parts (preserves score order)
+    const groups = parts.map(p => ({
+      partName: p.partName,
+      partId: p.id,
+      instruments: []
+    }));
+
+    // Fast lookup for groups by normalized part name
+    const groupMap = new Map(groups.map(g => [norm(g.partName), g]));
+
+    // Attach instruments to their matching score parts
+    for (const instr of assigned) {
+      const key = norm(instr.assignedPart || "");
+      const grp = groupMap.get(key);
+
+      const entry = {
+        name: instr.name,
+        assignedPart: instr.assignedPart,
+        instrumentPart: instr.instrumentPart,
+        sortNumber: instr.sortNumber ?? null,
+        Octave: instr.Octave ?? null
+      };
+
+      if (grp) {
+        grp.instruments.push(entry);
+      } else {
+        // Fallback: if a matching score part wasn't found (shouldn't happen),
+        // create a catch-all group so nothing is lost.
+        let fallback = groupMap.get("__missing__:" + key);
+        if (!fallback) {
+          fallback = { partName: instr.assignedPart || "(Unknown)", partId: null, instruments: [] };
+          groupMap.set("__missing__:" + key, fallback);
+          groups.push(fallback);
+        }
+        fallback.instruments.push(entry);
+      }
+    }
+
+    // Persist without re-triggering lifecycle events
+    AA.suspendEvents(() => {
+      state.groupedAssignments = groups;
+      sessionStorage.setItem(STATE_KEY, JSON.stringify(state));
+    });
+
+    if (AA.DEBUG) console.log("[AA] groupedAssignments:", groups);
+  }
+})();
