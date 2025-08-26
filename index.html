@@ -187,6 +187,34 @@
     <!-- Minimalist logo (slightly darker) -->
     <img src="minimalist logo.jpg" alt="Auto Arranger minimalist logo" class="badge-logo">
   </div>
+  <!-- =========================================================
+       Auto Arranger — Draft 1
+       HTML APPEND-ONLY ZONE
+       ---------------------------------------------------------
+       Everything above is the Draft 1 baseline UI.
+
+       To add new UI panels/components, append them as children
+       of #aa-modules-root below. Keep them hidden by default
+       and toggle visibility from your modules in tool.js.
+
+       If something goes wrong, restore JS state with
+       Ctrl + Shift + D (see AA.safe & checkpoints in tool.js).
+     ========================================================= -->
+  <div id="aa-modules-root" hidden aria-hidden="true"></div>
+
+  <!-- Optional: a starter template for future panels -->
+  <template id="aa-panel-template">
+    <section class="card" data-aa-panel>
+      <div class="card-header"><strong>New Module Title</strong></div>
+      <div class="card-body">
+        <!-- your module content -->
+      </div>
+    </section>
+  </template>
+
+  <script src="tool.js?v=8"></script>
+</body>
+</html>
 
   <script src="tool.js?v=8"></script>
 </body>
