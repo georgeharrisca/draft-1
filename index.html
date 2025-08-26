@@ -5,139 +5,52 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Auto Arranger (Draft 1)</title>
 
-  <!-- Optional: Google Font (can remove if you prefer system font) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
 
   <style>
     :root{
-      /* ==== Brand Palette (edit these later) ==== */
-      --brand: #5e7cff;          /* primary accent */
-      --brand-600: #4b65d1;
-      --brand-700: #3b50a8;
-      --bg: #0b0d12;             /* page background */
-      --surface: #11141a;        /* card background */
-      --text: #eef1f6;           /* main text */
-      --muted: #9aa3b2;          /* secondary text */
-      --line: #242a33;           /* hairlines */
-      --ok: #3ccf91;
-      --warn: #f7b84b;
-      --error: #ff6b6b;
-      --shadow: 0 10px 30px rgba(0,0,0,0.35);
-      --radius: 14px;
+      --brand:#5e7cff; --brand-600:#4b65d1; --brand-700:#3b50a8;
+      --bg:#0b0d12; --surface:#11141a; --text:#eef1f6; --muted:#9aa3b2; --line:#242a33;
+      --ok:#3ccf91; --warn:#f7b84b; --error:#ff6b6b; --shadow:0 10px 30px rgba(0,0,0,.35); --radius:14px;
     }
-
-    /* Quick gradient background */
     body{
-      margin:0;
-      min-height:100dvh;
-      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      color: var(--text);
+      margin:0; min-height:100dvh; font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+      color:var(--text);
       background:
-        radial-gradient(1200px 700px at 10% -10%, rgba(94,124,255,0.25), transparent 60%),
-        radial-gradient(900px 600px at 110% 10%, rgba(60,207,145,0.20), transparent 60%),
+        radial-gradient(1200px 700px at 10% -10%, rgba(94,124,255,.25), transparent 60%),
+        radial-gradient(900px 600px at 110% 10%, rgba(60,207,145,.20), transparent 60%),
         linear-gradient(180deg, #0a0c11 0%, #0b0d12 100%);
     }
-
-    /* Header */
-    .header{
-      display:flex;
-      align-items:center;
-      gap:14px;
-      padding:24px 20px;
-      max-width:980px;
-      margin:0 auto;
-    }
-    .logo{
-      width:40px; height:40px;
-      border-radius:10px;
-      background: linear-gradient(135deg, var(--brand), var(--brand-700));
-      display:inline-flex; align-items:center; justify-content:center;
-      box-shadow: var(--shadow);
-      overflow:hidden;
-    }
-    .logo img{ width:100%; height:100%; object-fit:cover; display:block; }
-    .title{ font-weight:600; letter-spacing:.2px; }
-    .subtitle{ color:var(--muted); font-size:14px; margin-top:2px; }
-
-    /* Card container */
-    .card{
-      max-width:980px;
-      margin:10px auto 40px;
-      background:var(--surface);
-      border:1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      overflow:hidden;
-    }
-    .card-header{
-      padding:16px 18px;
-      border-bottom:1px solid var(--line);
-      display:flex; align-items:center; justify-content:space-between;
-    }
-    .stepper{
-      display:flex; gap:8px; align-items:center; flex-wrap:wrap;
-      color:var(--muted); font-size:13px;
-    }
-    .stepper .dot{
-      width:8px; height:8px; border-radius:999px; background:#2a3140;
-    }
-    .stepper .active{ background:var(--brand); }
-    .card-body{ padding:20px; }
-
-    /* Form bits */
-    .field{ margin-bottom:16px; }
-    label{ display:block; font-weight:600; margin-bottom:8px; }
-    select{
-      width:100%;
-      max-width:480px;
-      padding:12px 14px;
-      border-radius:10px;
-      border:1px solid var(--line);
-      background:#0d1016;
-      color:var(--text);
-      outline:none;
-    }
-    select:focus{ border-color: var(--brand); box-shadow: 0 0 0 3px rgba(94,124,255,.25); }
-
-    .row{ display:flex; gap:12px; flex-wrap:wrap; }
-    .btn{
-      appearance:none; border:none; cursor:pointer;
-      padding:12px 16px; border-radius:10px; font-weight:600;
-      color:white; background:var(--brand);
-      transition: transform .04s ease, background .15s ease, opacity .15s ease;
-    }
-    .btn:hover{ background:var(--brand-600); }
-    .btn:active{ transform: translateY(1px); }
-    .btn.secondary{
-      background:#1a1f2a; color:var(--text); border:1px solid var(--line);
-    }
-    .btn:disabled{ opacity:.5; cursor:not-allowed; }
-
-    .note{ color: var(--muted); font-size: 14px; margin-top:10px; }
-    .note.ok{ color: var(--ok); }
-    .note.warn{ color: var(--warn); }
-    .note.err{ color: var(--error); }
-
-    /* Footer helper */
-    .footer{
-      max-width:980px; margin:0 auto 36px; color:var(--muted); font-size:12px; padding:0 20px;
-    }
-
-    /* Responsive */
-    @media (max-width:560px){
-      .header{ padding:18px 16px; }
-      .card{ margin:8px 12px 28px; }
-      .card-body{ padding:16px; }
-    }
+    .hidden{display:none;}
+    .header{display:flex;align-items:center;gap:14px;padding:24px 20px;max-width:980px;margin:0 auto;}
+    .logo{width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,var(--brand),var(--brand-700));box-shadow:var(--shadow);}
+    .title{font-weight:600;letter-spacing:.2px;}
+    .subtitle{color:var(--muted);font-size:14px;margin-top:2px;}
+    .card{max-width:980px;margin:10px auto 40px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;}
+    .card-header{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;}
+    .stepper{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:13px;}
+    .stepper .dot{width:8px;height:8px;border-radius:999px;background:#2a3140;}
+    .stepper .dot.active{background:var(--brand);}
+    .card-body{padding:20px;}
+    .field{margin-bottom:16px;}
+    label{display:block;font-weight:600;margin-bottom:8px;}
+    select{width:100%;max-width:480px;padding:12px 14px;border-radius:10px;border:1px solid var(--line);background:#0d1016;color:var(--text);outline:none;}
+    select:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(94,124,255,.25);}
+    .row{display:flex;gap:12px;flex-wrap:wrap;}
+    .btn{appearance:none;border:none;cursor:pointer;padding:12px 16px;border-radius:10px;font-weight:600;color:white;background:var(--brand);transition:transform .04s ease, background .15s ease, opacity .15s ease;}
+    .btn:hover{background:var(--brand-600);} .btn:active{transform:translateY(1px);}
+    .btn.secondary{background:#1a1f2a;color:var(--text);border:1px solid var(--line);}
+    .btn:disabled{opacity:.5;cursor:not-allowed;}
+    .note{color:var(--muted);font-size:14px;margin-top:10px;}
+    .note.ok{color:var(--ok);} .note.err{color:var(--error);}
+    .footer{max-width:980px;margin:0 auto 36px;color:var(--muted);font-size:12px;padding:0 20px;}
+    @media (max-width:560px){.header{padding:18px 16px}.card{margin:8px 12px 28px}.card-body{padding:16px}}
   </style>
 </head>
 <body>
-
-  <!-- Header -->
   <header class="header">
-    <!-- TODO: replace the gradient box with your logo image:
-         <div class="logo"><img src="YOUR_LOGO_URL" alt="Auto Arranger logo"></div> -->
+    <!-- Replace with <div class="logo"><img src="YOUR_LOGO_URL" alt="logo" /></div> -->
     <div class="logo" aria-hidden="true"></div>
     <div>
       <div class="title">Auto Arranger (Draft 1)</div>
@@ -145,7 +58,6 @@
     </div>
   </header>
 
-  <!-- Card -->
   <section class="card">
     <div class="card-header">
       <div class="stepper" aria-label="Progress">
@@ -153,11 +65,10 @@
         <span class="dot" title="Select Song"></span>
         <span class="dot" title="Extract"></span>
       </div>
-      <!-- optional right-side actions or status -->
     </div>
 
     <div class="card-body">
-      <!-- Step 1 -->
+      <!-- Step 1 (visible on load) -->
       <div id="step1">
         <div class="field">
           <label for="librarySelect">Select Library Pack</label>
@@ -168,7 +79,7 @@
         <div id="packsStatus" class="note" role="status" aria-live="polite"></div>
       </div>
 
-      <!-- Step 2 -->
+      <!-- Step 2 (hidden until a pack is selected) -->
       <div id="step2" class="hidden">
         <div class="field">
           <label for="songSelect">Select Song</label>
@@ -186,10 +97,9 @@
   </section>
 
   <div class="footer">
-    <!-- TODO: when you have a palette image, we can sample colors and update :root variables above -->
-    Tip: tweak your brand colors in <code>:root</code> to instantly restyle the app.
+    Tweak the colors in <code>:root</code> to match your brand. Drop in your logo by replacing the gradient box.
   </div>
 
-  <script src="tool.js?v=2"></script>
+  <script src="tool.js?v=3"></script>
 </body>
 </html>
