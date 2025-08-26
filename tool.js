@@ -123,7 +123,7 @@ async function initDraft1UI(){
 /* ------------ Library & Song ------------ */
 async function loadLibraryIndex(){
   // expects { "packs":[ { "name": "...", "songs": [ { "name":"...", "url":"..." }, ... ] }, ... ] }
-  const res = await fetch("./libraryIndex.json", { cache: "no-store" });
+  const res = await fetch("./libraryData.json", { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to load libraryIndex.json");
   const data = await res.json();
   return Array.isArray(data.packs) ? data.packs : [];
