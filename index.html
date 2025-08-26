@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Auto Arranger (Draft 1)</title>
 
+  <!-- Optional font -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
 
@@ -44,17 +45,21 @@
     .btn:disabled{opacity:.5;cursor:not-allowed;}
     .note{color:var(--muted);font-size:14px;margin-top:10px;}
     .note.ok{color:var(--ok);} .note.err{color:var(--error);}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;}
+    .inst-item{border:1px solid var(--line);border-radius:10px;padding:12px;background:#0d1016;}
+    .inst-item h4{margin:0 0 8px 0;font-size:14px;}
+    .inst-item input{width:80px;padding:8px;border-radius:8px;border:1px solid var(--line);background:#0b0f16;color:var(--text);}
     .footer{max-width:980px;margin:0 auto 36px;color:var(--muted);font-size:12px;padding:0 20px;}
     @media (max-width:560px){.header{padding:18px 16px}.card{margin:8px 12px 28px}.card-body{padding:16px}}
   </style>
 </head>
 <body>
   <header class="header">
-    <!-- Replace with <div class="logo"><img src="YOUR_LOGO_URL" alt="logo" /></div> -->
+    <!-- Replace with your logo if desired -->
     <div class="logo" aria-hidden="true"></div>
     <div>
       <div class="title">Auto Arranger (Draft 1)</div>
-      <div class="subtitle">library → song → extract parts data</div>
+      <div class="subtitle">library → song → extract parts data → instruments</div>
     </div>
   </header>
 
@@ -64,11 +69,12 @@
         <span class="dot active" title="Select Library"></span>
         <span class="dot" title="Select Song"></span>
         <span class="dot" title="Extract"></span>
+        <span class="dot" title="Select Instruments"></span>
       </div>
     </div>
 
     <div class="card-body">
-      <!-- Step 1 (visible on load) -->
+      <!-- Step 1: Library -->
       <div id="step1">
         <div class="field">
           <label for="librarySelect">Select Library Pack</label>
@@ -79,7 +85,7 @@
         <div id="packsStatus" class="note" role="status" aria-live="polite"></div>
       </div>
 
-      <!-- Step 2 (hidden until a pack is selected) -->
+      <!-- Step 2: Song (hidden until a pack is chosen) -->
       <div id="step2" class="hidden">
         <div class="field">
           <label for="songSelect">Select Song</label>
@@ -93,13 +99,26 @@
         </div>
         <div id="status" class="note" role="status" aria-live="polite"></div>
       </div>
+
+      <!-- Step 3: Instruments (shown after extract) -->
+      <div id="step3" class="hidden">
+        <div class="field">
+          <label>Select Instruments (enter quantity for each)</label>
+          <div id="instrumentGrid" class="grid"></div>
+        </div>
+        <div class="row">
+          <button id="backToSong" type="button" class="btn secondary">Back</button>
+          <button id="saveInstruments" type="button" class="btn">Save Selections</button>
+        </div>
+        <div id="instStatus" class="note" role="status" aria-live="polite"></div>
+      </div>
     </div>
   </section>
 
   <div class="footer">
-    Tweak the colors in <code>:root</code> to match your brand. Drop in your logo by replacing the gradient box.
+    Files expected alongside this page: <code>tool.js</code>, <code>libraryData.json</code>, <code>instrumentData.json</code>.
   </div>
 
-  <script src="tool.js?v=3"></script>
+  <script src="tool.js?v=4"></script>
 </body>
 </html>
