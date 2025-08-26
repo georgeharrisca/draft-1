@@ -170,8 +170,65 @@ async function initDraft1UI(){
 }
 
 /* ------------ Library & Instrument loaders ------------ */
+/* Helpers used by the loaders */
+
+function basename(path) {
+  const m = String(path || "").split(/[\\/]/).pop();
+  return m || "";
+}
+function stripExt(name) {
+  return String(name || "").replace(/\.[^.]+$/, "");
+}
+function absolutizeUrl(u, baseUrl) {
+  try {
+    if (/^https?:\/\//i.test(u)) return u;
+    // baseUrl is the JSON file URL; resolve relative to that file’s folder
+    const b = new URL(baseUrl, location.href);
+    const folder = b.href.replace(/\/[^\/]*$/, "/");
+    return new URL(String(u).replace(/^\.\//, ""), folder).href;
+  } catch { return u; }
+}
+function normalizeLibraryData(data, baseUrl) {
+  const packs = [];
+  const addPack = (name, items) => {
+    const arr = Array.isArray(items) ? items : [];
+    const songs = arr.map(item => {
+      if (typeof item === "string") {
+        const url = absolutizeUrl(item, baseUrl);
+        return { name: stripExt(basename(item)) || "Untitled", url };
+      } else if (item && typeof item === "object") {
+        let url = item.url || item.path || "";
+        if (url) url = absolutizeUrl(url, baseUrl);
+        const name = item.name || stripExt(basename(url)) || "Untitled";
+        return { name, url };
+      }
+      return null;
+    }).filter(Boolean);
+    packs.push({ name: String(name || "Pack"), songs });
+  };
+
+  // Shape 1: { packs: [...] }
+  if (Array.isArray(data?.packs)) {
+    data.packs.forEach(p => addPack(p?.name, p?.songs || p?.files || p?.items));
+    return packs;
+  }
+  // Shape 2: [ ... ]
+  if (Array.isArray(data)) {
+    data.forEach(p => addPack(p?.name, p?.songs || p?.files || p?.items));
+    return packs;
+  }
+  // Shape 3: { "Pack Name": [ ... ], ... }
+  if (data && typeof data === "object") {
+    Object.entries(data).forEach(([name, items]) => {
+      if (Array.isArray(items)) addPack(name, items);
+    });
+    return packs;
+  }
+  return [];
+}
+
+// --- replace your loadLibraryIndex with this robust version ---
 async function loadLibraryIndex(){
-  // Try both casings and both roots
   const candidates = [
     `${ROOT_BASE}/libraryData.json`,
     `${ROOT_BASE}/librarydata.json`,
@@ -184,13 +241,16 @@ async function loadLibraryIndex(){
   ];
   const { data, url } = await tryJson(candidates);
   mergeState({ libraryJsonUrl: url });
-  // Supports either {packs:[...]} or bare [...]
-  return Array.isArray(data?.packs) ? data.packs
-       : Array.isArray(data)        ? data
-       : [];
+
+  const packs = normalizeLibraryData(data, url);
+  if (!packs.length) {
+    console.warn("[AA] libraryData.json loaded but no packs were recognized. Check its structure.", data);
+  }
+  return packs;
 }
 
 async function loadInstrumentData(){
+  // Expects an array: [{ name, instrumentPart, sortingOctave, clef, transpose, scoreOrder }, ...]
   const candidates = [
     `${ROOT_BASE}/instrumentData.json`,
     `${DATA_BASE}/instrumentData.json`,
@@ -203,6 +263,7 @@ async function loadInstrumentData(){
   mergeState({ instrumentJsonUrl: url });
   return Array.isArray(data) ? data : [];
 }
+
 
 /* ------------ Populate songs & selection handlers ------------ */
 function populateSongsForPack(packIndex){
