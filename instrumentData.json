@@ -28,7 +28,7 @@
     "instrumentPart": "Harmony I",
     "sortingOctave": 1,
     "clef": "treble",
-    "transpose": "<transpose><diatonic>0</diatonic><chromatic>-2</chromatic></transpose>",
+    "transpose": "<transpose><diatonic>0</diatonic><chromatic>2</chromatic></transpose>",
     "scoreOrder": 4
   },
   {
