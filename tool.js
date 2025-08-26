@@ -1,3 +1,6 @@
+// ===============================
+// Auto Arranger — Draft 1 (core)
+// ===============================
 document.addEventListener("DOMContentLoaded", () => {
   // ---- Step containers ----
   const step1 = document.getElementById("step1");
@@ -147,14 +150,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const packName = librarySelect.options[librarySelect.selectedIndex].textContent;
 
-      const state = {
+      const nextState = {
         timestamp: Date.now(),
         pack: packName,
         song: songName,
         parts: partsPayload.parts,        // [{ id, partName, xml }]
         scoreMeta: partsPayload.scoreMeta // { movementTitle, composer, workTitle }
       };
-      sessionStorage.setItem("autoArranger_extractedParts", JSON.stringify(state));
+      sessionStorage.setItem("autoArranger_extractedParts", JSON.stringify(nextState));
 
       statusEl.textContent = "Parts data ready.";
       statusEl.classList.remove("err");
@@ -189,7 +192,7 @@ document.addEventListener("DOMContentLoaded", () => {
     stateTrail.instrumentsDone = false;
     renderTrail();
 
-    // Hide assignments panel if any (from appended modules)
+    // Hide assignments panel if any (older module)
     const p = document.getElementById("aa-assignments-panel");
     if (p) p.style.display = "none";
   });
@@ -301,7 +304,7 @@ document.addEventListener("DOMContentLoaded", () => {
     stateTrail.instrumentsDone = false;
     renderTrail();
 
-    // Hide assignments panel if visible (from appended modules)
+    // Hide assignments panel if visible (older module)
     const p = document.getElementById("aa-assignments-panel");
     if (p) p.style.display = "none";
   });
@@ -423,20 +426,9 @@ document.addEventListener("DOMContentLoaded", () => {
   function escapeHtml(s){ return String(s ?? "").replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])); }
 });
 
-
-
-  
-
-
-  
-  // --- example pattern for future modules (keep appending below this line) ---
-
-  
-
-  
-/* =====================================================================
-   Auto Arranger — Draft 1 Guard / Module Layer (append-only, loop-safe)
-   ===================================================================== */
+// ================================================================
+// Guard / Checkpoint Layer (append-only, loop-safe)
+// ================================================================
 (function () {
   const AA = (window.AA = window.AA || {});
   if (AA.__guardInstalled) return;
@@ -445,17 +437,17 @@ document.addEventListener("DOMContentLoaded", () => {
   AA.VERSION = "draft-1";
   AA.DEBUG = false;
 
-  // --- event bus ---
+  // event bus
   const listeners = {};
   AA.on  = (evt, fn) => ((listeners[evt] ||= []).push(fn), () => AA.off(evt, fn));
   AA.off = (evt, fn) => { const a = listeners[evt]; if (!a) return; const i = a.indexOf(fn); if (i>-1) a.splice(i,1); };
   AA.emit = (evt, payload) => (listeners[evt]||[]).forEach(fn => { try{ fn(payload); }catch(e){ console.error("[AA] listener error:", evt, e); } });
 
-  // --- suspension helper to prevent re-entrant emits while mutating state ---
+  // suspend emits while mutating state to avoid loops
   AA.__suspend = false;
   AA.suspendEvents = fn => { try { AA.__suspend = true; return fn(); } finally { AA.__suspend = false; } };
 
-  // --- storage patch with TRANSITION-based emits (prev -> next) ---
+  // storage patch with transition-based emits (prev -> next)
   const STATE_KEY = "autoArranger_extractedParts";
   const CP_KEY = "autoArranger_checkpoints";
   const _setItem = sessionStorage.setItem.bind(sessionStorage);
@@ -475,13 +467,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
       if (!prevHasParts && nextHasParts) AA.emit("parts:extracted", next);
       if (!prevHasInst  && nextHasInst ) AA.emit("instruments:saved", next);
-      // (Do NOT emit on subsequent writes that merely add results, to avoid loops)
     } catch (e) {
       console.error("[AA] Failed to parse state on setItem:", e);
     }
   };
 
-  // --- checkpoints ---
+  // checkpoints
   AA.saveCheckpoint = (name) => {
     const raw = sessionStorage.getItem(STATE_KEY); if (!raw) return false;
     const all = JSON.parse(sessionStorage.getItem(CP_KEY) || "{}");
@@ -514,9 +505,9 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 })();
 
-/* =====================================================================
-   Module: assignParts (append-only, loop-safe)
-   ===================================================================== */
+// ================================================================
+// Module: assignParts (append-only, no table render)
+// ================================================================
 (function () {
   if (!window.AA) return;
 
@@ -556,9 +547,6 @@ document.addEventListener("DOMContentLoaded", () => {
   AA.on("instruments:saved", () => AA.safe("assignParts", runAssignParts));
   window.runAssignParts = runAssignParts;
 
-  document.getElementById("backToSong")?.addEventListener("click", hidePanel);
-  document.getElementById("backButton")?.addEventListener("click", hidePanel);
-
   function runAssignParts() {
     const raw = sessionStorage.getItem(STATE_KEY);
     if (!raw) return;
@@ -567,7 +555,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try { state = JSON.parse(raw); } catch (e) { console.error("[assignParts] bad JSON state", e); return; }
 
     const selections = Array.isArray(state.instrumentSelections) ? state.instrumentSelections : [];
-    if (!selections.length) { hidePanel(); return; }
+    if (!selections.length) return;
 
     const expanded = expandSelections(selections);
 
@@ -604,7 +592,7 @@ document.addEventListener("DOMContentLoaded", () => {
       sessionStorage.setItem(STATE_KEY, JSON.stringify(state));
     });
 
-    renderAssignmentsPanel(finalList);
+    // No table render here (next steps will use sessionStorage data)
   }
 
   function expandSelections(selections) {
@@ -691,76 +679,20 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
     return String(a).localeCompare(String(b));
   }
-
-  function renderAssignmentsPanel(list) {
-    const root = document.getElementById("aa-modules-root") || document.body;
-    let panel = document.getElementById("aa-assignments-panel");
-    if (!panel) {
-      panel = document.createElement("section");
-      panel.id = "aa-assignments-panel";
-      panel.className = "card";
-      panel.innerHTML = `
-        <div class="card-header"><strong>Assigned Parts</strong></div>
-        <div class="card-body">
-          <div class="note">Ordered by sortNumber (lowest → highest). Fixed parts (7–15) show sortNumber as "—".</div>
-          <div style="overflow:auto; margin-top:12px;">
-            <table id="aa-assignments-table" style="width:100%; border-collapse:collapse;">
-              <thead>
-                <tr>
-                  <th style="text-align:left; border-bottom:1px solid var(--line); padding:8px;">Instrument</th>
-                  <th style="text-align:left; border-bottom:1px solid var(--line); padding:8px;">sortNumber</th>
-                  <th style="text-align:left; border-bottom:1px solid var(--line); padding:8px;">assignedPart</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </div>`;
-      if (root.id === "aa-modules-root") {
-        root.removeAttribute("hidden");
-        root.setAttribute("aria-hidden","false");
-        root.appendChild(panel);
-      } else {
-        document.body.appendChild(panel);
-      }
-    }
-
-    const tbody = panel.querySelector("tbody");
-    tbody.innerHTML = "";
-    for (const row of list) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td style="padding:8px; border-bottom:1px solid var(--line);">${esc(row.name)}</td>
-        <td style="padding:8px; border-bottom:1px solid var(--line); color:var(--muted);">${esc(row.sortDisplay || "—")}</td>
-        <td style="padding:8px; border-bottom:1px solid var(--line);"><strong>${esc(row.assignedPart || "")}</strong></td>
-      `;
-      tbody.appendChild(tr);
-    }
-    panel.style.display = "block";
-    panel.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-
-  function hidePanel(){ const p = document.getElementById("aa-assignments-panel"); if (p) p.style.display = "none"; }
-  function esc(s){ return String(s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 })();
 
-  
-/* =====================================================================
-   Module: arrangingLoadingScreen (append-only)
-   - On instruments:saved → show a full-page "Arranging Custom Score…" view
-   - Keep all computed data in sessionStorage; no table visualization
-   ===================================================================== */
+// ================================================================
+// Module: arrangingLoadingScreen (append-only)
+// ================================================================
 (function(){
   if (!window.AA) return;
 
   function showLoading() {
-    // Create overlay if needed
     let ov = document.getElementById("aa-loading");
     if (!ov) {
       ov = document.createElement("div");
       ov.id = "aa-loading";
       ov.setAttribute("role","status");
-      // full-viewport overlay with your banner behind a dark veil
       ov.style.position = "fixed";
       ov.style.inset = "0";
       ov.style.zIndex = "9999";
@@ -772,7 +704,6 @@ document.addEventListener("DOMContentLoaded", () => {
       ov.innerHTML = `
         <div>
           <div style="font-weight:700;font-size:28px;letter-spacing:.3px;">Arranging Custom Score…</div>
-          <!-- optional hint or spinner space -->
         </div>
       `;
       document.body.appendChild(ov);
@@ -785,7 +716,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("step2")?.classList.add("hidden");
     document.getElementById("step3")?.classList.add("hidden");
 
-    // Hide assignments panel if the assignParts module rendered it
+    // Hide older assignments panel if present
     const ap = document.getElementById("aa-assignments-panel");
     if (ap) ap.style.display = "none";
   }
@@ -793,30 +724,11 @@ document.addEventListener("DOMContentLoaded", () => {
   // Show loading screen as soon as instruments are saved
   AA.on("instruments:saved", () => {
     showLoading();
-    // If assignParts renders right after, hide its panel again on next tick
-    setTimeout(() => {
-      const ap = document.getElementById("aa-assignments-panel");
-      if (ap) ap.style.display = "none";
-    }, 0);
   });
 
-  // Optional helper for future steps to dismiss the loading view
+  // Optional helper for future steps
   window.hideArrangingLoading = function(){
     const ov = document.getElementById("aa-loading");
     if (ov) ov.style.display = "none";
   };
-})();
-
-
-  
-  
-  
-  // AA.on("instruments:saved", (state) => {
-  //   AA.safe("assignParts", () => {
-  //     const s = JSON.parse(sessionStorage.getItem(STATE_KEY));
-  //     // ...compute new fields here...
-  //     sessionStorage.setItem(STATE_KEY, JSON.stringify(s));
-  //   });
-  // });
-
 })();
