@@ -11,7 +11,6 @@ document.addEventListener("DOMContentLoaded", () => {
   // ---- Step 2 elements ----
   const songSelect = document.getElementById("songSelect");
   const backButton = document.getElementById("backButton");
-  const extractButton = document.getElementById("extractButton");
   const statusEl = document.getElementById("status");
 
   // ---- Step 3 elements ----
@@ -24,17 +23,24 @@ document.addEventListener("DOMContentLoaded", () => {
   const dots = document.querySelectorAll(".stepper .dot");
   const setStep = (n) => dots.forEach((d,i)=>d.classList.toggle("active", i<=n));
 
+  // ---- Choice flow (breadcrumb under stepper) ----
+  const choiceFlow = document.getElementById("choiceFlow");
+  const stateTrail = { library: "", song: "", instrumentsDone: false };
+  const renderTrail = () => {
+    const parts = [];
+    if (stateTrail.library) parts.push(`<strong>${escapeHtml(stateTrail.library)}</strong>`);
+    if (stateTrail.song) parts.push(`<strong>${escapeHtml(stateTrail.song)}</strong>`);
+    if (stateTrail.instrumentsDone) parts.push(`<strong>Instruments Selected</strong>`);
+    choiceFlow.innerHTML = parts.join(" &gt; ");
+  };
+
   // ---- Data holders ----
   let libraryData = {};
   let instrumentData = [];
 
-  // JSON endpoints (kept relative; place these files alongside index.html)
-// const LIBRARY_INDEX_URL = "./libraryData.json";
-const LIBRARY_INDEX_URL = "https://raw.githubusercontent.com/georgeharrisca/draft-1/main/libraryData.json";
-
-// const INSTRUMENT_INDEX_URL = "./instrumentData.json";
-const INSTRUMENT_INDEX_URL = "https://raw.githubusercontent.com/georgeharrisca/draft-1/main/instrumentData.json";
-
+  // JSON endpoints (relative to this page)
+  const LIBRARY_INDEX_URL = "./libraryData.json";
+  const INSTRUMENT_INDEX_URL = "./instrumentData.json";
 
   // ====== Init ======
   init();
@@ -45,12 +51,13 @@ const INSTRUMENT_INDEX_URL = "https://raw.githubusercontent.com/georgeharrisca/d
     step2.classList.add("hidden");
     step3.classList.add("hidden");
     setStep(0);
+    stateTrail.library = "";
+    stateTrail.song = "";
+    stateTrail.instrumentsDone = false;
+    renderTrail();
 
-    // Load library packs
-    await loadLibraryData();
-
-    // Load instruments (for Step 3)
-    await loadInstrumentData();
+    // Load library packs + instruments
+    await Promise.all([loadLibraryData(), loadInstrumentData()]);
   }
 
   async function loadLibraryData() {
@@ -88,63 +95,54 @@ const INSTRUMENT_INDEX_URL = "https://raw.githubusercontent.com/georgeharrisca/d
   }
 
   // ====== Step 1 → Step 2 ======
-  librarySelect.addEventListener("change", () => {
-    const pack = librarySelect.value;
-    if (!pack) return;
+ librarySelect.addEventListener("change", () => {
+  const pack = librarySelect.value;
+  if (!pack) return;
 
-    // Populate songs for selected pack
-    songSelect.innerHTML = '<option value="">-- Choose a Song --</option>';
-    (libraryData[pack] || []).forEach(song => {
-      const opt = document.createElement("option");
-      opt.value = song.url;
-      opt.textContent = song.name;
-      songSelect.appendChild(opt);
-    });
+  // Use the display text instead of raw value
+  const packName = librarySelect.options[librarySelect.selectedIndex].textContent;
 
-    // Transition to Step 2
-    extractButton.disabled = true;
-    statusEl.textContent = "";
-    step1.classList.add("hidden");
-    step2.classList.remove("hidden");
-    step3.classList.add("hidden");
-    setStep(1);
+  stateTrail.library = packName;
+  stateTrail.song = "";
+  stateTrail.instrumentsDone = false;
+  renderTrail();
+
+  // Populate songs for selected pack
+  songSelect.innerHTML = '<option value="">-- Choose a Song --</option>';
+  (libraryData[pack] || []).forEach(song => {
+    const opt = document.createElement("option");
+    opt.value = song.url;
+    opt.textContent = song.name;
+    songSelect.appendChild(opt);
   });
 
-  // Enable Extract when a song is chosen
-  songSelect.addEventListener("change", () => {
-    extractButton.disabled = !songSelect.value;
-    statusEl.textContent = "";
-  });
+  // Transition
+  statusEl.textContent = "";
+  step1.classList.add("hidden");
+  step2.classList.remove("hidden");
+  step3.classList.add("hidden");
+  setStep(1);
+});
 
-  // Back Step 2 → Step 1
-  backButton.addEventListener("click", () => {
-    step2.classList.add("hidden");
-    step1.classList.remove("hidden");
-    step3.classList.add("hidden");
-    librarySelect.value = "";
-    songSelect.innerHTML = "";
-    extractButton.disabled = true;
-    statusEl.textContent = "";
-    setStep(0);
-  });
 
-  // ====== Extract Parts Data then go to Instruments (Step 3) ======
-  extractButton.addEventListener("click", async () => {
+  // ====== Step 2: on song select → auto-extract → go to Step 3 ======
+  songSelect.addEventListener("change", async () => {
     const songUrl = songSelect.value;
-    if (!songUrl) {
-      alert("Please select a song.");
-      return;
-    }
+    if (!songUrl) return;
 
-    extractButton.disabled = true;
+    // Update trail with song name
+    const songName = songSelect.options[songSelect.selectedIndex].textContent;
+    stateTrail.song = songName;
+    stateTrail.instrumentsDone = false;
+    renderTrail();
+
+    // Auto-extract
     statusEl.textContent = "Extracting parts…";
-
     try {
       const xmlText = await (await fetch(songUrl)).text();
       const partsPayload = extractParts(xmlText);
 
       const packName = librarySelect.value;
-      const songName = songSelect.options[songSelect.selectedIndex].textContent;
 
       const state = {
         timestamp: Date.now(),
@@ -155,11 +153,11 @@ const INSTRUMENT_INDEX_URL = "https://raw.githubusercontent.com/georgeharrisca/d
       };
       sessionStorage.setItem("autoArranger_extractedParts", JSON.stringify(state));
 
-      statusEl.textContent = "Parts data ready. Proceed to instrument selection.";
+      statusEl.textContent = "Parts data ready.";
       statusEl.classList.remove("err");
       statusEl.classList.add("ok");
 
-      // Transition to Step 3
+      // Transition to instruments
       renderInstrumentSelectors();
       step2.classList.add("hidden");
       step3.classList.remove("hidden");
@@ -169,9 +167,24 @@ const INSTRUMENT_INDEX_URL = "https://raw.githubusercontent.com/georgeharrisca/d
       statusEl.textContent = "Failed to extract parts.";
       statusEl.classList.remove("ok");
       statusEl.classList.add("err");
-    } finally {
-      extractButton.disabled = false;
     }
+  });
+
+  // Back Step 2 → Step 1
+  backButton.addEventListener("click", () => {
+    step2.classList.add("hidden");
+    step1.classList.remove("hidden");
+    step3.classList.add("hidden");
+    librarySelect.value = "";
+    songSelect.innerHTML = "";
+    statusEl.textContent = "";
+    setStep(0);
+
+    // Clear trail
+    stateTrail.library = "";
+    stateTrail.song = "";
+    stateTrail.instrumentsDone = false;
+    renderTrail();
   });
 
   // ====== Step 3: Instruments UI ======
@@ -184,10 +197,10 @@ const INSTRUMENT_INDEX_URL = "https://raw.githubusercontent.com/georgeharrisca/d
       const wrapper = document.createElement("div");
       wrapper.className = "inst-item";
       wrapper.innerHTML = `
-        <h4>${sanitize(inst.name)}</h4>
+        <h4>${escapeHtml(inst.name)}</h4>
         <div class="note">
-          Part: ${sanitize(inst.instrumentPart)} • Octave: ${inst.Octave >= 0 ? "+"+inst.Octave : inst.Octave}<br>
-          Clef: ${sanitize(inst.clef || "—")} • Transpose: ${chromDisplay}
+          Part: ${escapeHtml(inst.instrumentPart)} • Octave: ${inst.Octave >= 0 ? "+"+inst.Octave : inst.Octave}<br>
+          Clef: ${escapeHtml(inst.clef || "—")} • Transpose: ${chromDisplay}
         </div>
         <div style="margin-top:8px;">
           <label for="qty_${cssId(inst.name)}" style="margin:0 0 6px 0;">Quantity</label>
@@ -200,13 +213,17 @@ const INSTRUMENT_INDEX_URL = "https://raw.githubusercontent.com/georgeharrisca/d
   }
 
   function cssId(s){ return s.replace(/\s+/g, "_").replace(/[^\w\-]/g, ""); }
-  function sanitize(s){ return String(s ?? "").replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])); }
+  function escapeHtml(s){ return String(s ?? "").replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])); }
 
   // Back Step 3 → Step 2
   backToSong.addEventListener("click", () => {
     step3.classList.add("hidden");
     step2.classList.remove("hidden");
     setStep(1);
+
+    // Trail back to library > song
+    stateTrail.instrumentsDone = false;
+    renderTrail();
   });
 
   // Save instrument selections
@@ -222,7 +239,7 @@ const INSTRUMENT_INDEX_URL = "https://raw.githubusercontent.com/georgeharrisca/d
           Octave: inst.Octave,
           clef: inst.clef ?? null,
           transpose: inst.transpose ?? null,
-          assignedPart: "" // placeholder for next step
+          assignedPart: "" // placeholder
         });
       }
     });
@@ -237,7 +254,11 @@ const INSTRUMENT_INDEX_URL = "https://raw.githubusercontent.com/georgeharrisca/d
       : "No instruments selected.";
     instStatus.classList.remove("err");
     instStatus.classList.add("ok");
-    setStep(3); // visually mark last dot
+    setStep(3);
+
+    // Update trail to include "Instruments Selected"
+    stateTrail.instrumentsDone = selections.length > 0;
+    renderTrail();
   });
 
   // ====== Helpers for MusicXML extraction ======
