@@ -29,8 +29,12 @@ document.addEventListener("DOMContentLoaded", () => {
   let instrumentData = [];
 
   // JSON endpoints (kept relative; place these files alongside index.html)
-  const LIBRARY_INDEX_URL = "./libraryData.json";
-  const INSTRUMENT_INDEX_URL = "./instrumentData.json";
+// const LIBRARY_INDEX_URL = "./libraryData.json";
+const LIBRARY_INDEX_URL = "https://raw.githubusercontent.com/georgeharrisca/draft-1/main/libraryData.json";
+
+// const INSTRUMENT_INDEX_URL = "./instrumentData.json";
+const INSTRUMENT_INDEX_URL = "https://raw.githubusercontent.com/georgeharrisca/draft-1/main/instrumentData.json";
+
 
   // ====== Init ======
   init();
