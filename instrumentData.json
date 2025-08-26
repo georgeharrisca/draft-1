@@ -1,11 +1,74 @@
 [
-  { "name": "Piccolo",      "instrumentPart": "Melody",        "Octave": 2,  "clef": "treble", "transpose": "<transpose><diatonic>0</diatonic><chromatic>-12</chromatic></transpose>", "scoreOrder": 1 },
-  { "name": "Flute",        "instrumentPart": "Melody",        "Octave": 1,  "clef": "treble", "transpose": null,                                               "scoreOrder": 2 },
-  { "name": "Oboe",         "instrumentPart": "Harmony II",    "Octave": 1,  "clef": "treble", "transpose": null,                                               "scoreOrder": 3 },
-  { "name": "Bb Clarinet",  "instrumentPart": "Harmony I",     "Octave": 1,  "clef": "treble", "transpose": "<transpose><diatonic>0</diatonic><chromatic>2</chromatic></transpose>", "scoreOrder": 4 },
-  { "name": "Bassoon",      "instrumentPart": "Counter Melody","Octave": -1, "clef": "bass",   "transpose": null,                                               "scoreOrder": 5 },
-  { "name": "Violin",       "instrumentPart": "Melody",        "Octave": 1,  "clef": "treble", "transpose": null,                                               "scoreOrder": 6 },
-  { "name": "Viola",        "instrumentPart": "Harmony II",    "Octave": 0,  "clef": "alto",   "transpose": null,                                               "scoreOrder": 7 },
-  { "name": "Cello",        "instrumentPart": "Counter Melody","Octave": -1, "clef": "bass",   "transpose": null,                                               "scoreOrder": 8 },
-  { "name": "Double Bass",  "instrumentPart": "Bass",          "Octave": -2, "clef": "bass",   "transpose": "<transpose><diatonic>0</diatonic><chromatic>12</chromatic></transpose>", "scoreOrder": 9 }
+  {
+    "name": "Piccolo",
+    "instrumentPart": "Melody",
+    "sortingOctave": 2,
+    "clef": "treble",
+    "transpose": "<transpose><octave-change>1</octave-change></transpose>",
+    "scoreOrder": 1
+  },
+  {
+    "name": "Flute",
+    "instrumentPart": "Melody",
+    "sortingOctave": 1,
+    "clef": "treble",
+    "transpose": null,
+    "scoreOrder": 2
+  },
+  {
+    "name": "Oboe",
+    "instrumentPart": "Harmony II",
+    "sortingOctave": 1,
+    "clef": "treble",
+    "transpose": null,
+    "scoreOrder": 3
+  },
+  {
+    "name": "Bb Clarinet",
+    "instrumentPart": "Harmony I",
+    "sortingOctave": 1,
+    "clef": "treble",
+    "transpose": "<transpose><diatonic>0</diatonic><chromatic>-2</chromatic></transpose>",
+    "scoreOrder": 4
+  },
+  {
+    "name": "Bassoon",
+    "instrumentPart": "Counter Melody",
+    "sortingOctave": -1,
+    "clef": "bass",
+    "transpose": null,
+    "scoreOrder": 5
+  },
+  {
+    "name": "Violin",
+    "instrumentPart": "Melody",
+    "sortingOctave": 1,
+    "clef": "treble",
+    "transpose": null,
+    "scoreOrder": 6
+  },
+  {
+    "name": "Viola",
+    "instrumentPart": "Harmony II",
+    "sortingOctave": 0,
+    "clef": "alto",
+    "transpose": null,
+    "scoreOrder": 7
+  },
+  {
+    "name": "Cello",
+    "instrumentPart": "Counter Melody",
+    "sortingOctave": -1,
+    "clef": "bass",
+    "transpose": null,
+    "scoreOrder": 8
+  },
+  {
+    "name": "Double Bass",
+    "instrumentPart": "Bass",
+    "sortingOctave": -2,
+    "clef": "bass",
+    "transpose": "<transpose><octave-change>-1</octave-change></transpose>",
+    "scoreOrder": 9
+  }
 ]
