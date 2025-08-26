@@ -100,7 +100,7 @@ async function initDraft1UI(){
  if (window.AUTO_ARRANGER_UI_BOOTED) return;
   window.AUTO_ARRANGER_UI_BOOTED = true;
   // Fetch library packs and instruments
-  const [packs, instruments] = await Promise.all([loadLibraryIndex(), loadInstrumentData()]);
+  const [packs, instruments] = await Promise.all([loadLibraryData(), loadInstrumentData()]);
   mergeState({ libraryPacks: packs, instrumentData: instruments });
 
   // STEP 1: Library
@@ -138,7 +138,7 @@ async function initDraft1UI(){
 }
 
 /* ------------ Library & Song loaders ------------ */
-async function loadLibraryIndex(){
+async function loadLibraryData(){
   // expects either:
   // { "packs":[ { "name":"...", "songs":[ { "name":"...","url":"..." } ] } ] }
   // or just:    [ { "name":"...", "songs":[ ... ] }, ... ]
