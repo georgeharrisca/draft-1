@@ -1046,6 +1046,122 @@ function renderInstrumentSelectors() {
     return new XMLSerializer().serializeToString(xmlDoc);
   }
 })();
+
+/* =====================================================================
+   Module: renamePartsToInstrumentNames (extended: abbreviations too)
+   - Input (sessionStorage):
+       state.arrangedFiles[]         -> [{ instrumentName, baseName, xml, ... }]
+       state.instrumentSelections[]  -> [{ name, partAbbreviation? , ... }]  // optional, future
+   - Behavior:
+       For each arranged file:
+         • <score-part><part-name>                = instrumentName
+         • <score-part><score-instrument><instrument-name> (if present) = instrumentName
+         • <score-part><part-name-display>        (if present) = instrumentName (simple text fallback)
+         • <score-part><part-abbreviation>        = partAbbrev (from selections) OR "abbrev."
+         • <score-part><part-abbreviation-display> (if present) = same
+         • If <part-abbreviation> is missing, create it right after <part-name>
+   - Output:
+       state.arrangedFiles[] (xml updated)
+       state.renameDone = true
+   ===================================================================== */
+(function () {
+  if (!window.AA) return;
+  const STATE_KEY = "autoArranger_extractedParts";
+
+  AA.on("instruments:saved", () => AA.safe("renamePartsToInstrumentNames", run));
+
+  function run() {
+    const raw = sessionStorage.getItem(STATE_KEY);
+    if (!raw) return;
+
+    let state;
+    try { state = JSON.parse(raw); } catch (e) { console.error("[renamePartsToInstrumentNames] bad JSON", e); return; }
+
+    const files = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
+    if (!files.length) return;
+
+    // Optional: pull per-instrument abbreviations if you add them later to instrumentSelections
+    const abbrevByBase = new Map();
+    if (Array.isArray(state.instrumentSelections)) {
+      for (const s of state.instrumentSelections) {
+        if (s && s.name) {
+          const base = String(s.name);
+          if (s.partAbbreviation && typeof s.partAbbreviation === "string") {
+            abbrevByBase.set(base, s.partAbbreviation);
+          }
+        }
+      }
+    }
+
+    const parser = new DOMParser();
+    const serializer = new XMLSerializer();
+
+    for (const f of files) {
+      const instLabel = String(f.instrumentName || "").trim();
+      if (!instLabel || !f.xml) continue;
+
+      // choose abbreviation: future meta -> fallback "abbrev."
+      const base = f.baseName ? String(f.baseName) : instLabel.replace(/\s+\d+$/, "");
+      const partAbbrev = abbrevByBase.get(base) || "abbrev.";
+
+      try {
+        const doc = parser.parseFromString(f.xml, "application/xml");
+
+        // (A) <score-part> is the anchor
+        const scorePart = doc.querySelector("score-part");
+        if (!scorePart) {
+          // If somehow absent, just serialize back unchanged
+          f.xml = serializer.serializeToString(doc);
+          continue;
+        }
+
+        // 1) Part name
+        const partNameNode = scorePart.querySelector(":scope > part-name");
+        if (partNameNode) partNameNode.textContent = instLabel;
+
+        // 1a) Display name (optional)
+        const nameDisplay = scorePart.querySelector(":scope > part-name-display");
+        if (nameDisplay) nameDisplay.textContent = instLabel;
+
+        // 1b) score-instrument/instrument-name (optional but common)
+        const instrNameNode = scorePart.querySelector(":scope > score-instrument > instrument-name");
+        if (instrNameNode) instrNameNode.textContent = instLabel;
+
+        // 2) Abbreviation(s)
+        let abbrevNode = scorePart.querySelector(":scope > part-abbreviation");
+        if (!abbrevNode) {
+          // create and insert after <part-name> if we can find it
+          abbrevNode = doc.createElement("part-abbreviation");
+          if (partNameNode && partNameNode.nextSibling) {
+            scorePart.insertBefore(abbrevNode, partNameNode.nextSibling);
+          } else {
+            scorePart.appendChild(abbrevNode);
+          }
+        }
+        abbrevNode.textContent = partAbbrev;
+
+        const abbrevDisplay = scorePart.querySelector(":scope > part-abbreviation-display");
+        if (abbrevDisplay) abbrevDisplay.textContent = partAbbrev;
+
+        // Done → serialize
+        f.xml = serializer.serializeToString(doc);
+      } catch (e) {
+        console.error(`[renamePartsToInstrumentNames] failed for ${f.instrumentName}`, e);
+      }
+    }
+
+    // Persist without re-triggering lifecycle emits
+    AA.suspendEvents(() => {
+      state.arrangedFiles = files;
+      state.renameDone = true;
+      sessionStorage.setItem(STATE_KEY, JSON.stringify(state));
+    });
+
+    if (AA.DEBUG) console.log("[AA] renameDone:", true);
+  }
+})();
+
+
 /* =====================================================================
    Module: reassignPartIdsBySort (append-only, backend-only)
    - Input:
