@@ -1,11 +1,36 @@
 /* =========================================================================
-   Auto Arranger - Unified tool.js
-   Draft 1 + Modules: selection → extract → assign → group → arrange → rename
-   → re-ID by scoreOrder → combine → view
-
-   Storage key
+   Auto Arranger - tool.js (Top Section)
+   Draft 1 flow: Library → Song → (auto-extract happens next section)
    ------------------------------------------------------------------------- */
+
+/* ---------- Storage key ---------- */
 const STATE_KEY = "autoArranger_extractedParts";
+
+/* ---------- Resolve data files relative to tool.js ---------- */
+const DATA_BASE = (() => {
+  try {
+    const me = Array.from(document.scripts).find(s => (s.src || "").includes("tool.js"))?.src;
+    if (!me) return ".";
+    return me.substring(0, me.lastIndexOf("/"));
+  } catch { return "."; }
+})();
+
+/* Small fetch helper with better errors */
+async function fetchJson(url) {
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`Fetch failed ${res.status} ${res.statusText} for ${url}\n${txt.slice(0,180)}`);
+  }
+  try { return await res.json(); }
+  catch (e) {
+    try {
+      const raw = await (await fetch(url, { cache: "no-store" })).text();
+      console.error("[AutoArranger] JSON parse error at", url, "payload:", raw.slice(0,500));
+    } catch {}
+    throw e;
+  }
+}
 
 /* =========================================================================
    Tiny event bus + helpers
@@ -30,10 +55,7 @@ window.AA = window.AA || (function(){
       try { fn(); }
       catch(e){ console.error(`[AA] Module "${name}" failed:`, e); }
     },
-    suspendEvents(fn){
-      suspendDepth++;
-      try { fn(); } finally { suspendDepth--; }
-    }
+    suspendEvents(fn){ suspendDepth++; try { fn(); } finally { suspendDepth--; } }
   };
   return API;
 })();
@@ -45,13 +67,8 @@ function getState() {
   try { return JSON.parse(sessionStorage.getItem(STATE_KEY) || "{}"); }
   catch { return {}; }
 }
-function setState(next) {
-  AA.suspendEvents(() => sessionStorage.setItem(STATE_KEY, JSON.stringify(next)));
-}
-function mergeState(patch) {
-  const s = getState();
-  setState({ ...s, ...patch });
-}
+function setState(next) { AA.suspendEvents(() => sessionStorage.setItem(STATE_KEY, JSON.stringify(next))); }
+function mergeState(patch) { setState({ ...getState(), ...patch }); }
 
 function qs(id){ return document.getElementById(id); }
 function ce(tag, props){ const el = document.createElement(tag); if(props) Object.assign(el, props); return el; }
@@ -70,32 +87,8 @@ function showArrangingLoading() {
 }
 window.hideArrangingLoading = window.hideArrangingLoading || function(){};
 
-// Resolve data files relative to the tool.js location
-const DATA_BASE = (() => {
-  try {
-    const me = Array.from(document.scripts).find(s => (s.src||"").includes("tool.js"))?.src;
-    if (!me) return ".";                       // fallback: current folder
-    return me.substring(0, me.lastIndexOf("/"));
-  } catch { return "."; }
-})();
-
-async function fetchJson(url) {
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) {
-    const txt = await res.text().catch(()=> "");
-    throw new Error(`Fetch failed ${res.status} ${res.statusText} for ${url}\n${txt.slice(0,180)}`);
-  }
-  try { return await res.json(); }
-  catch (e) {
-    const raw = await (await fetch(url, { cache: "no-store" })).text().catch(()=> "");
-    console.error("[AutoArranger] JSON parse error at", url, "payload:", raw.slice(0,500));
-    throw e;
-  }
-}
-
-
 /* =========================================================================
-   Boot: wire Draft-1 UI (Library → Song → Extract → Instruments)
+   Boot: wire Draft-1 UI (Library → Song → auto-extract → Instruments)
    ------------------------------------------------------------------------- */
 document.addEventListener("DOMContentLoaded", () => {
   initDraft1UI().catch(e => console.error("[initDraft1UI]", e));
@@ -120,8 +113,7 @@ async function initDraft1UI(){
     songSel.addEventListener("change", onSongChosen);
   }
 
-  // STEP 3: Instrument selection
-  wireInstrumentPicker(instruments);
+  // STEP 3 (instrument picker) is wired elsewhere later
 
   // Restore stepper UI if state already has choices
   const s = getState();
@@ -132,34 +124,32 @@ async function initDraft1UI(){
   }
   if (s.songIndex != null) {
     songSel.value = String(s.songIndex);
-    // When song selected, extraction happens automatically
-    // So we trigger it if not done yet.
-    if (!Array.isArray(s.parts) || !s.parts.length) {
-      onSongChosen();
-    } else {
+    // If parts not yet extracted, selecting the song will auto-extract below.
+    if (Array.isArray(s.parts) && s.parts.length) {
       qs("step3")?.classList.remove("hidden");
+    } else {
+      onSongChosen();
     }
   }
 }
 
-/* ------------ Library & Song ------------ */
+/* ------------ Library & Song loaders ------------ */
 async function loadLibraryIndex(){
   // expects either:
-  // { "packs": [ { "name": "...", "songs": [ { "name":"...", "url":"..." } ] }, ... ] }
-  // or just: [ { "name": "...", "songs": [...] }, ... ]
-  const data = await fetchJson(`${DATA_BASE}/libraryData.json`); // <-- renamed file
+  // { "packs":[ { "name":"...", "songs":[ { "name":"...","url":"..." } ] } ] }
+  // or just:    [ { "name":"...", "songs":[ ... ] }, ... ]
+  const data = await fetchJson(`${DATA_BASE}/libraryData.json`); // <-- file name fix
   return Array.isArray(data.packs) ? data.packs
        : Array.isArray(data)       ? data
        : [];
 }
 
 async function loadInstrumentData(){
-  // expects array of objects with: name, instrumentPart, sortingOctave, clef, transpose, scoreOrder
-  const res = await fetch("./instrumentData.json", { cache: "no-store" });
-  if (!res.ok) throw new Error("Failed to load instrumentData.json");
-  return await res.json();
+  // expects: [{ name, instrumentPart, sortingOctave, clef, transpose, scoreOrder }, ...]
+  return await fetchJson(`${DATA_BASE}/instrumentData.json`);
 }
 
+/* ------------ Populate songs & selection handlers ------------ */
 function populateSongsForPack(packIndex){
   const packs = getState().libraryPacks || [];
   const pack = packs[packIndex];
@@ -173,6 +163,7 @@ function populateSongsForPack(packIndex){
 function onLibraryChosen(){
   const idx = parseInt(qs("librarySelect").value, 10);
   if (!Number.isFinite(idx)) return;
+
   const packs = getState().libraryPacks || [];
   const pack = packs[idx];
   mergeState({ packIndex: idx, pack: pack?.name || "", songIndex: null, song: null, parts: [] });
@@ -190,19 +181,19 @@ async function onSongChosen(){
   const s = getState();
   const pack = (s.libraryPacks || [])[s.packIndex];
   if (!pack) return;
+
   const songIdx = parseInt(qs("songSelect").value, 10);
   if (!Number.isFinite(songIdx)) return;
-  const song = pack.songs[songIdx];
 
+  const song = pack.songs[songIdx];
   mergeState({ songIndex: songIdx, song: song?.name || "", selectedSong: song });
 
-  // Auto extract parts (no UI), then go to instruments
+  // Auto extract parts (next section), then go to instruments
   if (song?.url) {
     try {
       const text = await fetch(song.url, { cache: "no-store" }).then(r => r.text());
-      const parts = extractPartsFromScore(text);
+      const parts = extractPartsFromScore(text);  // <-- defined in the next section
       mergeState({ parts });
-      // Proceed to instrument selection
       qs("step3")?.classList.remove("hidden");
       qs("step2")?.classList.add("hidden");
     } catch (e) {
@@ -211,6 +202,8 @@ async function onSongChosen(){
     }
   }
 }
+
+
 
 /* ------------ XML extraction ------------ */
 function extractPartsFromScore(xmlText){
