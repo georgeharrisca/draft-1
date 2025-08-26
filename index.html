@@ -29,10 +29,12 @@
     .title{font-weight:600;letter-spacing:.2px;}
     .subtitle{color:var(--muted);font-size:14px;margin-top:2px;}
     .card{max-width:980px;margin:10px auto 40px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;}
-    .card-header{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;}
-    .stepper{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:13px;}
+    .card-header{padding:16px 18px;border-bottom:1px solid var(--line);}
+    .stepper{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:13px;margin-bottom:8px;}
     .stepper .dot{width:8px;height:8px;border-radius:999px;background:#2a3140;}
     .stepper .dot.active{background:var(--brand);}
+    .choiceflow{color:var(--muted);font-size:13px;min-height:18px;}
+    .choiceflow strong{color:var(--text);font-weight:600;}
     .card-body{padding:20px;}
     .field{margin-bottom:16px;}
     label{display:block;font-weight:600;margin-bottom:8px;}
@@ -55,7 +57,6 @@
 </head>
 <body>
   <header class="header">
-    <!-- Replace with your logo if desired -->
     <div class="logo" aria-hidden="true"></div>
     <div>
       <div class="title">Auto Arranger (Draft 1)</div>
@@ -65,12 +66,15 @@
 
   <section class="card">
     <div class="card-header">
+      <!-- Static stepper (top row) -->
       <div class="stepper" aria-label="Progress">
         <span class="dot active" title="Select Library"></span>
         <span class="dot" title="Select Song"></span>
         <span class="dot" title="Extract"></span>
         <span class="dot" title="Select Instruments"></span>
       </div>
+      <!-- Dynamic choice flow (second row, starts blank) -->
+      <div id="choiceFlow" class="choiceflow" aria-live="polite"></div>
     </div>
 
     <div class="card-body">
@@ -85,7 +89,7 @@
         <div id="packsStatus" class="note" role="status" aria-live="polite"></div>
       </div>
 
-      <!-- Step 2: Song (hidden until a pack is chosen) -->
+      <!-- Step 2: Song -->
       <div id="step2" class="hidden">
         <div class="field">
           <label for="songSelect">Select Song</label>
@@ -95,12 +99,12 @@
         </div>
         <div class="row">
           <button id="backButton" type="button" class="btn secondary">Back</button>
-          <button id="extractButton" type="button" class="btn" disabled>Extract Parts Data</button>
+          <!-- Extract button removed: extraction happens automatically on selection -->
         </div>
         <div id="status" class="note" role="status" aria-live="polite"></div>
       </div>
 
-      <!-- Step 3: Instruments (shown after extract) -->
+      <!-- Step 3: Instruments -->
       <div id="step3" class="hidden">
         <div class="field">
           <label>Select Instruments (enter quantity for each)</label>
@@ -119,6 +123,6 @@
     Files expected alongside this page: <code>tool.js</code>, <code>libraryData.json</code>, <code>instrumentData.json</code>.
   </div>
 
-  <script src="tool.js?v=4"></script>
+  <script src="tool.js?v=5"></script>
 </body>
 </html>
