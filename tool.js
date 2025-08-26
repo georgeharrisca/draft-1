@@ -11,8 +11,6 @@
      H) XML extraction (single-part render)
      I) Step 3 Instrument Picker UI
      J) Pipeline reset (pre-module stub)
-   -----------------------------------------------------------------------------
-   NOTE: Ensure your HTML has:  <style>.hidden{display:none!important}</style>
    ========================================================================== */
 
 
@@ -20,11 +18,9 @@
    A) GLOBAL SINGLETONS & CONSTANTS
    ========================================================================== */
 
-// Avoid "already declared" errors across hot reloads / multiple script tags
-window.AUTO_ARRANGER_STATE_KEY  = window.AUTO_ARRANGER_STATE_KEY  || "autoArranger_extractedParts";
+window.AUTO_ARRANGER_STATE_KEY = window.AUTO_ARRANGER_STATE_KEY || "autoArranger_extractedParts";
 const STATE_KEY = window.AUTO_ARRANGER_STATE_KEY;
 
-// Resolve relative URLs (script folder) and site root (Netlify/GitHub Pages)
 window.AUTO_ARRANGER_DATA_BASE = window.AUTO_ARRANGER_DATA_BASE || (function () {
   try {
     const me = Array.from(document.scripts).find(s => (s.src || "").includes("tool.js"))?.src;
@@ -45,24 +41,19 @@ function qs(id){ return document.getElementById(id); }
 function ce(tag, props){ const el = document.createElement(tag); if(props) Object.assign(el, props); return el; }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
 
-// Tolerant selectors (support alternate ids if your HTML changes)
 function libSelectEl(){ return qs("librarySelect") || qs("libraryPackSelect") || document.querySelector('select[data-role="library"]'); }
-function songSelectEl(){ return qs("songSelect")    || qs("songSelectDropdown") || document.querySelector('select[data-role="song"]'); }
+function songSelectEl(){ return qs("songSelect") || qs("songSelectDropdown") || document.querySelector('select[data-role="song"]'); }
 
-// Session state helpers
 function getState() {
   try { return JSON.parse(sessionStorage.getItem(STATE_KEY) || "{}"); }
   catch { return {}; }
 }
-function setState(next) {
-  AA.suspendEvents(() => sessionStorage.setItem(STATE_KEY, JSON.stringify(next)));
-}
+function setState(next) { AA.suspendEvents(() => sessionStorage.setItem(STATE_KEY, JSON.stringify(next))); }
 function mergeState(patch) { setState({ ...getState(), ...patch }); }
 
-// Optional: uncomment during debugging to force a fresh session on reload
+// Debug reset if needed:
 // sessionStorage.removeItem(STATE_KEY);
 
-// Loading overlay (used later when modules are reattached)
 function showArrangingLoading() {
   if (qs("aa-loading")) return;
   const pad = ce("div");
@@ -77,7 +68,6 @@ function showArrangingLoading() {
 }
 window.hideArrangingLoading = window.hideArrangingLoading || function(){};
 
-// Fetch helpers (robust with diagnostics)
 async function fetchJson(url) {
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) {
@@ -130,7 +120,7 @@ window.AA = window.AA || (function(){
     },
     safe(name, fn){
       try { fn(); }
-      catch(e){ console.error(`[AA] Module \"${name}\" failed:`, e); }
+      catch(e){ console.error(`[AA] Module "${name}" failed:`, e); }
     },
     suspendEvents(fn){ suspendDepth++; try { fn(); } finally { suspendDepth--; } }
   };
@@ -141,30 +131,21 @@ window.AA = window.AA || (function(){
 /* ============================================================================
    D) WIZARD VISIBILITY HELPER
    ========================================================================== */
-// stage ∈ 'library' | 'song' | 'instruments'
-// ---- Wizard visibility + progress dots + stage event ----
+
 function setWizardStage(stage /* 'library' | 'song' | 'instruments' */){
-  const s1 = document.getElementById("step1");
-  const s2 = document.getElementById("step2");
-  const s3 = document.getElementById("step3");
+  const s1 = qs("step1"), s2 = qs("step2"), s3 = qs("step3");
   if (s1) s1.classList.toggle("hidden", stage !== "library");
   if (s2) s2.classList.toggle("hidden", stage !== "song");
   if (s3) s3.classList.toggle("hidden", stage !== "instruments");
 
-  // update step dots
   updateStepDots(stage);
-
-  // notify listeners (e.g., instrument-picker setup)
   AA.emit("wizard:stage", stage);
 }
-
-// Tolerant dot updater: supports .aa-step-dot OR .step-dot OR [data-step-dot]
 function updateStepDots(stage){
   const idx = stage === "library" ? 0 : stage === "song" ? 1 : 2;
   const dots = document.querySelectorAll(".aa-step-dot, .step-dot, [data-step-dot]");
   dots.forEach((el, i) => el.classList.toggle("active", i === idx));
 }
-
 
 
 /* ============================================================================
@@ -181,11 +162,9 @@ async function initDraft1UI(){
 
   console.log("[AA] DATA_BASE =", DATA_BASE, "| ROOT_BASE =", ROOT_BASE);
 
-  // Load library packs & instrument meta
   const [packs, instruments] = await Promise.all([loadLibraryIndex(), loadInstrumentData()]);
   mergeState({ libraryPacks: packs, instrumentData: instruments });
 
-  // Hook selects
   const libSel  = libSelectEl();
   const songSel = songSelectEl();
 
@@ -203,19 +182,16 @@ async function initDraft1UI(){
     console.warn("[AA] Could not find song select element (id='songSelect' or 'songSelectDropdown').");
   }
 
-  // -------- Decide which step to show (validate saved state; DO NOT auto-advance)
+  // Validate saved state and choose stage (do not auto-advance)
   const st = getState();
-
   const validPack =
     Number.isInteger(st.packIndex) &&
     (Array.isArray(packs) && Boolean(packs[st.packIndex]));
-
   const validSong =
     validPack &&
     Number.isInteger(st.songIndex) &&
     Array.isArray(packs[st.packIndex].songs) &&
     Boolean(packs[st.packIndex].songs[st.songIndex]);
-
   const haveParts = Array.isArray(st.parts) && st.parts.length > 0;
 
   if (!validPack) {
@@ -229,7 +205,6 @@ async function initDraft1UI(){
     mergeState({ songIndex: null, song: null, parts: [] });
     setWizardStage("song");
   } else {
-    // Both picks valid: restore them, but only show instruments if parts already exist
     if (libSel) {
       libSel.value = String(st.packIndex);
       populateSongsForPack(st.packIndex);
@@ -248,7 +223,7 @@ async function initDraft1UI(){
    F) LIBRARY & INSTRUMENT LOADERS (+ NORMALIZERS)
    ========================================================================== */
 
-// Normalizer helpers
+// ---- normalizer helpers ----
 function basename(path) { const m = String(path || "").split(/[\\/]/).pop(); return m || ""; }
 function stripExt(name) { return String(name || "").replace(/\.[^.]+$/, ""); }
 function absolutizeUrl(u, baseUrl) {
@@ -259,11 +234,10 @@ function absolutizeUrl(u, baseUrl) {
     return new URL(String(u).replace(/^\.\//, ""), folder).href;
   } catch { return u; }
 }
+
+// ---- library normalizer ----
 function normalizeLibraryData(data, baseUrl) {
-  // Accept:
-  // 1) { packs: [ { name, songs:[{name,url}|string] } ] }
-  // 2) [ { name, songs:[...] } ]
-  // 3) { "Pack Name": [ "file.xml" | {name,url} ] }
+  // Accept 1) {packs:[...]} 2) [ ... ] 3) { "Pack Name": [ "file.xml" | {name,url} ] }
   const packs = [];
   const addPack = (name, items) => {
     const arr = Array.isArray(items) ? items : [];
@@ -282,16 +256,25 @@ function normalizeLibraryData(data, baseUrl) {
     packs.push({ name: String(name || "Pack"), songs });
   };
 
+  if (Array.isArray(data?.packs)) { data.packs.forEach(p => addPack(p?.name, p?.songs || p?.files || p?.items)); return packs; }
+  if (Array.isArray(data))        { data.forEach(p => addPack(p?.name, p?.songs || p?.files || p?.items));     return packs; }
+  if (data && typeof data === "object") {
+    Object.entries(data).forEach(([name, items]) => { if (Array.isArray(items)) addPack(name, items); });
+    return packs;
+  }
+  return [];
+}
+
+// ---- instrument normalizer (TOP-LEVEL, not nested) ----
 function normalizeInstrumentData(data) {
-  // Accept:
-  // 1) [ { name, instrumentPart, sortingOctave, clef, transpose, scoreOrder }, ... ]
+  // 1) Array of instrument meta
   if (Array.isArray(data)) return data;
 
-  // 2) { instruments: [ ... ] }  or  { items: [ ... ] }
+  // 2) { instruments: [...] } or { items: [...] }
   if (Array.isArray(data?.instruments)) return data.instruments;
   if (Array.isArray(data?.items))       return data.items;
 
-  // 3) { "Violin": { ...meta }, "Flute": { ... } }
+  // 3) Map form: { "Violin": { ... }, "Flute": { ... } }
   if (data && typeof data === "object") {
     return Object.entries(data).map(([name, meta]) => ({
       name,
@@ -305,24 +288,14 @@ function normalizeInstrumentData(data) {
   return [];
 }
 
-   
-  if (Array.isArray(data?.packs)) { data.packs.forEach(p => addPack(p?.name, p?.songs || p?.files || p?.items)); return packs; }
-  if (Array.isArray(data))        { data.forEach(p => addPack(p?.name, p?.songs || p?.files || p?.items));     return packs; }
-  if (data && typeof data === "object") {
-    Object.entries(data).forEach(([name, items]) => { if (Array.isArray(items)) addPack(name, items); });
-    return packs;
-  }
-  return [];
-}
-
-// Loaders (probe multiple likely paths & casings)
+// ---- loaders ----
 async function loadLibraryIndex(){
   const candidates = [
     `${ROOT_BASE}/libraryData.json`,
     `${ROOT_BASE}/librarydata.json`,
     `${DATA_BASE}/libraryData.json`,
     `${DATA_BASE}/librarydata.json`,
-    './libraryData.json', './librarydata.json', 'libraryData.json', 'librarydata.json'
+    './libraryData.json','./librarydata.json','libraryData.json','librarydata.json'
   ];
   const { data, url } = await tryJson(candidates);
   mergeState({ libraryJsonUrl: url });
@@ -336,8 +309,7 @@ async function loadInstrumentData(){
     `${DATA_BASE}/instrumentData.json`,
     `${ROOT_BASE}/data/instrumentData.json`,
     `${DATA_BASE}/data/instrumentData.json`,
-    './instrumentData.json',
-    'instrumentData.json'
+    './instrumentData.json','instrumentData.json'
   ];
   const { data, url } = await tryJson(candidates);
   const normalized = normalizeInstrumentData(data);
@@ -350,11 +322,9 @@ async function loadInstrumentData(){
     console.log(`[AA] instruments loaded: ${normalized.length} from`, url);
   }
 
-  // let the UI know it can repopulate if needed
   AA.emit("data:instrumentData", normalized);
   return normalized;
 }
-
 
 
 /* ============================================================================
@@ -382,7 +352,6 @@ function onLibraryChosen(){
   mergeState({ packIndex: idx, pack: pack?.name || "", songIndex: null, song: null, parts: [] });
   populateSongsForPack(idx);
 
-  // Move to Step 2 (Song)
   setWizardStage("song");
 
   const sSel = songSelectEl();
@@ -402,7 +371,6 @@ async function onSongChosen(){
   const song = pack.songs[songIdx];
   mergeState({ songIndex: songIdx, song: song?.name || "", selectedSong: song });
 
-  // Fetch & extract; then move to instruments
   if (song?.url) {
     try {
       const text  = await fetch(song.url, { cache: "no-store" }).then(r => r.text());
@@ -444,11 +412,9 @@ function extractPartsFromScore(xmlText){
     const bodyPart = partList.find(p => p.getAttribute("id") === id);
     if (!bodyPart) continue;
 
-    // Build a single-part score-partwise
     const newDoc = document.implementation.createDocument("", "", null);
     const score  = newDoc.createElement("score-partwise");
 
-    // Copy some header metadata if present
     const root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
     const headerTags = ["work","identification","defaults","credit"];
     for (const tag of headerTags) {
@@ -456,12 +422,10 @@ function extractPartsFromScore(xmlText){
       if (node) score.appendChild(newDoc.importNode(node, true));
     }
 
-    // Create part-list with just this score-part
     const pl = newDoc.createElement("part-list");
     pl.appendChild(newDoc.importNode(sp, true));
     score.appendChild(pl);
 
-    // Append the single body part
     score.appendChild(newDoc.importNode(bodyPart, true));
     newDoc.appendChild(score);
 
@@ -520,7 +484,6 @@ function extractPartsFromScore(xmlText){
     const note      = document.getElementById("instStatus");
     if (!listLeft || !btnAdd || !listRight || !btnRemove || !btnSave) return;
 
-    // --- populate function (can be called multiple times) ---
     function populateLeftList(){
       const s = getState();
       const instruments = Array.isArray(s.instrumentData) ? s.instrumentData : [];
@@ -535,11 +498,8 @@ function extractPartsFromScore(xmlText){
       }
     }
     populateLeftList();
-
-    // Re-populate whenever instrument data loads/changes
     AA.on("data:instrumentData", populateLeftList);
 
-    // --- wire handlers only once ---
     if (listLeft.dataset.wired === "1") return;
     listLeft.dataset.wired = "1";
 
@@ -603,7 +563,6 @@ function extractPartsFromScore(xmlText){
     });
   }
 
-  // Set up initially and whenever we switch to the instruments stage
   document.addEventListener("DOMContentLoaded", setupInstrumentPicker);
   AA.on("wizard:stage", (stage) => { if (stage === "instruments") setupInstrumentPicker(); });
 })();
@@ -611,8 +570,6 @@ function extractPartsFromScore(xmlText){
 
 /* ============================================================================
    J) PIPELINE RESET (RUNS RIGHT AFTER "SAVE SELECTIONS")
-   - Keeps context, clears downstream artifacts
-   - Leave overlay call commented until modules are re-attached
    ========================================================================== */
 
 (function(){
@@ -621,7 +578,6 @@ function extractPartsFromScore(xmlText){
   function reset(){
     const s = getState();
     setState({
-      // keep context
       packIndex: s.packIndex,
       pack: s.pack,
       songIndex: s.songIndex,
@@ -631,14 +587,12 @@ function extractPartsFromScore(xmlText){
       instrumentData: s.instrumentData,
       instrumentSelections: s.instrumentSelections,
 
-      // clear downstream
       parts: Array.isArray(s.parts) ? s.parts : [],
       assignedResults: [],
       groupedAssignments: [],
       arrangedFiles: [],
       combinedScoreXml: "",
 
-      // flags
       arrangeDone: false,
       renameDone: false,
       reassignByScoreDone: false,
@@ -647,7 +601,6 @@ function extractPartsFromScore(xmlText){
       timestamp: Date.now()
     });
 
-    // When modules are reattached, uncomment this to show the loading overlay
-    // showArrangingLoading();
+    // showArrangingLoading(); // re-enable when pipeline modules are reattached
   }
 })();
