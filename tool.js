@@ -412,10 +412,13 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
 
+  
+
 
   
   // --- example pattern for future modules (keep appending below this line) ---
 
+  
 
   
 /* =====================================================================
@@ -728,8 +731,72 @@ document.addEventListener("DOMContentLoaded", () => {
   function esc(s){ return String(s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 })();
 
+  
+/* =====================================================================
+   Module: arrangingLoadingScreen (append-only)
+   - On instruments:saved → show a full-page "Arranging Custom Score…" view
+   - Keep all computed data in sessionStorage; no table visualization
+   ===================================================================== */
+(function(){
+  if (!window.AA) return;
+
+  function showLoading() {
+    // Create overlay if needed
+    let ov = document.getElementById("aa-loading");
+    if (!ov) {
+      ov = document.createElement("div");
+      ov.id = "aa-loading";
+      ov.setAttribute("role","status");
+      // full-viewport overlay with your banner behind a dark veil
+      ov.style.position = "fixed";
+      ov.style.inset = "0";
+      ov.style.zIndex = "9999";
+      ov.style.display = "flex";
+      ov.style.alignItems = "center";
+      ov.style.justifyContent = "center";
+      ov.style.textAlign = "center";
+      ov.style.background = "linear-gradient(180deg, rgba(11,13,18,.92), rgba(11,13,18,.96)), var(--banner) center/cover no-repeat";
+      ov.innerHTML = `
+        <div>
+          <div style="font-weight:700;font-size:28px;letter-spacing:.3px;">Arranging Custom Score…</div>
+          <!-- optional hint or spinner space -->
+        </div>
+      `;
+      document.body.appendChild(ov);
+    } else {
+      ov.style.display = "flex";
+    }
+
+    // Hide earlier steps/panels
+    document.getElementById("step1")?.classList.add("hidden");
+    document.getElementById("step2")?.classList.add("hidden");
+    document.getElementById("step3")?.classList.add("hidden");
+
+    // Hide assignments panel if the assignParts module rendered it
+    const ap = document.getElementById("aa-assignments-panel");
+    if (ap) ap.style.display = "none";
+  }
+
+  // Show loading screen as soon as instruments are saved
+  AA.on("instruments:saved", () => {
+    showLoading();
+    // If assignParts renders right after, hide its panel again on next tick
+    setTimeout(() => {
+      const ap = document.getElementById("aa-assignments-panel");
+      if (ap) ap.style.display = "none";
+    }, 0);
+  });
+
+  // Optional helper for future steps to dismiss the loading view
+  window.hideArrangingLoading = function(){
+    const ov = document.getElementById("aa-loading");
+    if (ov) ov.style.display = "none";
+  };
+})();
 
 
+  
+  
   
   // AA.on("instruments:saved", (state) => {
   //   AA.safe("assignParts", () => {
