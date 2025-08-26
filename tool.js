@@ -8,18 +8,21 @@ document.addEventListener("DOMContentLoaded", () => {
   const statusEl = document.getElementById("status");
   const packsStatus = document.getElementById("packsStatus");
 
-  // stepper dots (purely visual)
+  // stepper dots for visual progress
   const dots = document.querySelectorAll(".stepper .dot");
-  const setStep = (n) => {
-    dots.forEach((d, i) => d.classList.toggle("active", i <= n));
-  };
+  const setStep = (n) => dots.forEach((d,i)=>d.classList.toggle("active", i<=n));
 
   let libraryData = {};
-  const INDEX_URL = "./libraryData.json";
+  const INDEX_URL = "./libraryData.json"; // keep this file alongside index.html
 
   init();
 
   async function init() {
+    // Show only Step 1 on load
+    step1.classList.remove("hidden");
+    step2.classList.add("hidden");
+    setStep(0);
+
     packsStatus.textContent = "Loading packs…";
     try {
       const res = await fetch(INDEX_URL, { cache: "no-store" });
@@ -34,7 +37,6 @@ document.addEventListener("DOMContentLoaded", () => {
         librarySelect.appendChild(opt);
       });
       packsStatus.textContent = "";
-      setStep(0);
     } catch (err) {
       console.error("Failed to load libraryData.json:", err);
       librarySelect.innerHTML = '<option value="">(Failed to load packs)</option>';
@@ -43,10 +45,12 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  // Step 1 → Step 2 (only then reveal song select + Back button)
   librarySelect.addEventListener("change", () => {
     const pack = librarySelect.value;
     if (!pack) return;
 
+    // Populate songs
     songSelect.innerHTML = '<option value="">-- Choose a Song --</option>';
     (libraryData[pack] || []).forEach(song => {
       const opt = document.createElement("option");
@@ -55,6 +59,7 @@ document.addEventListener("DOMContentLoaded", () => {
       songSelect.appendChild(opt);
     });
 
+    // Transition to Step 2
     extractButton.disabled = true;
     statusEl.textContent = "";
     step1.classList.add("hidden");
@@ -62,11 +67,13 @@ document.addEventListener("DOMContentLoaded", () => {
     setStep(1);
   });
 
+  // Enable Extract when a song is chosen
   songSelect.addEventListener("change", () => {
     extractButton.disabled = !songSelect.value;
     statusEl.textContent = "";
   });
 
+  // Back from Step 2 → Step 1
   backButton.addEventListener("click", () => {
     step2.classList.add("hidden");
     step1.classList.remove("hidden");
@@ -77,6 +84,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setStep(0);
   });
 
+  // Extract Parts Data (store in sessionStorage; no display)
   extractButton.addEventListener("click", async () => {
     const songUrl = songSelect.value;
     if (!songUrl) {
@@ -98,8 +106,8 @@ document.addEventListener("DOMContentLoaded", () => {
         timestamp: Date.now(),
         pack: packName,
         song: songName,
-        parts: partsPayload.parts,
-        scoreMeta: partsPayload.scoreMeta
+        parts: partsPayload.parts,        // [{ id, partName, xml }]
+        scoreMeta: partsPayload.scoreMeta // { movementTitle, composer, workTitle }
       };
 
       sessionStorage.setItem("autoArranger_extractedParts", JSON.stringify(state));
@@ -117,7 +125,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // ---- Helpers ----
+  // === Helpers ===
   function extractParts(xmlText) {
     const parser = new DOMParser();
     const xml = parser.parseFromString(xmlText, "application/xml");
@@ -142,15 +150,10 @@ document.addEventListener("DOMContentLoaded", () => {
       return { id, partName, xml: singleXml };
     });
 
-    return {
-      scoreMeta: { movementTitle, workTitle, composer },
-      parts
-    };
+    return { scoreMeta: { movementTitle, workTitle, composer }, parts };
   }
 
-  function textOrNull(node) {
-    return node ? (node.textContent || "").trim() : null;
-  }
+  function textOrNull(node) { return node ? (node.textContent || "").trim() : null; }
 
   function buildSinglePartXml(fullDoc, partEl, partId, partName) {
     const serialize = node => new XMLSerializer().serializeToString(node);
