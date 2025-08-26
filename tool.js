@@ -122,12 +122,15 @@ async function initDraft1UI(){
 
 /* ------------ Library & Song ------------ */
 async function loadLibraryIndex(){
-  // expects { "packs":[ { "name": "...", "songs": [ { "name":"...", "url":"..." }, ... ] }, ... ] }
-  const res = await fetch("./libraryData.json", { cache: "no-store" });
-  if (!res.ok) throw new Error("Failed to load libraryIndex.json");
-  const data = await res.json();
-  return Array.isArray(data.packs) ? data.packs : [];
+  // expects either:
+  // { "packs": [ { "name": "...", "songs": [ { "name":"...", "url":"..." } ] }, ... ] }
+  // or just: [ { "name": "...", "songs": [...] }, ... ]
+  const data = await fetchJson(`${DATA_BASE}/libraryData.json`); // <-- renamed file
+  return Array.isArray(data.packs) ? data.packs
+       : Array.isArray(data)       ? data
+       : [];
 }
+
 async function loadInstrumentData(){
   // expects array of objects with: name, instrumentPart, sortingOctave, clef, transpose, scoreOrder
   const res = await fetch("./instrumentData.json", { cache: "no-store" });
