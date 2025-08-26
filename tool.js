@@ -1388,24 +1388,20 @@ function renderInstrumentSelectors() {
 })();
 
 /* =====================================================================
-   Module: finalViewer (append-only)
-   - Shows “Score/Part” visualizer after backend pipeline is done.
-   - Uses OpenSheetMusicDisplay (OSMD) + html2canvas + jsPDF
-   - White background always.
+   Module: finalViewer (append-only) — centered UI + Back (clear processing)
+   - Dropdown sorted by P-order; Score pinned on top
    ===================================================================== */
 (function () {
   if (!window.AA) return;
   const STATE_KEY = "autoArranger_extractedParts";
 
-  // Wait for instruments saved → pipeline runs → show viewer when ready
   AA.on("instruments:saved", () => AA.safe("finalViewer", bootWhenReady));
 
   async function bootWhenReady() {
-    // Poll until pipeline flags are all true
     const ok = await waitForState(s => s.arrangeDone && s.renameDone && s.reassignByScoreDone && s.combineDone);
     if (!ok) return;
 
-    // Ensure libs are present (loaded once) — paths in repo root
+    // libs in repo root
     await ensureLib("opensheetmusicdisplay", "./opensheetmusicdisplay.min.js");
     await ensureLib("html2canvas", "./html2canvas.min.js");
     await ensureLib("jspdf", "./jspdf.umd.min.js");
@@ -1416,6 +1412,12 @@ function renderInstrumentSelectors() {
   function getState() {
     try { return JSON.parse(sessionStorage.getItem(STATE_KEY) || "{}"); }
     catch { return {}; }
+  }
+
+  function setState(next) {
+    AA.suspendEvents(() => {
+      sessionStorage.setItem(STATE_KEY, JSON.stringify(next));
+    });
   }
 
   function waitForState(predicate, timeoutMs = 120000) {
@@ -1435,10 +1437,7 @@ function renderInstrumentSelectors() {
       const script = document.createElement("script");
       script.src = src;
       script.onload = () => resolve(true);
-      script.onerror = () => {
-        console.warn(`[finalViewer] Failed to load ${src}. If you keep libs elsewhere, update the path.`);
-        resolve(false);
-      };
+      script.onerror = () => { console.warn(`[finalViewer] Failed to load ${src}`); resolve(false); };
       document.head.appendChild(script);
     });
   }
@@ -1451,53 +1450,104 @@ function renderInstrumentSelectors() {
   function buildViewerUI() {
     const state = getState();
     const songName = state?.song || "Auto Arranger Result";
-    const parts = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
+    const partsRaw = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
     const hasScore = typeof state.combinedScoreXml === "string" && state.combinedScoreXml.length > 0;
 
-    // Fullscreen panel
+    // Sort parts by P-number (P1, P2, …) — mirrors ID assignment
+    const parts = sortPartsByPid(partsRaw);
+
+    // Fullscreen overlay (no vertical scroll)
     const wrap = document.createElement("div");
     wrap.id = "aa-viewer";
     wrap.style.cssText = `
       position: fixed; inset: 0; z-index: 99999;
-      display: flex; flex-direction: column; gap: 12px;
+      display: flex; flex-direction: column;
+      height: 100vh;
       background: rgba(0,0,0,0.08);
       padding: 28px;
       box-sizing: border-box;
-      overflow: auto;
+      overflow-y: hidden;
+      overflow-x: hidden;
     `;
+
+    // Back button — clears processing and returns to instrument selection
+    const backBtn = document.createElement("button");
+    backBtn.textContent = "← Back";
+    backBtn.title = "Back to instrument selection";
+    backBtn.style.cssText = `
+      position: absolute; top: 16px; left: 16px;
+      padding: 8px 12px; border-radius: 8px; border: none;
+      background: #e5e7eb; color: #111; font: 600 13px system-ui; cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,.06);
+    `;
+    backBtn.addEventListener("click", () => backToInstrumentSelection(state, wrap));
+    wrap.appendChild(backBtn);
 
     // Card
     const card = document.createElement("div");
     card.style.cssText = `
       margin: auto; width: min(1200px, 100%);
+      height: calc(100vh - 56px);
       background: #ffffff; border-radius: 14px;
       box-shadow: 0 12px 36px rgba(0,0,0,0.18);
-      padding: 20px 20px 28px;
+      padding: 20px 20px 18px;
       box-sizing: border-box;
+      display: flex; flex-direction: column; gap: 10px;
+      overflow: hidden;
     `;
     wrap.appendChild(card);
 
-    // Header
-    const h = document.createElement("div");
-    h.style.cssText = `display:flex; align-items:center; justify-content:space-between; gap:16px;`;
-    h.innerHTML = `
-      <h2 style="margin:0; font: 600 20px/1.2 system-ui, Arial, sans-serif;">${escapeHtml(songName)}</h2>
-      <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <label for="aa-viewer-select" style="align-self:center; font:600 13px/1 system-ui, Arial">Select Score or Part</label>
-        <select id="aa-viewer-select" style="padding:8px 10px; font:14px system-ui">
-          ${hasScore ? `<option value="__SCORE__">Score</option>` : ``}
-          ${parts.map(p => `<option value="${escapeHtml(p.instrumentName)}">${escapeHtml(p.instrumentName)}</option>`).join("")}
-        </select>
-        <button id="aa-btn-visualize" class="aa-btn">Visualize</button>
-        <button id="aa-btn-pdf" class="aa-btn" disabled>Download PDF</button>
-        <button id="aa-btn-xml" class="aa-btn" disabled>Download XML</button>
-        <button id="aa-btn-pdf-all" class="aa-btn">Download PDF All Parts</button>
-        <button id="aa-btn-xml-all" class="aa-btn">Download XML ALL Parts</button>
-      </div>
+    // Title (top-center, black)
+    const title = document.createElement("h2");
+    title.textContent = songName;
+    title.style.cssText = `
+      margin: 0; text-align: center; color: #000;
+      font: 700 20px/1.2 system-ui, Arial, sans-serif;
     `;
-    card.appendChild(h);
+    card.appendChild(title);
 
-    // Styles for buttons
+    // Controls container centered
+    const controls = document.createElement("div");
+    controls.style.cssText = `display:flex; flex-direction:column; align-items:center; gap:8px; margin-top:2px;`;
+    card.appendChild(controls);
+
+    // Label (centered, black)
+    const label = document.createElement("div");
+    label.textContent = "Select Score or Part";
+    label.style.cssText = `color:#000; font:600 13px/1 system-ui;`;
+    controls.appendChild(label);
+
+    // Dropdown centered (Score first, then P-order)
+    const select = document.createElement("select");
+    select.id = "aa-viewer-select";
+    select.style.cssText = `padding:8px 10px; font:14px system-ui;`;
+    if (hasScore) {
+      const opt = document.createElement("option");
+      opt.value = "__SCORE__";
+      opt.textContent = "Score";
+      select.appendChild(opt);
+    }
+    for (const p of parts) {
+      const opt = document.createElement("option");
+      opt.value = p.instrumentName;
+      opt.textContent = p.instrumentName;
+      select.appendChild(opt);
+    }
+    controls.appendChild(select);
+
+    // Buttons row (centered)
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = `display:flex; gap:8px; flex-wrap:nowrap; justify-content:center; align-items:center;`;
+    btnRow.innerHTML = `
+      <button id="aa-btn-visualize" class="aa-btn">Visualize</button>
+      <button id="aa-btn-pdf" class="aa-btn" disabled>Download PDF</button>
+      <button id="aa-btn-xml" class="aa-btn" disabled>Download XML</button>
+      <button id="aa-btn-pdf-all" class="aa-btn">Download PDF All Parts</button>
+      <button id="aa-btn-xml-all" class="aa-btn">Download XML ALL Parts</button>
+    `;
+    controls.appendChild(btnRow);
+
+    // Button styles
     const styleBtn = document.createElement("style");
     styleBtn.textContent = `
       .aa-btn { padding:8px 12px; border-radius:8px; background:#0f62fe; color:white; border:none; cursor:pointer; font:600 13px system-ui; }
@@ -1506,13 +1556,15 @@ function renderInstrumentSelectors() {
     `;
     card.appendChild(styleBtn);
 
-    // OSMD host (white background requirement)
+    // OSMD host
     const osmdBox = document.createElement("div");
     osmdBox.id = "aa-osmd-box";
     osmdBox.style.cssText = `
-      margin-top:14px; border:1px solid #e5e5e5; border-radius:10px;
-      background:#ffffff; /* <— always white */
-      padding:18px; min-height:240px; overflow:auto;
+      margin-top:8px; border:1px solid #e5e5e5; border-radius:10px;
+      background:#ffffff; padding:14px;
+      flex: 1 1 auto; min-height: 0;
+      overflow-y: hidden; overflow-x: auto;
+      white-space: nowrap;
     `;
     card.appendChild(osmdBox);
 
@@ -1521,20 +1573,17 @@ function renderInstrumentSelectors() {
     // OSMD init
     const OSMD = lookupGlobal("opensheetmusicdisplay");
     const osmd = new OSMD.OpenSheetMusicDisplay(osmdBox, {
-      autoResize: true,
-      backend: "svg",
-      drawingParameters: "default"
+      autoResize: true, backend: "svg", drawingParameters: "default"
     });
 
-    // Controls
-    const select = h.querySelector("#aa-viewer-select");
-    const btnVis = h.querySelector("#aa-btn-visualize");
-    const btnPDF = h.querySelector("#aa-btn-pdf");
-    const btnXML = h.querySelector("#aa-btn-xml");
-    const btnPDFAll = h.querySelector("#aa-btn-pdf-all");
-    const btnXMLAll = h.querySelector("#aa-btn-xml-all");
+    // Controls references
+    const btnVis = btnRow.querySelector("#aa-btn-visualize");
+    const btnPDF = btnRow.querySelector("#aa-btn-pdf");
+    const btnXML = btnRow.querySelector("#aa-btn-xml");
+    const btnPDFAll = btnRow.querySelector("#aa-btn-pdf-all");
+    const btnXMLAll = btnRow.querySelector("#aa-btn-xml-all");
 
-    let lastXml = ""; // for single XML download
+    let lastXml = "";
 
     btnVis.addEventListener("click", async () => {
       const choice = select.value;
@@ -1543,7 +1592,7 @@ function renderInstrumentSelectors() {
 
       try {
         lastXml = xml;
-        const processed = transformXmlForSlashes(xml); // safe no-op for typical files
+        const processed = transformXmlForSlashes(xml);
         await osmd.load(processed);
         osmd.render();
 
@@ -1576,8 +1625,7 @@ function renderInstrumentSelectors() {
       const docName = `${safe(songName)} - All Parts.pdf`;
       let doc = null;
 
-      for (let i = 0; i < parts.length; i++) {
-        const p = parts[i];
+      for (const p of parts) {
         try {
           const processed = transformXmlForSlashes(p.xml);
           await osmd.load(processed);
@@ -1618,9 +1666,23 @@ function renderInstrumentSelectors() {
   }
 
   // ---- helpers ----
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+  function sortPartsByPid(files) {
+    const out = [];
+    for (const f of files) {
+      const pid = f.newPartId || extractPidFromXml(f.xml);
+      if (!pid) continue;
+      const n = parseInt(String(pid).replace(/^P/i, ""), 10);
+      out.push({ ...f, _pid: pid, _pnum: Number.isFinite(n) ? n : Number.POSITIVE_INFINITY });
+    }
+    out.sort((a,b) => (a._pnum - b._pnum) || String(a.instrumentName).localeCompare(String(b.instrumentName)));
+    return out;
   }
+  function extractPidFromXml(xml) {
+    const m = String(xml || "").match(/<score-part\s+id="([^"]+)"/i);
+    return m ? m[1] : null;
+    }
+
+  function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
   function safe(s){ return String(s||"").replace(/[\/\\:?*"<>|]+/g,"-"); }
 
   async function exportCurrentViewToPdf(container, baseName) {
@@ -1642,9 +1704,7 @@ function renderInstrumentSelectors() {
     return html2canvas(container, {
       scale: 2,
       backgroundColor: "#ffffff"
-    }).then(canvas => {
-      return { canvas, w: canvas.width, h: canvas.height };
-    });
+    }).then(canvas => ({ canvas, w: canvas.width, h: canvas.height }));
   }
 
   function downloadText(str, filename, mime) {
@@ -1654,6 +1714,77 @@ function renderInstrumentSelectors() {
     a.download = filename || "file.txt";
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 2500);
+  }
+
+  // Back button behavior: clear processing + navigate back to Step 3 with same Library/Song selected
+  async function backToInstrumentSelection(prevState, wrapEl) {
+    try {
+      const packName = prevState?.pack || "";
+      const songName = prevState?.song || "";
+
+      // Clear processing, keep only minimal context (pack & song optional, parts will be re-extracted)
+      setState({ pack: packName, song: songName, timestamp: Date.now() });
+
+      // Hide viewer & loading
+      wrapEl?.remove();
+      if (typeof window.hideArrangingLoading === "function") window.hideArrangingLoading();
+
+      // Show step 1 so we can drive UI transitions
+      const step1 = document.getElementById("step1");
+      const step2 = document.getElementById("step2");
+      const step3 = document.getElementById("step3");
+      step1?.classList.remove("hidden");
+      step2?.classList.add("hidden");
+      step3?.classList.add("hidden");
+
+      // Try to auto-reselect Library and Song to land in Instruments (fresh)
+      await reselectLibraryAndSong(packName, songName);
+
+      // Finally, ensure we’re on Step 3 (instrument selection); the app’s
+      // songSelect change handler will have auto-extracted parts and brought us here.
+      document.getElementById("step3")?.classList.remove("hidden");
+      const dots = document.querySelectorAll(".stepper .dot");
+      if (dots && dots.length) dots.forEach((d,i)=>d.classList.toggle("active", i<=2));
+    } catch (e) {
+      console.error("[finalViewer] back error:", e);
+    }
+  }
+
+  async function reselectLibraryAndSong(packName, songName) {
+    const libSel = document.getElementById("librarySelect");
+    if (!libSel) return;
+
+    // Select library by visible text
+    if (packName) {
+      for (let i=0; i<libSel.options.length; i++) {
+        if (libSel.options[i].textContent === packName) { libSel.selectedIndex = i; break; }
+      }
+      libSel.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    // Wait until songSelect is populated, then choose song and trigger change
+    await waitFor(() => {
+      const el = document.getElementById("songSelect");
+      return el && el.options && el.options.length > 1;
+    }, 4000);
+
+    const songSel = document.getElementById("songSelect");
+    if (songSel && songName) {
+      for (let i=0; i<songSel.options.length; i++) {
+        if (songSel.options[i].textContent === songName) { songSel.selectedIndex = i; break; }
+      }
+      songSel.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }
+
+  function waitFor(cond, timeoutMs=3000, interval=100) {
+    return new Promise(resolve => {
+      const start = Date.now();
+      const iv = setInterval(() => {
+        if (cond()) { clearInterval(iv); resolve(true); }
+        else if (Date.now() - start > timeoutMs) { clearInterval(iv); resolve(false); }
+      }, interval);
+    });
   }
 
   // Slash-note transform (safe no-op for most files)
@@ -1687,7 +1818,7 @@ function renderInstrumentSelectors() {
           const styles = measure.getElementsByTagName("measure-style");
           for (const style of styles) {
             const slash = style.getElementsByTagName("slash")[0];
-            if (slash) {
+              if (slash) {
               const type = slash.getAttribute("type");
               if (type === "start") insideSlash = true;
               if (type === "stop") insideSlash = false;
