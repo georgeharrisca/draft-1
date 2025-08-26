@@ -197,102 +197,164 @@ document.addEventListener("DOMContentLoaded", () => {
     if (p) p.style.display = "none";
   });
 
-  // ====== Step 3: Instruments UI (two-pane) ======
-  function renderInstrumentSelectors() {
-    // reset current selections each time we enter step 3
-    selectionCounts = {};
-    selectionOrder = [];
+// ====== Step 3: Instruments UI (two-pane) ======
+function renderInstrumentSelectors() {
+  // reset current selections each time we enter step 3
+  selectionCounts = {};
+  selectionOrder = [];
 
-    // Build two-pane UI
-    instrumentGrid.innerHTML = `
-      <div class="two-pane">
-        <div class="pane" id="paneLeft">
-          <h4>Instruments</h4>
-          <ul id="instList" class="list" role="listbox" aria-label="Available instruments"></ul>
-          <div class="row" style="margin-top:12px;">
-            <button id="addToScore" class="btn" type="button" disabled>Add to Score</button>
-          </div>
-        </div>
-        <div class="pane" id="paneRight">
-          <h4>Selections</h4>
-          <ul id="selList" class="list" aria-live="polite"></ul>
+  // Build two-pane UI
+  instrumentGrid.innerHTML = `
+    <div class="two-pane">
+      <div class="pane" id="paneLeft">
+        <h4>Instruments</h4>
+        <ul id="instList" class="list" role="listbox" aria-label="Available instruments"></ul>
+        <div class="row" style="margin-top:12px;">
+          <button id="addToScore" class="btn" type="button" disabled>Add to Score</button>
         </div>
       </div>
-    `;
+      <div class="pane" id="paneRight">
+        <h4>Selections</h4>
+        <ul id="selList" class="list" aria-live="polite"></ul>
+        <div class="row" style="margin-top:12px;">
+          <button id="removeFromScore" class="btn" type="button" disabled>Remove</button>
+        </div>
+      </div>
+    </div>
+  `;
 
-    const instList = document.getElementById("instList");
-    const selList  = document.getElementById("selList");
-    const addBtn   = document.getElementById("addToScore");
+  const instList = document.getElementById("instList");
+  const selList  = document.getElementById("selList");
+  const addBtn   = document.getElementById("addToScore");
+  const removeBtn = document.getElementById("removeFromScore");
 
-    // Populate left list (no backend data shown)
-    instrumentData.forEach(inst => {
-      const li = document.createElement("li");
-      li.textContent = inst.name;
-      li.setAttribute("tabindex", "0");
-      li.dataset.name = inst.name;
-      instList.appendChild(li);
-    });
+  // Populate left list (no backend data shown)
+  instrumentData.forEach(inst => {
+    const li = document.createElement("li");
+    li.textContent = inst.name;
+    li.setAttribute("tabindex", "0");
+    li.dataset.name = inst.name;
+    instList.appendChild(li);
+  });
 
-    let selectedName = null;
-    function setActive(li) {
-      instList.querySelectorAll("li").forEach(n => n.classList.remove("active"));
-      if (li) {
-        li.classList.add("active");
-        selectedName = li.dataset.name;
-        addBtn.disabled = false;
-      } else {
-        selectedName = null;
-        addBtn.disabled = true;
-      }
+  let selectedLeftName = null;
+  let selectedRightBase = null;
+
+  function setActiveLeft(li) {
+    instList.querySelectorAll("li").forEach(n => n.classList.remove("active"));
+    if (li) {
+      li.classList.add("active");
+      selectedLeftName = li.dataset.name;
+      addBtn.disabled = false;
+    } else {
+      selectedLeftName = null;
+      addBtn.disabled = true;
     }
+  }
 
-    instList.addEventListener("click", (e) => {
+  function setActiveRight(li) {
+    selList.querySelectorAll("li").forEach(n => n.classList.remove("active"));
+    if (li) {
+      li.classList.add("active");
+      selectedRightBase = parseBaseName(li.textContent);
+      removeBtn.disabled = false;
+    } else {
+      selectedRightBase = null;
+      removeBtn.disabled = true;
+    }
+  }
+
+  // Left interactions
+  instList.addEventListener("click", (e) => {
+    const li = e.target.closest("li");
+    if (!li) return;
+    setActiveLeft(li);
+  });
+  instList.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
       const li = e.target.closest("li");
       if (!li) return;
-      setActive(li);
-    });
-    instList.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        const li = e.target.closest("li");
-        if (!li) return;
-        e.preventDefault();
-        setActive(li);
-      }
-    });
+      e.preventDefault();
+      setActiveLeft(li);
+    }
+  });
 
-    addBtn.addEventListener("click", () => {
-      if (!selectedName) return;
-      if (!selectionCounts[selectedName]) {
-        selectionCounts[selectedName] = 0;
-        selectionOrder.push(selectedName);
+  // Right interactions (select row to remove)
+  selList.addEventListener("click", (e) => {
+    const li = e.target.closest("li");
+    if (!li) return;
+    setActiveRight(li);
+  });
+  selList.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      const li = e.target.closest("li");
+      if (!li) return;
+      e.preventDefault();
+      setActiveRight(li);
+    }
+  });
+
+  // Add to Score
+  addBtn.addEventListener("click", () => {
+    if (!selectedLeftName) return;
+    if (!selectionCounts[selectedLeftName]) {
+      selectionCounts[selectedLeftName] = 0;
+      selectionOrder.push(selectedLeftName);
+    }
+    selectionCounts[selectedLeftName] += 1;
+    renderSelections();
+    // reset right selection after list changes
+    setActiveRight(null);
+  });
+
+  // Remove selected row from right pane
+  removeBtn.addEventListener("click", () => {
+    if (!selectedRightBase) return;
+    const base = selectedRightBase;
+    if (selectionCounts[base] && selectionCounts[base] > 0) {
+      selectionCounts[base] -= 1;
+      if (selectionCounts[base] === 0) {
+        delete selectionCounts[base];
+        // remove from order list
+        const idx = selectionOrder.indexOf(base);
+        if (idx > -1) selectionOrder.splice(idx, 1);
       }
-      selectionCounts[selectedName] += 1;
       renderSelections();
-    });
+      setActiveRight(null);
+    }
+  });
 
-    function renderSelections() {
-      selList.innerHTML = "";
-      if (!selectionOrder.length) {
-        const empty = document.createElement("div");
-        empty.className = "sel-empty";
-        empty.textContent = "No selections yet";
-        selList.appendChild(empty);
-        return;
-      }
-      // For each instrument, render N numbered rows: Violin 1, Violin 2, ...
-      for (const name of selectionOrder) {
-        const count = selectionCounts[name] || 0;
-        for (let i = 1; i <= count; i++) {
-          const li = document.createElement("li");
-          li.textContent = count > 1 ? `${name} ${i}` : name;
-          selList.appendChild(li);
-        }
+  function renderSelections() {
+    selList.innerHTML = "";
+    if (!selectionOrder.length) {
+      const empty = document.createElement("div");
+      empty.className = "sel-empty";
+      empty.textContent = "No selections yet";
+      selList.appendChild(empty);
+      return;
+    }
+    // For each instrument, render N numbered rows: Violin 1, Violin 2, ...
+    for (const name of selectionOrder) {
+      const count = selectionCounts[name] || 0;
+      for (let i = 1; i <= count; i++) {
+        const li = document.createElement("li");
+        li.textContent = count > 1 ? `${name} ${i}` : name;
+        li.setAttribute("tabindex", "0");
+        selList.appendChild(li);
       }
     }
-
-    // initial empty state
-    renderSelections();
   }
+
+  function parseBaseName(label) {
+    // strips trailing " <number>" if present
+    const m = String(label).match(/^(.*?)(?:\s+\d+)?$/);
+    return m ? m[1] : String(label);
+  }
+
+  // initial empty state
+  renderSelections();
+}
+
 
   // Back Step 3 → Step 2
   backToSong.addEventListener("click", () => {
