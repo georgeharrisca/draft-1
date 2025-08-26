@@ -19,6 +19,17 @@ const DATA_BASE = window.AUTO_ARRANGER_DATA_BASE;
 // Also compute the site root (works on GH Pages / subpaths)
 const ROOT_BASE = new URL('.', document.baseURI).href.replace(/\/$/, "");
 
+// ---- Wizard visibility helper ----
+function setWizardStage(stage /* 'library' | 'song' | 'instruments' */){
+  const s1 = document.getElementById("step1");
+  const s2 = document.getElementById("step2");
+  const s3 = document.getElementById("step3");
+  if (s1) s1.classList.toggle("hidden", stage !== "library");
+  if (s2) s2.classList.toggle("hidden", stage !== "song");
+  if (s3) s3.classList.toggle("hidden", stage !== "instruments");
+}
+
+
 /* ---------- Robust fetch helpers ---------- */
 async function fetchJson(url) {
   const res = await fetch(url, { cache: "no-store" });
@@ -126,12 +137,14 @@ async function initDraft1UI(){
 
   console.log("[AA] DATA_BASE =", DATA_BASE, "| ROOT_BASE =", ROOT_BASE);
 
-  // Fetch library packs and instruments
+  // Load packs + instruments
   const [packs, instruments] = await Promise.all([loadLibraryIndex(), loadInstrumentData()]);
   mergeState({ libraryPacks: packs, instrumentData: instruments });
 
-  // STEP 1: Library
-  const libSel = libSelectEl();
+  // Hook up selects
+  const libSel  = libSelectEl();
+  const songSel = songSelectEl();
+
   if (libSel) {
     libSel.innerHTML = `<option value="">-- Select a Library Pack --</option>` +
       packs.map((p,i)=> `<option value="${i}">${escapeHtml(p.name)}</option>`).join("");
@@ -140,27 +153,37 @@ async function initDraft1UI(){
     console.warn("[AA] Could not find library select element (id='librarySelect' or 'libraryPackSelect').");
   }
 
-  // STEP 2: Song
-  const songSel = songSelectEl();
   if (songSel) {
     songSel.addEventListener("change", onSongChosen);
   } else {
     console.warn("[AA] Could not find song select element (id='songSelect' or 'songSelectDropdown').");
   }
 
-  // Restore if user already picked
+  // Decide which step to show
   const s = getState();
-  if (s.packIndex != null && libSel) {
-    libSel.value = String(s.packIndex);
-    populateSongsForPack(s.packIndex);
-    qs("step2")?.classList.remove("hidden");
-  }
-  if (s.songIndex != null && songSel) {
-    songSel.value = String(s.songIndex);
+  if (s.packIndex == null) {
+    // Nothing chosen yet
+    setWizardStage("library");
+  } else if (s.songIndex == null) {
+    // Library chosen; restore selection and show Song step
+    if (libSel) {
+      libSel.value = String(s.packIndex);
+      populateSongsForPack(s.packIndex);
+    }
+    setWizardStage("song");
+  } else {
+    // Both chosen; restore and either show instruments or re-extract
+    if (libSel) {
+      libSel.value = String(s.packIndex);
+      populateSongsForPack(s.packIndex);
+    }
+    if (songSel) songSel.value = String(s.songIndex);
+
     if (Array.isArray(s.parts) && s.parts.length) {
-      qs("step3")?.classList.remove("hidden");
+      setWizardStage("instruments");
     } else {
-      onSongChosen();
+      setWizardStage("song");   // show song step while we re-extract
+      onSongChosen();           // triggers extraction and then shows instruments
     }
   }
 
@@ -168,6 +191,7 @@ async function initDraft1UI(){
     console.warn("[AA] No library packs found. Last URL tried:", getState().libraryJsonUrl);
   }
 }
+
 
 /* ------------ Library & Instrument loaders ------------ */
 /* Helpers used by the loaders */
