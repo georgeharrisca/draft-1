@@ -1260,3 +1260,133 @@ function renderInstrumentSelectors() {
   }
 })();
 
+/* =====================================================================
+   Module: combineArrangedParts (append-only, backend-only)
+   - Input (sessionStorage):
+       state.arrangedFiles[] -> [{ xml, newPartId?, instrumentName, ... }]
+         (IDs already reassigned to P1..Pn by scoreOrder module)
+   - Behavior:
+       * Sort parts by P-number (extract from newPartId or from XML).
+       * Use first part as base document; splice in additional
+         <score-part> nodes (inside <part-list>) and <part> nodes.
+   - Output:
+       state.combinedScoreXml : string (the full multi-part score)
+       state.combineDone      : true
+     (Per-part files remain intact in state.arrangedFiles for future steps.)
+   ===================================================================== */
+(function(){
+  if (!window.AA) return;
+  const STATE_KEY = "autoArranger_extractedParts";
+
+  AA.on("instruments:saved", () => AA.safe("combineArrangedParts", run));
+
+  function run() {
+    const raw = sessionStorage.getItem(STATE_KEY);
+    if (!raw) return;
+
+    let state;
+    try { state = JSON.parse(raw); } catch (e) { console.error("[combineArrangedParts] bad JSON", e); return; }
+
+    const files = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
+    if (!files.length) return;
+
+    // Build sortable list: ensure we have a P-number for each file
+    const rows = [];
+    for (const f of files) {
+      const pid = getPartId(f);
+      if (!pid) {
+        console.warn("[combineArrangedParts] skipping file without <score-part id>", f.instrumentName);
+        continue;
+      }
+      const num = parseInt(String(pid).replace(/^P/i, ""), 10);
+      rows.push({ f, partId: pid, partNum: Number.isFinite(num) ? num : Number.POSITIVE_INFINITY });
+    }
+
+    if (!rows.length) return;
+
+    // Sort by part number ascending: P1, P2, ...
+    rows.sort((a,b) => (a.partNum - b.partNum) || (String(a.partId).localeCompare(String(b.partId))));
+
+    // Start with the first XML as the base document
+    let combined = rows[0].f.xml;
+    if (!combined) return;
+
+    // Ensure base ends without the closing root so we can append safely
+    combined = combined.replace(/<\/score-partwise>\s*$/i, "");
+
+    // Append remaining parts (both score-part + part)
+    for (let i = 1; i < rows.length; i++) {
+      const { f, partId } = rows[i];
+      const text = f.xml || "";
+      const scorePartBlock = extractScorePartBlock(text, partId);
+      if (scorePartBlock) {
+        const insertAt = combined.lastIndexOf("</score-part>");
+        if (insertAt !== -1) {
+          combined = combined.slice(0, insertAt + "</score-part>".length) + "\n" + scorePartBlock + combined.slice(insertAt + "</score-part>".length);
+        } else {
+          // Fallback: inject just before </part-list>
+          const plEnd = combined.lastIndexOf("</part-list>");
+          if (plEnd !== -1) {
+            combined = combined.slice(0, plEnd) + "\n" + scorePartBlock + combined.slice(plEnd);
+          } else {
+            console.warn("[combineArrangedParts] could not locate part-list insertion point.");
+          }
+        }
+      }
+
+      const partBlock = extractPartBlock(text, partId);
+      if (partBlock) {
+        const insertAt = combined.lastIndexOf("</part>");
+        if (insertAt !== -1) {
+          combined = combined.slice(0, insertAt + "</part>".length) + "\n" + partBlock + combined.slice(insertAt + "</part>".length);
+        } else {
+          // Fallback: inject before </score-partwise>
+          const rootEnd = combined.lastIndexOf("</score-partwise>");
+          if (rootEnd !== -1) {
+            combined = combined.slice(0, rootEnd) + "\n" + partBlock + combined.slice(rootEnd);
+          } else {
+            console.warn("[combineArrangedParts] could not locate score root insertion point.");
+          }
+        }
+      }
+    }
+
+    // Close the root
+    if (!/<\/score-partwise>\s*$/i.test(combined)) {
+      combined += "\n</score-partwise>";
+    }
+
+    // Persist final combined score; keep per-part files intact
+    AA.suspendEvents(() => {
+      state.combinedScoreXml = combined;
+      state.combineDone = true;
+      sessionStorage.setItem(STATE_KEY, JSON.stringify(state));
+    });
+
+    if (AA.DEBUG) console.log("[AA] combineDone:", true);
+  }
+
+  // ---- helpers ----
+  function getPartId(file) {
+    if (file.newPartId) return file.newPartId;
+    // fallback: extract from XML
+    const m = String(file.xml || "").match(/<score-part\s+id="([^"]+)"/i);
+    return m ? m[1] : null;
+  }
+
+  function extractScorePartBlock(xml, partId) {
+    // <score-part id="P#"> ... </score-part>
+    const re = new RegExp(`<score-part\\s+id="${escapeReg(partId)}">[\\s\\S]*?<\\/score-part>`, "i");
+    const m = String(xml).match(re);
+    return m ? m[0] : null;
+  }
+
+  function extractPartBlock(xml, partId) {
+    // <part id="P#"> ... </part>
+    const re = new RegExp(`<part\\s+id="${escapeReg(partId)}">[\\s\\S]*?<\\/part>`, "i");
+    const m = String(xml).match(re);
+    return m ? m[0] : null;
+  }
+
+  function escapeReg(s){ return String(s).replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&"); }
+})();
