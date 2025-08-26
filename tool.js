@@ -38,6 +38,11 @@ document.addEventListener("DOMContentLoaded", () => {
   let libraryData = {};
   let instrumentData = [];
 
+// Selection state for the two-pane UI
+let selectionCounts = {};   // { "Violin": 3, "Cello": 1, ... }
+let selectionOrder = [];    // keeps first-seen order of instrument names
+
+  
   // JSON endpoints (relative or swap to raw GitHub)
   const LIBRARY_INDEX_URL = "./libraryData.json";
   const INSTRUMENT_INDEX_URL = "./instrumentData.json";
@@ -156,18 +161,102 @@ document.addEventListener("DOMContentLoaded", () => {
       statusEl.classList.remove("err");
       statusEl.classList.add("ok");
 
-      // Go to instruments
-      renderInstrumentSelectors();
-      step2.classList.add("hidden");
-      step3.classList.remove("hidden");
-      setStep(2);
-    } catch (err) {
-      console.error(err);
-      statusEl.textContent = "Failed to extract parts.";
-      statusEl.classList.remove("ok");
-      statusEl.classList.add("err");
+   function renderInstrumentSelectors() {
+  // reset current selections each time we enter step 3
+  selectionCounts = {};
+  selectionOrder = [];
+
+  // Build two-pane UI
+  instrumentGrid.innerHTML = `
+    <div class="two-pane">
+      <div class="pane" id="paneLeft">
+        <h4>Instruments</h4>
+        <ul id="instList" class="list" role="listbox" aria-label="Available instruments"></ul>
+        <div class="row" style="margin-top:12px;">
+          <button id="addToScore" class="btn" type="button" disabled>Add to Score</button>
+        </div>
+      </div>
+      <div class="pane" id="paneRight">
+        <h4>Selections</h4>
+        <ul id="selList" class="list" aria-live="polite"></ul>
+      </div>
+    </div>
+  `;
+
+  const instList = document.getElementById("instList");
+  const selList  = document.getElementById("selList");
+  const addBtn   = document.getElementById("addToScore");
+
+  // Populate left list (no backend data shown)
+  instrumentData.forEach(inst => {
+    const li = document.createElement("li");
+    li.textContent = inst.name;
+    li.setAttribute("tabindex", "0");
+    li.dataset.name = inst.name;
+    instList.appendChild(li);
+  });
+
+  let selectedName = null;
+  function setActive(li) {
+    instList.querySelectorAll("li").forEach(n => n.classList.remove("active"));
+    if (li) {
+      li.classList.add("active");
+      selectedName = li.dataset.name;
+      addBtn.disabled = false;
+    } else {
+      selectedName = null;
+      addBtn.disabled = true;
+    }
+  }
+
+  instList.addEventListener("click", (e) => {
+    const li = e.target.closest("li");
+    if (!li) return;
+    setActive(li);
+  });
+  instList.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      const li = e.target.closest("li");
+      if (!li) return;
+      e.preventDefault();
+      setActive(li);
     }
   });
+
+  addBtn.addEventListener("click", () => {
+    if (!selectedName) return;
+    if (!selectionCounts[selectedName]) {
+      selectionCounts[selectedName] = 0;
+      selectionOrder.push(selectedName);
+    }
+    selectionCounts[selectedName] += 1;
+    renderSelections();
+  });
+
+  function renderSelections() {
+    selList.innerHTML = "";
+    if (!selectionOrder.length) {
+      const empty = document.createElement("div");
+      empty.className = "sel-empty";
+      empty.textContent = "No selections yet";
+      selList.appendChild(empty);
+      return;
+    }
+    // For each instrument, render N numbered rows: Violin 1, Violin 2, ...
+    for (const name of selectionOrder) {
+      const count = selectionCounts[name] || 0;
+      for (let i = 1; i <= count; i++) {
+        const li = document.createElement("li");
+        li.textContent = count > 1 ? `${name} ${i}` : name;
+        selList.appendChild(li);
+      }
+    }
+  }
+
+  // initial empty state
+  renderSelections();
+}
+
 
   // Back Step 2 → Step 1
   backButton.addEventListener("click", () => {
@@ -225,23 +314,50 @@ document.addEventListener("DOMContentLoaded", () => {
     renderTrail();
   });
 
-  // Save instrument selections
   saveInstruments.addEventListener("click", () => {
-    const selections = [];
-    instrumentData.forEach(inst => {
-      const qty = parseInt(document.getElementById(`qty_${cssId(inst.name)}`).value || "0", 10);
-      if (qty > 0) {
+  // Build selections from selectionCounts
+  const selections = [];
+  for (const [name, qty] of Object.entries(selectionCounts)) {
+    if (qty > 0) {
+      const meta = instrumentData.find(i => i.name === name);
+      if (meta) {
         selections.push({
-          name: inst.name,
-          quantity: qty,
-          instrumentPart: inst.instrumentPart,
-          Octave: inst.Octave,
-          clef: inst.clef ?? null,
-          transpose: inst.transpose ?? null,
-          assignedPart: "" // placeholder
+          name: meta.name,
+          quantity: qty,                 // <-- counts from right pane
+          instrumentPart: meta.instrumentPart,
+          Octave: meta.Octave,
+          clef: meta.clef ?? null,
+          transpose: meta.transpose ?? null,
+          assignedPart: ""               // placeholder
         });
       }
-    });
+    }
+  }
+
+  const prevRaw = sessionStorage.getItem("autoArranger_extractedParts");
+  const prevState = prevRaw ? JSON.parse(prevRaw) : {};
+  const prevHadInst = Array.isArray(prevState.instrumentSelections);
+
+  const state = { ...prevState, instrumentSelections: selections };
+  sessionStorage.setItem("autoArranger_extractedParts", JSON.stringify(state));
+
+  instStatus.textContent = selections.length
+    ? `Saved ${selections.reduce((a,c)=>a+c.quantity,0)} instruments.`
+    : "No instruments selected.";
+  instStatus.classList.remove("err");
+  instStatus.classList.add("ok");
+  setStep(3);
+
+  // Breadcrumb
+  stateTrail.instrumentsDone = selections.length > 0;
+  renderTrail();
+
+  // If guard won’t emit (because instrumentSelections already existed), emit manually
+  if (prevHadInst) {
+    window.AA && AA.emit && AA.emit("instruments:saved", state);
+  }
+});
+
 
     const prev = sessionStorage.getItem("autoArranger_extractedParts");
     const state = prev ? JSON.parse(prev) : {};
