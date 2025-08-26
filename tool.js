@@ -887,3 +887,162 @@ function renderInstrumentSelectors() {
     if (AA.DEBUG) console.log("[AA] groupedAssignments:", groups);
   }
 })();
+/* =====================================================================
+   Module: arrangeGroupedParts (append-only, backend-only)
+   - Input  (sessionStorage):
+       state.parts[]              -> extracted single-part MusicXML docs
+       state.instrumentSelections -> [{ name, quantity, clef, transpose, Octave, ... }]
+       state.assignedResults[]    -> [{ name, assignedPart, sortNumber, Octave, ... }]
+       state.groupedAssignments[] -> [{ partName, partId, instruments:[{ name, ...}] }]
+   - Output (sessionStorage):
+       state.arrangedFiles[] -> [{
+         instrumentName, baseName, assignedPart,
+         sourcePartId, sourcePartName,
+         xml   // serialized MusicXML string for this instrument
+       }]
+       state.arrangeDone = true
+   - No UI; runs during loading screen.
+   ===================================================================== */
+(function () {
+  if (!window.AA) return;
+  const STATE_KEY = "autoArranger_extractedParts";
+
+  const norm = (s) => String(s ?? "").toLowerCase().replace(/\s+/g," ").trim();
+  const baseNameOf = (label) => String(label || "").replace(/\s+\d+$/, ""); // "Violin 2" -> "Violin"
+
+  // Start when instruments are saved (assignParts + grouping are already wired)
+  AA.on("instruments:saved", () => AA.safe("arrangeGroupedParts", run));
+
+  async function run() {
+    const raw = sessionStorage.getItem(STATE_KEY);
+    if (!raw) return;
+
+    let state;
+    try { state = JSON.parse(raw); } catch (e) { console.error("[arrangeGroupedParts] bad JSON", e); return; }
+
+    const parts = Array.isArray(state.parts) ? state.parts : [];
+    const groups = Array.isArray(state.groupedAssignments) ? state.groupedAssignments : [];
+    const selections = Array.isArray(state.instrumentSelections) ? state.instrumentSelections : [];
+
+    if (!parts.length || !groups.length) {
+      // Nothing to arrange yet.
+      return;
+    }
+
+    // Index score parts by normalized name
+    const partByName = new Map(parts.map(p => [norm(p.partName), p]));
+
+    // Quick lookup for instrument meta (clef/transpose/octave) by base name
+    const metaByBase = new Map(selections.map(s => [s.name, {
+      clef: s.clef ?? null,
+      transpose: s.transpose ?? null,
+      Octave: toInt(s.Octave)
+    }]));
+
+    const arranged = [];
+
+    for (const grp of groups) {
+      const src = partByName.get(norm(grp.partName));
+      if (!src) continue; // should not happen if the 15 names match 1:1
+
+      for (const inst of (grp.instruments || [])) {
+        const base = baseNameOf(inst.name);
+        const meta = metaByBase.get(base) || { clef: null, transpose: null, Octave: 0 };
+
+        try {
+          const xml = arrangeXmlForInstrument(src.xml, inst.name, meta);
+          arranged.push({
+            instrumentName: inst.name,
+            baseName: base,
+            assignedPart: inst.assignedPart,
+            sourcePartId: src.id,
+            sourcePartName: src.partName,
+            xml
+          });
+        } catch (e) {
+          console.error(`[arrangeGroupedParts] transform failed for ${inst.name}`, e);
+        }
+      }
+    }
+
+    // Persist results (no re-emits)
+    AA.suspendEvents(() => {
+      state.arrangedFiles = arranged;
+      state.arrangeDone = true;
+      sessionStorage.setItem(STATE_KEY, JSON.stringify(state));
+    });
+  }
+
+  // ---- helpers ----
+  function toInt(v) {
+    if (typeof v === "number" && Number.isFinite(v)) return v|0;
+    const s = String(v ?? "").replace(/\u2013|\u2014/g,"-").trim();
+    const n = parseInt(s, 10);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  // Core transform (adapted from the earlier single-instrument tool) :contentReference[oaicite:2]{index=2}
+  function arrangeXmlForInstrument(singlePartXml, instrumentLabel, meta) {
+    const { clef, transpose, Octave: octaveShift } = meta;
+
+    const parser = new DOMParser();
+    const xmlDoc = parser.parseFromString(singlePartXml, "application/xml");
+
+    // 1) Octave shift: adjust every <octave> value by octaveShift (can be negative)
+    if (octaveShift && Number.isFinite(octaveShift)) {
+      xmlDoc.querySelectorAll("octave").forEach(oct => {
+        const prev = parseInt(oct.textContent || "0", 10);
+        if (Number.isFinite(prev)) oct.textContent = String(prev + octaveShift);
+      });
+    }
+
+    // 2) Part-name → instrument instance label
+    const partName = xmlDoc.querySelector("score-part part-name");
+    if (partName) partName.textContent = instrumentLabel;
+
+    // 3) Clef replacement (if provided) — write <sign>/<line> as in prior tool :contentReference[oaicite:3]{index=3}
+    if (clef) {
+      const clefNode = xmlDoc.querySelector("clef");
+      if (clefNode) {
+        while (clefNode.firstChild) clefNode.removeChild(clefNode.firstChild);
+        const tpl = clef === "bass"
+          ? `<sign>F</sign><line>4</line>`
+          : `<sign>G</sign><line>2</line>`; // default treble
+        const frag = parser.parseFromString(`<x>${tpl}</x>`, "application/xml");
+        const x = frag.querySelector("x");
+        while (x.firstChild) clefNode.appendChild(x.firstChild);
+      }
+    }
+
+    // 4) Transpose: add <transpose> to <score-part> and to the first <attributes> (after <key>) :contentReference[oaicite:4]{index=4}
+    if (transpose && typeof transpose === "string") {
+      // <score-part>
+      const scorePart = xmlDoc.querySelector("score-part");
+      if (scorePart) {
+        const existing = scorePart.querySelector("transpose");
+        if (existing) existing.remove();
+        const tnode = parser.parseFromString(`<wrap>${transpose}</wrap>`, "application/xml").querySelector("transpose");
+        if (tnode) scorePart.appendChild(tnode);
+      }
+      // <attributes>
+      const attributes = xmlDoc.querySelector("attributes");
+      if (attributes) {
+        const existing = attributes.querySelector("transpose");
+        if (existing) existing.remove();
+        const tnode = parser.parseFromString(`<wrap>${transpose}</wrap>`, "application/xml").querySelector("transpose");
+        if (tnode) {
+          const key = attributes.querySelector("key");
+          if (key && key.nextSibling) attributes.insertBefore(tnode, key.nextSibling);
+          else attributes.appendChild(tnode);
+        }
+      }
+    }
+
+    // 5) Optional cleanups as in the earlier tool: remove lyrics & chord symbols by default :contentReference[oaicite:5]{index=5}
+    xmlDoc.querySelectorAll("lyric").forEach(n => n.remove());
+    xmlDoc.querySelectorAll("harmony").forEach(n => n.remove());
+
+    // 6) Serialize
+    return new XMLSerializer().serializeToString(xmlDoc);
+  }
+})();
