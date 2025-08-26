@@ -889,10 +889,10 @@ function renderInstrumentSelectors() {
   }
 })();
 /* =====================================================================
-   Module: arrangeGroupedParts (append-only, backend-only)
+   Module: arrangeGroupedParts (append-only, backend-only) — Octave edits DISABLED
    - Input  (sessionStorage):
        state.parts[]              -> extracted single-part MusicXML docs
-       state.instrumentSelections -> [{ name, quantity, clef, transpose, Octave, ... }]
+       state.instrumentSelections -> [{ name, quantity, clef, transpose, Octave, scoreOrder, ... }]
        state.assignedResults[]    -> [{ name, assignedPart, sortNumber, Octave, ... }]
        state.groupedAssignments[] -> [{ partName, partId, instruments:[{ name, ...}] }]
    - Output (sessionStorage):
@@ -902,7 +902,7 @@ function renderInstrumentSelectors() {
          xml   // serialized MusicXML string for this instrument
        }]
        state.arrangeDone = true
-   - No UI; runs during loading screen.
+   - NOTE: Octave is NOT applied to the XML here (only used earlier for categorizing).
    ===================================================================== */
 (function () {
   if (!window.AA) return;
@@ -926,7 +926,6 @@ function renderInstrumentSelectors() {
     const selections = Array.isArray(state.instrumentSelections) ? state.instrumentSelections : [];
 
     if (!parts.length || !groups.length) {
-      // Nothing to arrange yet.
       return;
     }
 
@@ -937,6 +936,7 @@ function renderInstrumentSelectors() {
     const metaByBase = new Map(selections.map(s => [s.name, {
       clef: s.clef ?? null,
       transpose: s.transpose ?? null,
+      // Octave kept here but NOT applied to XML in this version
       Octave: toInt(s.Octave)
     }]));
 
@@ -944,7 +944,7 @@ function renderInstrumentSelectors() {
 
     for (const grp of groups) {
       const src = partByName.get(norm(grp.partName));
-      if (!src) continue; // should not happen if the 15 names match 1:1
+      if (!src) continue;
 
       for (const inst of (grp.instruments || [])) {
         const base = baseNameOf(inst.name);
@@ -966,7 +966,6 @@ function renderInstrumentSelectors() {
       }
     }
 
-    // Persist results (no re-emits)
     AA.suspendEvents(() => {
       state.arrangedFiles = arranged;
       state.arrangeDone = true;
@@ -982,40 +981,37 @@ function renderInstrumentSelectors() {
     return Number.isFinite(n) ? n : 0;
   }
 
-  // Core transform (adapted from the earlier single-instrument tool) :contentReference[oaicite:2]{index=2}
+  // Core transform — Octave shift intentionally DISABLED
   function arrangeXmlForInstrument(singlePartXml, instrumentLabel, meta) {
-    const { clef, transpose, Octave: octaveShift } = meta;
+    const { clef, transpose /*, Octave: octaveShift */ } = meta;
 
     const parser = new DOMParser();
     const xmlDoc = parser.parseFromString(singlePartXml, "application/xml");
 
-    // 1) Octave shift: adjust every <octave> value by octaveShift (can be negative)
-    if (octaveShift && Number.isFinite(octaveShift)) {
-      xmlDoc.querySelectorAll("octave").forEach(oct => {
-        const prev = parseInt(oct.textContent || "0", 10);
-        if (Number.isFinite(prev)) oct.textContent = String(prev + octaveShift);
-      });
-    }
+    // (1) Octave shift — DISABLED on purpose
+    // if (octaveShift && Number.isFinite(octaveShift)) { ... }
 
-    // 2) Part-name → instrument instance label
+    // (2) Part-name → instrument instance label
     const partName = xmlDoc.querySelector("score-part part-name");
     if (partName) partName.textContent = instrumentLabel;
 
-    // 3) Clef replacement (if provided) — write <sign>/<line> as in prior tool :contentReference[oaicite:3]{index=3}
+    // (3) Clef replacement (if provided)
     if (clef) {
       const clefNode = xmlDoc.querySelector("clef");
       if (clefNode) {
         while (clefNode.firstChild) clefNode.removeChild(clefNode.firstChild);
         const tpl = clef === "bass"
           ? `<sign>F</sign><line>4</line>`
-          : `<sign>G</sign><line>2</line>`; // default treble
+          : (clef === "alto"
+              ? `<sign>C</sign><line>3</line>`
+              : `<sign>G</sign><line>2</line>`); // treble default
         const frag = parser.parseFromString(`<x>${tpl}</x>`, "application/xml");
         const x = frag.querySelector("x");
         while (x.firstChild) clefNode.appendChild(x.firstChild);
       }
     }
 
-    // 4) Transpose: add <transpose> to <score-part> and to the first <attributes> (after <key>) :contentReference[oaicite:4]{index=4}
+    // (4) Transpose in <score-part> and first <attributes> (after <key>)
     if (transpose && typeof transpose === "string") {
       // <score-part>
       const scorePart = xmlDoc.querySelector("score-part");
@@ -1039,14 +1035,14 @@ function renderInstrumentSelectors() {
       }
     }
 
-    // 5) Optional cleanups as in the earlier tool: remove lyrics & chord symbols by default :contentReference[oaicite:5]{index=5}
+    // (5) Cleanups (lyrics & chord symbols)
     xmlDoc.querySelectorAll("lyric").forEach(n => n.remove());
     xmlDoc.querySelectorAll("harmony").forEach(n => n.remove());
 
-    // 6) Serialize
     return new XMLSerializer().serializeToString(xmlDoc);
   }
 })();
+
 
 /* =====================================================================
    Module: renamePartsToInstrumentNames (extended: abbreviations too)
