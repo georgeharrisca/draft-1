@@ -443,18 +443,36 @@ function extractPartsFromScore(xmlText){
    ========================================================================== */
 (function(){
 
-  function ensureInstrumentPickerMarkup(){
-    const host = document.getElementById("step3");
-    if (!host) return;
+  // Ensure we have a host element for Step 3. If #step3 is missing, create it.
+  function ensureStep3Host(){
+    let host = document.getElementById("step3");
+    if (!host) {
+      console.warn("[AA] #step3 not found. Creating one on the fly.");
+      const cardBody = document.querySelector(".card-body") || document.body;
+      host = document.createElement("div");
+      host.id = "step3";
+      host.className = "hidden";
+      // Minimal label so users still see a title if CSS differs
+      host.innerHTML = `<div class="field"><label>Select Instruments</label></div>`;
+      cardBody.appendChild(host);
+    }
+    return host;
+  }
 
+  function ensureInstrumentPickerMarkup(){
+    const host = ensureStep3Host();
+    // If any of these are missing, we need to (re)build the two-pane UI
     const needBuild =
       !document.getElementById("instrumentList") ||
       !document.getElementById("selectionsList") ||
       !document.getElementById("btnAddInstrument") ||
       !document.getElementById("btnRemoveSelected") ||
-      !document.getElementById("btnSaveSelections");
+      !document.getElementById("btnSaveSelections") ||
+      !document.getElementById("btnBackToSong");
 
     if (!needBuild) return;
+
+    console.log("[AA] Building Step 3 instrument picker UI…");
 
     host.insertAdjacentHTML("beforeend", `
       <div id="aa-pickers" class="aa-grid" style="margin-top:12px;">
@@ -479,22 +497,30 @@ function extractPartsFromScore(xmlText){
   }
 
   function setupInstrumentPicker(){
-    // Ensure the two-pane UI exists (builds it if missing)
     ensureInstrumentPickerMarkup();
 
-    // Grab elements
     const listLeft  = document.getElementById("instrumentList");
     const btnAdd    = document.getElementById("btnAddInstrument");
-    const btnBack   = document.getElementById("btnBackToSong");   // ← Back button
+    const btnBack   = document.getElementById("btnBackToSong");
     const listRight = document.getElementById("selectionsList");
     const btnRemove = document.getElementById("btnRemoveSelected");
     const btnSave   = document.getElementById("btnSaveSelections");
     const note      = document.getElementById("instStatus");
 
-    // If any critical element is missing, bail
-    if (!listLeft || !btnAdd || !btnBack || !listRight || !btnRemove || !btnSave) return;
+    // If any critical element is still missing, abort quietly
+    if (!listLeft || !btnAdd || !btnBack || !listRight || !btnRemove || !btnSave) {
+      console.warn("[AA] Step 3 UI elements missing; picker not wired.");
+      return;
+    }
 
-    // --- populate function (can be called multiple times) ---
+    // Avoid double-wiring
+    if (listLeft.dataset.wired === "1") {
+      // Still repopulate if instrument data changed
+      populateLeftList();
+      return;
+    }
+    listLeft.dataset.wired = "1";
+
     function populateLeftList(){
       const s = getState();
       const instruments = Array.isArray(s.instrumentData) ? s.instrumentData : [];
@@ -508,15 +534,12 @@ function extractPartsFromScore(xmlText){
         if (note) note.textContent = "No instruments found in instrumentData.json.";
       }
     }
-    // Populate immediately and whenever data arrives/changes
+
+    // Initial population + update whenever data loads
     populateLeftList();
     AA.on("data:instrumentData", populateLeftList);
 
-    // --- wire handlers only once ---
-    if (listLeft.dataset.wired === "1") return;
-    listLeft.dataset.wired = "1";
-
-    // Local selections state for the right pane
+    // Right pane state
     const stateSel = { selections: [] };
     const baseOf = (name) => String(name).replace(/\s+\d+$/, "");
 
@@ -534,7 +557,6 @@ function extractPartsFromScore(xmlText){
     function removeSelection(label){
       const i = stateSel.selections.indexOf(label);
       if (i>=0) stateSel.selections.splice(i,1);
-      // Renumber remaining with same base (collapse to single name if only one)
       const b = baseOf(label);
       const idxs = stateSel.selections
         .map((n,i)=>({n,i}))
@@ -552,10 +574,9 @@ function extractPartsFromScore(xmlText){
       addSelection(sel);
     });
 
-    // Back to "Select Song" stage (keeps current library/song selections)
     btnBack.addEventListener("click", () => {
       setWizardStage("song");
-      // Optional: clear in-progress picks when going back
+      // Optional: clear in-progress picks when going back:
       // stateSel.selections = [];
       // refreshRight();
       // mergeState({ instrumentSelections: [] });
@@ -589,11 +610,22 @@ function extractPartsFromScore(xmlText){
     });
   }
 
-  // Build/wire when DOM is ready, and whenever we enter the instruments stage
-  document.addEventListener("DOMContentLoaded", setupInstrumentPicker);
-  AA.on("wizard:stage", (stage) => { if (stage === "instruments") setupInstrumentPicker(); });
+  // Build on DOM ready (in case user lands directly on Step 3 via restore)
+  document.addEventListener("DOMContentLoaded", () => {
+    console.log("[AA] Step 3 DOMContentLoaded hook");
+    setupInstrumentPicker();
+  });
 
-})(); // ← IIFE wrapper restored for Step 3 block
+  // Also (re)build whenever we enter Instruments stage
+  AA.on("wizard:stage", (stage) => {
+    if (stage === "instruments") {
+      console.log("[AA] Entered Instruments stage → setupInstrumentPicker()");
+      setupInstrumentPicker();
+    }
+  });
+
+})(); // end Step 3 IIFE
+
 
 
 /* ============================================================================
