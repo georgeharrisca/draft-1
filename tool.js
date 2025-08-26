@@ -426,9 +426,21 @@ document.addEventListener("DOMContentLoaded", () => {
   function escapeHtml(s){ return String(s ?? "").replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])); }
 });
 
+
+
+
+
+
+
 // ================================================================
 // Guard / Checkpoint Layer (append-only, loop-safe)
 // ================================================================
+
+
+
+
+
+
 (function () {
   const AA = (window.AA = window.AA || {});
   if (AA.__guardInstalled) return;
