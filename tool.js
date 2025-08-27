@@ -1222,7 +1222,7 @@ ul.appendChild(li);
 })();
 
 /* ============================================================================
-   M7) Final Viewer — dropdown lists all parts; ensure title before render
+   M7) Final Viewer — dropdown lists all parts; ensure title; ensure XML prolog
    ---------------------------------------------------------------------------- */
 (function () {
   AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
@@ -1322,8 +1322,9 @@ ul.appendChild(li);
       try {
         lastXml = ensureTitle(xml, songName);
         const processed = transformXmlForSlashes(lastXml);
+        const osmdReady = withXmlProlog(processed);      // ← ensure "<?xml …?>" at start
         if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
-        await osmd.load(processed);
+        await osmd.load(osmdReady);
         await osmd.render();
         await new Promise(r => requestAnimationFrame(r));
         fitScoreToHeight(osmd, osmdBox);
@@ -1354,7 +1355,8 @@ ul.appendChild(li);
       for (const p of parts) {
         try {
           const processed = transformXmlForSlashes(ensureTitle(p.xml, p.instrumentName));
-          await osmd.load(processed);
+          const osmdReady = withXmlProlog(processed);    // ← ensure prolog here too
+          await osmd.load(osmdReady);
           await osmd.render();
           const { canvas, w, h } = await snapshotCanvas(osmdBox);
           if (!doc) doc = new (jspdfNS.jsPDF)({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
@@ -1385,7 +1387,7 @@ ul.appendChild(li);
   function sortPartsEvenIfNoPid(files){
     const out = [];
     for (const f of files) {
-      const pid = f.newPartId || extractPidFromXml(f.xml) || "";  // ← don’t drop if missing
+      const pid = f.newPartId || extractPidFromXml(f.xml) || "";  // don’t drop if missing
       const n = parseInt(String(pid).replace(/^P/i,""), 10);
       out.push({ ...f, _pnum: Number.isFinite(n)?n:999 });
     }
@@ -1424,7 +1426,7 @@ ul.appendChild(li);
     if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
   }
 
-  // Ensure we have a title
+  // --- XML utilities for OSMD ---
   function ensureTitle(xmlString, title){
     try {
       const parser = new DOMParser();
@@ -1439,7 +1441,6 @@ ul.appendChild(li);
       return new XMLSerializer().serializeToString(doc);
     } catch { return xmlString; }
   }
-
   function transformXmlForSlashes(xmlString) {
     try {
       const parser = new DOMParser();
@@ -1448,7 +1449,17 @@ ul.appendChild(li);
       return new XMLSerializer().serializeToString(xmlDoc);
     } catch { return xmlString; }
   }
+  function withXmlProlog(str){
+    // remove BOM and leading whitespace, and ensure `<?xml ...?>` at the very start
+    if (!str) return str;
+    let s = String(str).replace(/^\uFEFF/, "").replace(/^\s+/, "");
+    if (!/^\<\?xml/i.test(s)) {
+      s = `<?xml version="1.0" encoding="UTF-8"?>\n` + s;
+    }
+    return s;
+  }
 })();
+
 
 
 
