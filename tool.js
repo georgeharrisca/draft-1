@@ -182,6 +182,19 @@ async function initDraft1UI(){
   } else {
     console.warn("[AA] Could not find song select element (id='songSelect' or 'songSelectDropdown').");
   }
+   // Wire Step-2 Back button → return to Library
+const backBtn = document.getElementById("backButton");
+if (backBtn && !backBtn.dataset.wired) {
+  backBtn.dataset.wired = "1";
+  backBtn.addEventListener("click", () => {
+    // clear song choice & extracted parts, keep library selection
+    mergeState({ songIndex: null, song: null, selectedSong: null, parts: [] });
+    const sSel = songSelectEl();
+    if (sSel) sSel.value = "";
+    setWizardStage("library"); // updates dots + shows Step 1
+  });
+}
+
 
   // Validate saved state and choose stage (do not auto-advance)
   const st = getState();
