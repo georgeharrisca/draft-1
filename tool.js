@@ -587,30 +587,40 @@ function extractPartsFromScore(xmlText){
 
     // Right pane state & helpers
     const stateSel = { selections: [] };
+
+    // Strip trailing number to get base (e.g., "Violin 2" → "Violin")
     const baseOf = (name) => String(name).replace(/\s+\d+$/, "");
+
     const refreshRight = () => {
       listRight.innerHTML = stateSel.selections
         .map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`)
         .join("");
     };
-    const addSelection = (baseName) => {
+
+    // ALWAYS number from 1: first selection becomes "Base 1"
+    function addSelection(baseName){
       const count = stateSel.selections.filter(n => baseOf(n) === baseName).length;
-      const label = count === 0 ? baseName : `${baseName} ${count+1}`;
-      stateSel.selections.push(label);
+      stateSel.selections.push(`${baseName} ${count + 1}`);
       refreshRight();
-    };
-    const removeSelection = (label) => {
-      const i = stateSel.selections.indexOf(label);
-      if (i>=0) stateSel.selections.splice(i,1);
+    }
+
+    // Remove and renumber remaining of same base: "Base 1..N"
+    function removeSelection(label){
       const b = baseOf(label);
+      const i = stateSel.selections.indexOf(label);
+      if (i >= 0) stateSel.selections.splice(i, 1);
+
       const idxs = stateSel.selections
         .map((n,i)=>({n,i}))
         .filter(x => baseOf(x.n) === b)
         .map(x=>x.i);
-      if (idxs.length === 1)      stateSel.selections[idxs[0]] = b;
-      else if (idxs.length > 1)   idxs.forEach((ii,k)=> stateSel.selections[ii] = `${b} ${k+1}`);
+
+      idxs.forEach((ii, k) => {
+        stateSel.selections[ii] = `${b} ${k + 1}`;
+      });
+
       refreshRight();
-    };
+    }
 
     // Handlers
     btnAdd.addEventListener("click", () => {
