@@ -1021,6 +1021,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 /* =========================================================================
    M3) arrangeGroupedParts — set clef/transpose; force all visible name fields
+   (namespace-aware element creation so OSMD sees them)
    ------------------------------------------------------------------------- */
 (function () {
   AA.on("group:done", () => AA.safe("arrangeGroupedParts", run));
@@ -1041,18 +1042,18 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       for (const inst of (grp.instruments || [])) {
         try {
           let xml = arrangeXmlForInstrument(src.xml, {
-            longName: inst.instanceLabel,     // e.g., "Violin 2"
-            shortName: inst.instanceLabel,    // use same as long so OSMD shows it
+            longName: inst.instanceLabel,   // e.g., "Violin 2"
+            shortName: inst.instanceLabel,  // keep same so labels always show
             clef: inst.clef ?? null,
             transpose: inst.transpose ?? null
           });
 
-          // Make sure every single-part file has a proper XML header for OSMD
+          // Ensure proper XML header
           xml = ensureXmlHeader(xml);
 
           arranged.push({
-            instrumentName: inst.instanceLabel, // "Violin 2"
-            baseName:       inst.name,          // "Violin"
+            instrumentName: inst.instanceLabel,
+            baseName:       inst.name,
             assignedPart:   inst.assignedPart,
             sourcePartId:   src.id,
             sourcePartName: src.partName,
@@ -1078,20 +1079,20 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     // ---- 1) Score-part naming (long/short/display + score-instrument) ----
     const sp = xmlDoc.querySelector("score-part");
     if (sp) {
-      setTagText(sp, "part-name", longName, /*unsetPrintObject*/true);
-      setTagText(sp, "part-abbreviation", shortName, /*unsetPrintObject*/true);
-      ensureDisplay(sp, "part-name-display", longName);
-      ensureDisplay(sp, "part-abbreviation-display", shortName);
+      setTagTextNS(sp, "part-name", longName, /*unsetPrintObject*/true);
+      setTagTextNS(sp, "part-abbreviation", shortName, /*unsetPrintObject*/true);
+      ensureDisplayNS(sp, "part-name-display", longName);
+      ensureDisplayNS(sp, "part-abbreviation-display", shortName);
 
       // <score-instrument><instrument-name>
       let si = sp.querySelector("score-instrument");
       if (!si) {
-        si = xmlDoc.createElement("score-instrument");
+        si = createNS(sp, "score-instrument");
         const pid = sp.getAttribute("id") || "P1";
         si.setAttribute("id", `${pid}-I1`);
         sp.appendChild(si);
       }
-      setTagText(si, "instrument-name", longName, true);
+      setTagTextNS(si, "instrument-name", longName, true);
     }
 
     // ---- 2) Clef replacement (first measure only) ----
@@ -1130,21 +1131,23 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     return new XMLSerializer().serializeToString(xmlDoc);
   }
 
-  function setTagText(parent, tag, text, unsetPrintObject) {
-    const doc = parent.ownerDocument;
+  // --- NS helpers (create in same namespace as parent) ---
+  function createNS(parent, tag){
+    const ns = parent.namespaceURI || null;
+    return parent.ownerDocument.createElementNS(ns, tag);
+  }
+  function setTagTextNS(parent, tag, text, unsetPrintObject) {
     let el = parent.querySelector(tag);
-    if (!el) { el = doc.createElement(tag); parent.appendChild(el); }
+    if (!el) { el = createNS(parent, tag); parent.appendChild(el); }
     el.textContent = text;
     if (unsetPrintObject) el.removeAttribute("print-object");
   }
-
-  function ensureDisplay(sp, displayTag, value) {
-    const doc = sp.ownerDocument;
+  function ensureDisplayNS(sp, displayTag, value) {
     let disp = sp.querySelector(displayTag);
-    if (!disp) { disp = doc.createElement(displayTag); sp.appendChild(disp); }
-    // Clear and set a simple <display-text>payload</display-text>
+    if (!disp) { disp = createNS(sp, displayTag); sp.appendChild(disp); }
+    // Use <display-text> (same NS)
     disp.textContent = "";
-    const dt = doc.createElement("display-text");
+    const dt = createNS(sp, "display-text");
     dt.textContent = value;
     disp.appendChild(dt);
   }
@@ -1153,7 +1156,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 /* =========================================================================
-   M4) renameParts — safety pass to enforce all name fields again
+   M4) renameParts — safety pass (namespace-aware + remove print-object)
    ------------------------------------------------------------------------- */
 (function(){
   AA.on("arrange:done", () => AA.safe("renameParts", run));
@@ -1166,21 +1169,19 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         const xmlDoc = parser.parseFromString(f.xml, "application/xml");
         const sp = xmlDoc.querySelector("score-part");
         if (sp) {
-          // long/short names
-          setText(sp, "part-name", f.instrumentName);
-          setText(sp, "part-abbreviation", "abbrev.");
-          ensureDisplay(sp, "part-name-display", f.instrumentName);
-          ensureDisplay(sp, "part-abbreviation-display", "abbrev.");
+          setTextNS(sp, "part-name", f.instrumentName, true);
+          setTextNS(sp, "part-abbreviation", f.instrumentName, true);
+          ensureDisplayNS(sp, "part-name-display", f.instrumentName);
+          ensureDisplayNS(sp, "part-abbreviation-display", f.instrumentName);
 
-          // score-instrument instrument-name
           let si = sp.querySelector("score-instrument");
           if (!si) {
-            si = xmlDoc.createElement("score-instrument");
+            si = createNS(sp, "score-instrument");
             const pid = sp.getAttribute("id") || "P1";
             si.setAttribute("id", `${pid}-I1`);
             sp.appendChild(si);
           }
-          setText(si, "instrument-name", f.instrumentName);
+          setTextNS(si, "instrument-name", f.instrumentName, false);
         }
         f.xml = new XMLSerializer().serializeToString(xmlDoc);
       } catch(e){ console.warn("[renameParts]", e); }
@@ -1188,19 +1189,27 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     mergeState({ arrangedFiles: arranged, renameDone: true });
     AA.emit("rename:done");
   }
-  function setText(parent, tag, text){
-    let el = parent.querySelector(tag);
-    if (!el) { el = parent.ownerDocument.createElement(tag); parent.appendChild(el); }
-    el.textContent = text;
+
+  // NS helpers
+  function createNS(parent, tag){
+    const ns = parent.namespaceURI || null;
+    return parent.ownerDocument.createElementNS(ns, tag);
   }
-  function ensureDisplay(parent, tag, text){
+  function setTextNS(parent, tag, text, unsetPrintObject){
+    let el = parent.querySelector(tag);
+    if (!el) { el = createNS(parent, tag); parent.appendChild(el); }
+    el.textContent = text;
+    if (unsetPrintObject) el.removeAttribute("print-object");
+  }
+  function ensureDisplayNS(parent, tag, text){
     let block = parent.querySelector(tag);
-    if (!block) { block = parent.ownerDocument.createElement(tag); parent.appendChild(block); }
+    if (!block) { block = createNS(parent, tag); parent.appendChild(block); }
     let dt = block.querySelector("display-text");
-    if (!dt) { dt = parent.ownerDocument.createElement("display-text"); block.appendChild(dt); }
+    if (!dt) { dt = createNS(parent, "display-text"); block.appendChild(dt); }
     dt.textContent = text;
   }
 })();
+
 
 
 /* ============================================================================
@@ -1254,9 +1263,9 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 /* =========================================================================
    M6) combineArrangedParts → combinedScoreXml
-   - Concatenates arranged single-part scores into one score-partwise
-   - Preserves part order (P1..Pn)
-   - Ensures title AND visible part labels are present
+   - Merges all arranged single-part XMLs into one score-partwise
+   - Keeps P# order (ascending)
+   - Ensures XML header, visible part names (NS-aware), and work/movement titles
    ------------------------------------------------------------------------- */
 (function(){
   AA.on("reid:done", () => AA.safe("combineArrangedParts", run));
@@ -1264,10 +1273,9 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   function run(){
     const state = getState();
     const files = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
-    console.log("[M6] combineArrangedParts: files =", files.length);
     if (!files.length) return;
 
-    // Sort by numeric part id (P1..Pn)
+    // Build sort rows (by numeric P#)
     const rows = [];
     for (const f of files) {
       const pid = f.newPartId || extractPidFromXml(f.xml);
@@ -1277,7 +1285,9 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     }
     rows.sort((a,b)=> (a.partNum - b.partNum) || String(a.partId).localeCompare(String(b.partId)));
 
-    // Seed with the first part's XML and then append the rest
+    if (!rows.length) return;
+
+    // Start with first file and append others' part-list entries and <part> bodies
     let combined = rows[0].f.xml;
     combined = combined.replace(/<\/score-partwise>\s*$/i, "");
 
@@ -1285,16 +1295,14 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       const { f, partId } = rows[i];
       const text = f.xml;
 
-      // Append <score-part id="..."> to the <part-list>
+      // Bring its <score-part id="P#">...</score-part> into the main <part-list>
       const scorePartBlock = block(text, `<score-part\\s+id="${esc(partId)}">`, `</score-part>`);
       if (scorePartBlock) {
         const plEnd = combined.lastIndexOf("</part-list>");
-        if (plEnd !== -1) {
-          combined = combined.slice(0,plEnd) + "\n" + scorePartBlock + combined.slice(plEnd);
-        }
+        if (plEnd !== -1) combined = combined.slice(0,plEnd) + "\n" + scorePartBlock + combined.slice(plEnd);
       }
 
-      // Append the <part id="..."> body before </score-partwise>
+      // Bring its <part id="P#">...</part> into the root
       const partBlock = block(text, `<part\\s+id="${esc(partId)}">`, `</part>`);
       if (partBlock) {
         const rootEnd = combined.lastIndexOf("</score-partwise>");
@@ -1302,23 +1310,19 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         else combined += "\n" + partBlock;
       }
     }
-
-    // Close the root if it isn’t closed yet
     if (!/<\/score-partwise>\s*$/i.test(combined)) combined += "\n</score-partwise>";
 
-    // Ensure XML header + score title
+    // Ensure header + proper visible names + title
     combined = ensureXmlHeader(combined);
-    const titleFromState = (state?.selectedSong?.name) || state?.song || "Auto Arranger Score";
-    combined = ensureCombinedTitle(combined, titleFromState);
-
-    // 🔧 NEW: enforce visible names for each score-part in the combined score
     combined = enforcePartNamesInCombined(combined, rows);
+    combined = ensureCombinedTitle(combined, (state?.selectedSong?.name || state?.song || "Auto Arranger Result"));
 
     mergeState({ combinedScoreXml: combined, combineDone: true });
     console.log("[M6] combineArrangedParts: combined score built.");
     AA.emit("combine:done");
   }
 
+  // --- helpers: string extraction ---
   function block(xml, startRe, endTag){
     const re = new RegExp(`${startRe}[\\s\\S]*?${endTag}`, "i");
     const m = String(xml).match(re);
@@ -1330,50 +1334,96 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   }
   function esc(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
-  // Force long/short/display names per P# in the combined score
-  function enforcePartNamesInCombined(xmlString, rows){
+  // --- ensure a proper XML prolog for OSMD ---
+  function ensureXmlHeader(xml){
+    const s = String(xml || "");
+    return /^\s*<\?xml\b/i.test(s) ? s : `<?xml version="1.0" encoding="UTF-8"?>\n` + s;
+  }
+
+  // --- set work/movement titles (namespace-aware) ---
+  function ensureCombinedTitle(xmlString, songName){
     try {
       const parser = new DOMParser();
       const doc = parser.parseFromString(xmlString, "application/xml");
-      for (const { partId, f } of rows) {
-        const sp = doc.querySelector(`score-part[id="${partId}"]`);
-        if (!sp) continue;
-        setTagText(sp, "part-name", f.instrumentName, /*unsetPrintObject*/true);
-        setTagText(sp, "part-abbreviation", f.instrumentName, /*unsetPrintObject*/true);
-        ensureDisplay(sp, "part-name-display", f.instrumentName);
-        ensureDisplay(sp, "part-abbreviation-display", f.instrumentName);
+      const root = doc.documentElement; // <score-partwise>
+      const ns = root.namespaceURI || null;
 
-        // score-instrument / instrument-name
-        let si = sp.querySelector("score-instrument");
-        if (!si) {
-          si = doc.createElement("score-instrument");
-          si.setAttribute("id", `${partId}-I1`);
-          sp.appendChild(si);
-        }
-        setTagText(si, "instrument-name", f.instrumentName, true);
+      // <work><work-title>…
+      let work = root.querySelector("work");
+      if (!work) work = doc.createElementNS(ns, "work");
+      let wt = work.querySelector("work-title");
+      if (!wt) wt = doc.createElementNS(ns, "work-title");
+      wt.textContent = songName;
+      if (!work.contains(wt)) work.appendChild(wt);
+      if (!root.querySelector("work")) root.insertBefore(work, root.firstChild);
+
+      // <movement-title>…
+      let mt = root.querySelector("movement-title");
+      if (!mt) {
+        mt = doc.createElementNS(ns, "movement-title");
+        root.insertBefore(mt, root.firstChild);
       }
+      mt.textContent = songName;
+
       return new XMLSerializer().serializeToString(doc);
     } catch {
       return xmlString;
     }
   }
-  function setTagText(parent, tag, text, unsetPrintObject) {
-    const doc = parent.ownerDocument;
+
+  // --- enforce visible part names for all P# in combined (namespace-aware) ---
+  function enforcePartNamesInCombined(xmlString, rows){
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(xmlString, "application/xml");
+
+      for (const { partId, f } of rows) {
+        const sp = doc.querySelector(`score-part[id="${partId}"]`);
+        if (!sp) continue;
+
+        setTagTextNS(sp, "part-name", f.instrumentName, /*unsetPrintObject*/true);
+        setTagTextNS(sp, "part-abbreviation", f.instrumentName, /*unsetPrintObject*/true);
+        ensureDisplayNS(sp, "part-name-display", f.instrumentName);
+        ensureDisplayNS(sp, "part-abbreviation-display", f.instrumentName);
+
+        // <score-instrument><instrument-name>
+        let si = sp.querySelector("score-instrument");
+        if (!si) {
+          si = createNS(sp, "score-instrument");
+          si.setAttribute("id", `${partId}-I1`);
+          sp.appendChild(si);
+        }
+        setTagTextNS(si, "instrument-name", f.instrumentName, false);
+      }
+
+      return new XMLSerializer().serializeToString(doc);
+    } catch {
+      return xmlString;
+    }
+  }
+
+  // --- NS helpers shared in M6 ---
+  function createNS(parent, tag){
+    const ns = parent.namespaceURI || null;
+    return parent.ownerDocument.createElementNS(ns, tag);
+  }
+  function setTagTextNS(parent, tag, text, unsetPrintObject) {
     let el = parent.querySelector(tag);
-    if (!el) { el = doc.createElement(tag); parent.appendChild(el); }
+    if (!el) { el = createNS(parent, tag); parent.appendChild(el); }
     el.textContent = text;
     if (unsetPrintObject) el.removeAttribute("print-object");
   }
-  function ensureDisplay(sp, displayTag, value) {
-    const doc = sp.ownerDocument;
+  function ensureDisplayNS(sp, displayTag, value) {
     let disp = sp.querySelector(displayTag);
-    if (!disp) { disp = doc.createElement(displayTag); sp.appendChild(disp); }
-    disp.textContent = "";
-    const dt = doc.createElement("display-text");
+    if (!disp) { disp = createNS(sp, displayTag); sp.appendChild(disp); }
+    // Replace any existing content with a single <display-text>
+    while (disp.firstChild) disp.removeChild(disp.firstChild);
+    const dt = createNS(sp, "display-text");
     dt.textContent = value;
     disp.appendChild(dt);
   }
 })();
+
 
 
 
