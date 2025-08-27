@@ -1522,8 +1522,9 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 
-/* ============================================================================
+/* =========================================================================
    M7) Final Viewer — dropdown lists all parts; ensure title; ensure XML prolog
+   + Back button now fully resets selections & pipeline state, and rebuilds Step 3 UI
    ---------------------------------------------------------------------------- */
 (function () {
   AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
@@ -1563,11 +1564,12 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     wrap.style.cssText = `
       position: fixed; inset: 0; z-index: 99999; display: flex; flex-direction: column;
       height: 100vh; background: rgba(0,0,0,0.08); padding: 28px; box-sizing: border-box; overflow:hidden;`;
+
     const backBtn = ce("button");
     backBtn.textContent = "← Back";
     backBtn.title = "Back to instrument selection";
     backBtn.style.cssText = `position:absolute;top:16px;left:16px;padding:8px 12px;border-radius:8px;border:none;background:#e5e7eb;color:#111;font:600 13px system-ui;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)`;
-    backBtn.addEventListener("click", () => backToInstrumentSelection(state));
+    backBtn.addEventListener("click", () => backToInstrumentSelection());
     wrap.appendChild(backBtn);
 
     const card = ce("div");
@@ -1623,7 +1625,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       try {
         lastXml = ensureTitle(xml, songName);
         const processed = transformXmlForSlashes(lastXml);
-        const osmdReady = withXmlProlog(processed);      // ← ensure "<?xml …?>" at start
+        const osmdReady = withXmlProlog(processed);
         if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
         await osmd.load(osmdReady);
         await osmd.render();
@@ -1656,7 +1658,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       for (const p of parts) {
         try {
           const processed = transformXmlForSlashes(ensureTitle(p.xml, p.instrumentName));
-          const osmdReady = withXmlProlog(processed);    // ← ensure prolog here too
+          const osmdReady = withXmlProlog(processed);
           await osmd.load(osmdReady);
           await osmd.render();
           const { canvas, w, h } = await snapshotCanvas(osmdBox);
@@ -1706,14 +1708,53 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
     pdf.save(`${safe(baseName)}.pdf`);
   }
-  function backToInstrumentSelection(prevState){
-    const packName = prevState?.pack || prevState?.selectedPack?.name || "";
-    const songName = prevState?.song || prevState?.selectedSong?.name || "";
-    setState({ pack: packName, song: songName, packIndex: getState().packIndex, songIndex: getState().songIndex, timestamp: Date.now() });
+
+  // 👇 NEW: full reset when returning to Step 3 (clears selections & all downstream processing)
+  function backToInstrumentSelection(){
+    const s = getState();
+    setState({
+      // keep pack & song + extracted parts
+      packIndex: s.packIndex, pack: s.pack,
+      songIndex: s.songIndex, song: s.song, selectedSong: s.selectedSong,
+      libraryPacks: s.libraryPacks,
+      instrumentData: s.instrumentData,
+      parts: Array.isArray(s.parts) ? s.parts : [],
+
+      // clear picks + pipeline artifacts
+      instrumentSelections: [],
+      assignedResults: [],
+      groupedAssignments: [],
+      arrangedFiles: [],
+      combinedScoreXml: "",
+
+      arrangeDone: false,
+      renameDone: false,
+      reassignByScoreDone: false,
+      combineDone: false,
+
+      timestamp: Date.now()
+    });
+
+    // remove viewer overlay
     document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
-    hideArrangingLoading();
-    qs("step1")?.classList.add("hidden"); qs("step2")?.classList.add("hidden"); qs("step3")?.classList.remove("hidden");
+    hideArrangingLoading?.();
+
+    // force a fresh Step 3 builder by removing the old container (resets stateSel & wiring)
+    const oldPickers = document.getElementById("aa-pickers");
+    if (oldPickers) oldPickers.remove();
+
+    // go back to Instruments stage (this will trigger your setupInstrumentPicker listener)
+    if (typeof setWizardStage === "function") {
+      setWizardStage("instruments");
+    } else {
+      // fallback if helper isn’t available for any reason
+      qs("step1")?.classList.add("hidden");
+      qs("step2")?.classList.add("hidden");
+      qs("step3")?.classList.remove("hidden");
+      AA.emit?.("wizard:stage", "instruments");
+    }
   }
+
   function fitScoreToHeight(osmd, host){
     const svg = host.querySelector("svg"); if (!svg) return;
     const maxH = host.clientHeight; if (!maxH) return;
@@ -1751,15 +1792,13 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     } catch { return xmlString; }
   }
   function withXmlProlog(str){
-    // remove BOM and leading whitespace, and ensure `<?xml ...?>` at the very start
     if (!str) return str;
     let s = String(str).replace(/^\uFEFF/, "").replace(/^\s+/, "");
-    if (!/^\<\?xml/i.test(s)) {
-      s = `<?xml version="1.0" encoding="UTF-8"?>\n` + s;
-    }
+    if (!/^\<\?xml/i.test(s)) s = `<?xml version="1.0" encoding="UTF-8"?>\n` + s;
     return s;
   }
 })();
+
 
 
 
