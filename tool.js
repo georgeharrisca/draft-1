@@ -973,152 +973,185 @@ ul.appendChild(li);
   }
 })();
 
-/* ============================================================================
-   M3) arrangeGroupedParts — set clef/transpose; ensure names & abbrev
-   ---------------------------------------------------------------------------- */
+/* =========================================================================
+   M3) arrangeGroupedParts — set clef/transpose; also force all name fields
+   ------------------------------------------------------------------------- */
 (function () {
   AA.on("group:done", () => AA.safe("arrangeGroupedParts", run));
 
   function run() {
-    const s = getState();
-    const parts = Array.isArray(s.parts) ? s.parts : [];
-    const groups = Array.isArray(s.groupedAssignments) ? s.groupedAssignments : [];
-    console.log(`[M3] arrangeGroupedParts: parts=${parts.length}, groups=${groups.length}`);
+    const state  = getState();
+    const parts  = Array.isArray(state.parts) ? state.parts : [];
+    const groups = Array.isArray(state.groupedAssignments) ? state.groupedAssignments : [];
     if (!parts.length || !groups.length) return;
 
-    const byName = new Map(parts.map(p => [norm(p.partName), p]));
+    const partByName = new Map(parts.map(p => [norm(p.partName), p]));
     const arranged = [];
 
     for (const grp of groups) {
-      const src = byName.get(norm(grp.partName));
+      const src = partByName.get(norm(grp.partName));
       if (!src) continue;
+
       for (const inst of (grp.instruments || [])) {
         try {
-          const xml = arrangeXmlForInstrument(src.xml, inst.name, inst.instanceLabel, {
-            clef: inst.clef ?? null, transpose: inst.transpose ?? null
+          const xml = arrangeXmlForInstrument(src.xml, {
+            longName: inst.instanceLabel,          // e.g., "Violin 2"
+            shortName: "abbrev.",                  // placeholder abbreviation
+            clef: inst.clef ?? null,
+            transpose: inst.transpose ?? null
           });
           arranged.push({
-            instrumentName: inst.instanceLabel, // "Violin 2"
-            baseName: inst.name, assignedPart: inst.assignedPart,
-            sourcePartId: src.id, sourcePartName: src.partName, xml
+            instrumentName: inst.instanceLabel,    // "Violin 2"
+            baseName: inst.name,                   // "Violin"
+            assignedPart: inst.assignedPart,
+            sourcePartId: src.id,
+            sourcePartName: src.partName,
+            xml
           });
         } catch (e) {
-          console.error(`[M3] transform failed for ${inst.instanceLabel}`, e);
+          console.error(`[arrangeGroupedParts] transform failed for ${inst.instanceLabel}`, e);
         }
       }
     }
 
-    console.log(`[M3] arrangeGroupedParts: arranged files = ${arranged.length}`);
     mergeState({ arrangedFiles: arranged, arrangeDone: true });
     AA.emit("arrange:done");
   }
 
-  const norm = s => String(s??"").toLowerCase().replace(/\s+/g," ").trim();
+  const norm = s => String(s ?? "").toLowerCase().replace(/\s+/g," ").trim();
 
-  function arrangeXmlForInstrument(singlePartXml, baseName, instanceLabel, meta) {
+  function arrangeXmlForInstrument(singlePartXml, meta) {
+    const { longName, shortName, clef, transpose } = meta;
     const parser = new DOMParser();
     const xmlDoc = parser.parseFromString(singlePartXml, "application/xml");
 
-    // (0) guarantee a <part-list><score-part> exists (should already)
-    const scorePart = xmlDoc.querySelector("part-list > score-part") || xmlDoc.querySelector("score-part");
-    if (scorePart) {
-      // part-name
-      let partNameEl = scorePart.querySelector("part-name");
-      if (!partNameEl) {
-        partNameEl = xmlDoc.createElement("part-name");
-        scorePart.insertBefore(partNameEl, scorePart.firstChild);
-      }
-      partNameEl.textContent = instanceLabel;
+    // ---- 1) Score-part naming (long/short/display + score-instrument) ----
+    const sp = xmlDoc.querySelector("score-part");
+    if (sp) {
+      // <part-name>
+      let pn = sp.querySelector("part-name");
+      if (!pn) { pn = xmlDoc.createElement("part-name"); sp.insertBefore(pn, sp.firstChild); }
+      pn.textContent = longName;
 
-      // part-abbreviation
-      let partAbbrev = scorePart.querySelector("part-abbreviation");
-      if (!partAbbrev) {
-        partAbbrev = xmlDoc.createElement("part-abbreviation");
-        scorePart.appendChild(partAbbrev);
-      }
-      partAbbrev.textContent = "abbrev.";
+      // <part-abbreviation>
+      let pa = sp.querySelector("part-abbreviation");
+      if (!pa) { pa = xmlDoc.createElement("part-abbreviation"); sp.appendChild(pa); }
+      pa.textContent = shortName;
 
-      // instrument-name (inside score-instrument)
-      let scoreInstr = scorePart.querySelector("score-instrument");
-      if (!scoreInstr) {
-        scoreInstr = xmlDoc.createElement("score-instrument");
-        scoreInstr.setAttribute("id", (scorePart.getAttribute("id")||"P1") + "_INST");
-        scorePart.appendChild(scoreInstr);
+      // Optional display blocks improve rendering in some readers
+      ensureDisplay(sp, "part-name-display", longName);
+      ensureDisplay(sp, "part-abbreviation-display", shortName);
+
+      // <score-instrument><instrument-name>
+      let si = sp.querySelector("score-instrument");
+      if (!si) {
+        si = xmlDoc.createElement("score-instrument");
+        // give it a stable id if we can
+        const pid = sp.getAttribute("id") || "P1";
+        si.setAttribute("id", `${pid}-I1`);
+        sp.appendChild(si);
       }
-      let instrName = scoreInstr.querySelector("instrument-name");
-      if (!instrName) {
-        instrName = xmlDoc.createElement("instrument-name");
-        scoreInstr.appendChild(instrName);
-      }
-      instrName.textContent = instanceLabel;
+      let iname = si.querySelector("instrument-name");
+      if (!iname) { iname = xmlDoc.createElement("instrument-name"); si.appendChild(iname); }
+      iname.textContent = longName;
     }
 
-    // (1) Clef
-    if (meta.clef) {
+    // ---- 2) Clef replacement (first measure) ----
+    if (clef) {
       const firstClef = xmlDoc.querySelector("attributes > clef");
       if (firstClef) {
-        while (firstClef.firstChild) firstClef.removeChild(firstClef.firstChild);
-        const tpl = meta.clef === "bass" ? `<sign>F</sign><line>4</line>`
-                  : meta.clef === "alto" ? `<sign>C</sign><line>3</line>`
-                  : `<sign>G</sign><line>2</line>`;
-        const frag = parser.parseFromString(`<x>${tpl}</x>`,"application/xml").querySelector("x");
+        firstClef.replaceChildren(); // clear
+        const tpl = clef === "bass"
+          ? `<sign>F</sign><line>4</line>`
+          : clef === "alto"
+            ? `<sign>C</sign><line>3</line>`
+            : `<sign>G</sign><line>2</line>`; // treble default
+        const frag = parser.parseFromString(`<x>${tpl}</x>`, "application/xml").documentElement;
         while (frag.firstChild) firstClef.appendChild(frag.firstChild);
       }
     }
 
-    // (2) Transpose: clear, then insert if provided
+    // ---- 3) Transpose: strip existing, insert our meta (if any) ----
     xmlDoc.querySelectorAll("transpose").forEach(n => n.remove());
-    if (typeof meta.transpose === "string" && meta.transpose.trim()) {
-      const tnode = parser.parseFromString(`<wrap>${meta.transpose}</wrap>`,"application/xml").querySelector("transpose");
+    if (transpose && typeof transpose === "string") {
+      const tnode = parser.parseFromString(`<wrap>${transpose}</wrap>`, "application/xml").querySelector("transpose");
       if (tnode) {
         const attributes = xmlDoc.querySelector("attributes");
-        if (attributes) attributes.appendChild(tnode.cloneNode(true));
+        if (attributes) {
+          const key = attributes.querySelector("key");
+          attributes.insertBefore(tnode, key?.nextSibling || null);
+        }
       }
     }
 
-    // (3) small cleanups
-    xmlDoc.querySelectorAll("lyric, harmony").forEach(n => n.remove());
+    // ---- 4) Cleanups ----
+    xmlDoc.querySelectorAll("lyric").forEach(n => n.remove());
+    xmlDoc.querySelectorAll("harmony").forEach(n => n.remove());
 
     return new XMLSerializer().serializeToString(xmlDoc);
+
+    // helper
+    function ensureDisplay(spNode, tag, text){
+      let block = spNode.querySelector(tag);
+      if (!block) { block = xmlDoc.createElement(tag); spNode.appendChild(block); }
+      let dt = block.querySelector("display-text");
+      if (!dt) { dt = xmlDoc.createElement("display-text"); block.appendChild(dt); }
+      dt.textContent = text;
+    }
   }
 })();
 
-/* ============================================================================
-   M4) reassignPartNamesAbbrev — safety pass, ensure instrument-name too
-   ---------------------------------------------------------------------------- */
+
+/* =========================================================================
+   M4) renameParts — safety pass to enforce all name fields again
+   ------------------------------------------------------------------------- */
 (function(){
   AA.on("arrange:done", () => AA.safe("renameParts", run));
   function run(){
-    const s = getState();
-    const arranged = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
-    console.log(`[M4] renameParts: arranged files = ${arranged.length}`);
+    const state = getState();
+    const arranged = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
     for (const f of arranged) {
       try {
         const parser = new DOMParser();
         const xmlDoc = parser.parseFromString(f.xml, "application/xml");
-        const sp = xmlDoc.querySelector("part-list > score-part") || xmlDoc.querySelector("score-part");
+        const sp = xmlDoc.querySelector("score-part");
         if (sp) {
-          let pn = sp.querySelector("part-name");
-          if (!pn) { pn = xmlDoc.createElement("part-name"); sp.insertBefore(pn, sp.firstChild); }
-          pn.textContent = f.instrumentName;
+          // long/short names
+          setText(sp, "part-name", f.instrumentName);
+          setText(sp, "part-abbreviation", "abbrev.");
+          ensureDisplay(sp, "part-name-display", f.instrumentName);
+          ensureDisplay(sp, "part-abbreviation-display", "abbrev.");
 
-          let pa = sp.querySelector("part-abbreviation");
-          if (!pa) { pa = xmlDoc.createElement("part-abbreviation"); sp.appendChild(pa); }
-          pa.textContent = "abbrev.";
-
+          // score-instrument instrument-name
           let si = sp.querySelector("score-instrument");
-          if (!si) { si = xmlDoc.createElement("score-instrument"); si.setAttribute("id",(sp.getAttribute("id")||"P1")+"_INST"); sp.appendChild(si); }
-          let iname = si.querySelector("instrument-name");
-          if (!iname) { iname = xmlDoc.createElement("instrument-name"); si.appendChild(iname); }
-          iname.textContent = f.instrumentName;
+          if (!si) {
+            si = xmlDoc.createElement("score-instrument");
+            const pid = sp.getAttribute("id") || "P1";
+            si.setAttribute("id", `${pid}-I1`);
+            sp.appendChild(si);
+          }
+          setText(si, "instrument-name", f.instrumentName);
         }
         f.xml = new XMLSerializer().serializeToString(xmlDoc);
-      } catch(e){ console.warn("[M4] renameParts error", e); }
+      } catch(e){ console.warn("[renameParts]", e); }
     }
     mergeState({ arrangedFiles: arranged, renameDone: true });
     AA.emit("rename:done");
   }
+  function setText(parent, tag, text){
+    let el = parent.querySelector(tag);
+    if (!el) { el = parent.ownerDocument.createElement(tag); parent.appendChild(el); }
+    el.textContent = text;
+  }
+  function ensureDisplay(parent, tag, text){
+    let block = parent.querySelector(tag);
+    if (!block) { block = parent.ownerDocument.createElement(tag); parent.appendChild(block); }
+    let dt = block.querySelector("display-text");
+    if (!dt) { dt = parent.ownerDocument.createElement("display-text"); block.appendChild(dt); }
+    dt.textContent = text;
+  }
 })();
+
 
 /* ============================================================================
    M5) reassignPartIdsByScoreOrder — P1..Pn by scoreOrder (with dup decimals)
@@ -1169,57 +1202,108 @@ ul.appendChild(li);
   }
 })();
 
-/* ============================================================================
+/* =========================================================================
    M6) combineArrangedParts → combinedScoreXml
-   ---------------------------------------------------------------------------- */
+   - Concatenates arranged single-part scores into one score-partwise
+   - Preserves part order (P1..Pn)
+   - Ensures the combined score has a visible title
+   ------------------------------------------------------------------------- */
 (function(){
   AA.on("reid:done", () => AA.safe("combineArrangedParts", run));
 
   function run(){
-    const s = getState();
-    const files = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
-    console.log(`[M6] combineArrangedParts: files = ${files.length}`);
+    const state = getState();
+    const files = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
+    console.log("[M6] combineArrangedParts: files =", files.length);
     if (!files.length) return;
 
-    const rows = files.map(f => {
-      const pid = f.newPartId || extractPidFromXml(f.xml) || "";
-      const n = parseInt(String(pid).replace(/^P/i,""), 10);
-      return { f, partId: pid, partNum: Number.isFinite(n) ? n : 999 };
-    }).sort((a,b)=> (a.partNum - b.partNum) || String(a.partId).localeCompare(String(b.partId)));
+    // Sort by numeric part id (P1..Pn)
+    const rows = [];
+    for (const f of files) {
+      const pid = f.newPartId || extractPidFromXml(f.xml);
+      if (!pid) continue;
+      const num = parseInt(String(pid).replace(/^P/i, ""), 10);
+      rows.push({ f, partId: pid, partNum: Number.isFinite(num) ? num : Number.POSITIVE_INFINITY });
+    }
+    rows.sort((a,b)=> (a.partNum - b.partNum) || String(a.partId).localeCompare(String(b.partId)));
 
-    let combined = rows[0].f.xml.replace(/<\/score-partwise>\s*$/i, "");
+    // Seed with the first part's XML and then append the rest
+    let combined = rows[0].f.xml;
+    // lop off the closing </score-partwise> so we can append
+    combined = combined.replace(/<\/score-partwise>\s*$/i, "");
 
     for (let i=1;i<rows.length;i++){
       const { f, partId } = rows[i];
       const text = f.xml;
-      const spBlock = block(text, `<score-part\\s+id="${esc(partId)}">`, `</score-part>`);
-      if (spBlock) {
+
+      // Append <score-part id="..."> to the <part-list>
+      const scorePartBlock = block(text, `<score-part\\s+id="${esc(partId)}">`, `</score-part>`);
+      if (scorePartBlock) {
         const plEnd = combined.lastIndexOf("</part-list>");
-        combined = plEnd !== -1 ? combined.slice(0,plEnd) + "\n" + spBlock + combined.slice(plEnd) : combined + "\n" + spBlock;
+        if (plEnd !== -1) {
+          combined = combined.slice(0,plEnd) + "\n" + scorePartBlock + combined.slice(plEnd);
+        }
       }
-      const pBlock = block(text, `<part\\s+id="${esc(partId)}">`, `</part>`);
-      if (pBlock) {
+
+      // Append the <part id="..."> body before </score-partwise>
+      const partBlock = block(text, `<part\\s+id="${esc(partId)}">`, `</part>`);
+      if (partBlock) {
         const rootEnd = combined.lastIndexOf("</score-partwise>");
-        combined = rootEnd !== -1 ? combined.slice(0,rootEnd) + "\n" + pBlock + combined.slice(rootEnd) : combined + "\n" + pBlock;
+        if (rootEnd !== -1) {
+          combined = combined.slice(0, rootEnd) + "\n" + partBlock + combined.slice(rootEnd);
+        } else {
+          combined += "\n" + partBlock;
+        }
       }
     }
+
+    // Close the root if it isn’t closed yet
     if (!/<\/score-partwise>\s*$/i.test(combined)) combined += "\n</score-partwise>";
-    console.log("[M6] combineArrangedParts: combined score built.");
+
+    // Ensure the combined score has a title (movement-title or work-title)
+    const titleFromState = (state?.selectedSong?.name) || state?.song || "Auto Arranger Score";
+    combined = ensureCombinedTitle(combined, titleFromState);
+
     mergeState({ combinedScoreXml: combined, combineDone: true });
+    console.log("[M6] combineArrangedParts: combined score built.");
     AA.emit("combine:done");
   }
 
+  /* ---------- Helpers ---------- */
   function block(xml, startRe, endTag){
     const re = new RegExp(`${startRe}[\\s\\S]*?${endTag}`, "i");
-    const m = String(xml).match(re);
+    const m  = String(xml).match(re);
     return m ? m[0] : null;
   }
-  function esc(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
   function extractPidFromXml(xml){
     const m = String(xml||"").match(/<score-part\s+id="([^"]+)"/i);
     return m ? m[1] : null;
   }
+  function esc(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+  // Insert <movement-title> (or keep existing). If a <work><work-title> exists, we don't touch it.
+  function ensureCombinedTitle(xml, title){
+    try{
+      const doc  = new DOMParser().parseFromString(xml, "application/xml");
+      const root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
+
+      const hasWorkTitle = !!doc.querySelector("work > work-title");
+      const hasMoveTitle = !!doc.querySelector("movement-title");
+
+      if (!hasWorkTitle && !hasMoveTitle) {
+        const mv = doc.createElement("movement-title");
+        mv.textContent = title || "Auto Arranger Score";
+        // Insert near the top of the root for best compatibility
+        root.insertBefore(mv, root.firstChild);
+      }
+      return new XMLSerializer().serializeToString(doc);
+    } catch {
+      // If parsing fails, return the original XML unchanged
+      return xml;
+    }
+  }
 })();
+
 
 /* ============================================================================
    M7) Final Viewer — dropdown lists all parts; ensure title; ensure XML prolog
