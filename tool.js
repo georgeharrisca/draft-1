@@ -849,21 +849,13 @@ ul.appendChild(li);
      M5) reassignPartIdsByScoreOrder
      M6) combineArrangedParts
      M7) finalViewer
-     H1) helpers (safe only; no duplicate escapeHtml)
+     H1) helpers (OSMD header helper)
    ========================================================================== */
 
 
-/* =========================================================================
-   M1) assignParts (uses sortingOctave; 7–15 passthrough)
-   Rules:
-   - Any instrument with instrumentPart ∈ {7..15} => assignedPart = instrumentPart; sortNumber = null
-   - For 1..6: sortNumber = base(1..6) then adjust by sortingOctave (positive subtract, negative add abs)
-   - After tie-break (alphabetical -> +0.1, +0.2...), assign:
-     * lowest sortNumber -> "1 Melody"
-     * highest sortNumber -> "6 Bass" (if at least 2 instruments)
-     * next four lowest -> 2,4,3,5
-     * remaining (lowest→highest) cycle 1,6,2,4,3,5
-   ------------------------------------------------------------------------- */
+/* ============================================================================
+   M1) assignParts — compute assignedPart buckets (1..6 pattern, 7..15 passthrough)
+   ---------------------------------------------------------------------------- */
 (function(){
   AA.on("instruments:saved", () => AA.safe("assignParts", run));
 
@@ -888,7 +880,8 @@ ul.appendChild(li);
   function run(){
     const state = getState();
     const sel = Array.isArray(state.instrumentSelections) ? state.instrumentSelections : [];
-    if (!sel.length) return;
+    console.log(`[M1] assignParts: received instrumentSelections = ${sel.length}`);
+    if (!sel.length) { console.warn("[M1] No selections — aborting."); return; }
 
     const rows = sel.map(item => {
       const ipIdx = indexOfPart(item.instrumentPart);
@@ -912,16 +905,16 @@ ul.appendChild(li);
       };
     });
 
-    // Early assignment for 7..15
+    // Lock 7..15 directly
     for (const r of rows) {
       const idx = indexOfPart(r.instrumentPart);
       if (idx >=7 && idx<=15) r.assignedPart = formatPart(idx);
     }
 
-    // Numeric pool 1..6 only (and not already locked by 7..15)
+    // Pool 1..6 only (and not already assigned)
     const pool = rows.filter(r => r.sortNumber != null && !r.assignedPart);
 
-    // Tie-break: sort by integer sortNumber then alpha, then inject .1/.2 decimals
+    // Tie-break within equal integers by alpha, injecting .1/.2 decimals
     pool.sort((a,b) => (a.sortNumber - b.sortNumber) || String(a.label).localeCompare(b.label));
     for (let i=0; i<pool.length;) {
       const intVal = Math.floor(pool[i].sortNumber);
@@ -933,8 +926,7 @@ ul.appendChild(li);
     }
     pool.sort((a,b) => a.sortNumber - b.sortNumber);
 
-    // Assign required pattern:
-    // lowest -> 1, highest -> 6, next 4 -> 2,4,3,5; remaining cycle {1,6,2,4,3,5}
+    // Assign required pattern
     if (pool.length >= 1) pool[0].assignedPart = "1 Melody";
     if (pool.length >= 2) pool[pool.length-1].assignedPart = "6 Bass";
 
@@ -946,7 +938,6 @@ ul.appendChild(li);
     const cycle = ["1 Melody","6 Bass","2 Harmony I","4 Counter Melody","3 Harmony II","5 Counter Melody Harmony"];
     for (let i=0; i<mids.length; i++) mids[i].assignedPart = cycle[i % cycle.length];
 
-    // Merge back
     const assignedResults = rows.map(r => ({
       name: r.label,
       baseName: r.base,
@@ -959,6 +950,7 @@ ul.appendChild(li);
       scoreOrder: r.scoreOrder
     }));
 
+    console.log(`[M1] assignParts: produced assignedResults = ${assignedResults.length}`);
     mergeState({ assignedResults });
     AA.emit("assign:done");
   }
@@ -974,16 +966,18 @@ ul.appendChild(li);
 })();
 
 
-/* =========================================================================
+/* ============================================================================
    M2) groupAssignments — match assignedPart to extracted partName
-   ------------------------------------------------------------------------- */
+   ---------------------------------------------------------------------------- */
 (function(){
   AA.on("assign:done", () => AA.safe("groupAssignments", run));
+
   function run(){
     const state = getState();
     const parts = Array.isArray(state.parts) ? state.parts : [];
     const assigned = Array.isArray(state.assignedResults) ? state.assignedResults : [];
-    if (!parts.length || !assigned.length) return;
+    console.log(`[M2] groupAssignments: parts=${parts.length}, assigned=${assigned.length}`);
+    if (!parts.length || !assigned.length) { console.warn("[M2] Missing inputs — aborting."); return; }
 
     const norm = s => String(s||"").toLowerCase().replace(/\s+/g," ").trim();
     const groups = [];
@@ -993,16 +987,16 @@ ul.appendChild(li);
       groups.push({ partName: p.partName, partId: p.id, instruments: members });
     }
 
+    console.log(`[M2] groupAssignments: created groups = ${groups.length}`);
     mergeState({ groupedAssignments: groups });
     AA.emit("group:done");
   }
 })();
 
 
-/* =========================================================================
-   M3) arrangeGroupedParts — Clef & Transpose only, NO octave edits
-   Also set part-name to instrument instance label, part-abbreviation → "abbrev."
-   ------------------------------------------------------------------------- */
+/* ============================================================================
+   M3) arrangeGroupedParts — Apply clef/transpose, fix names, ensure XML header
+   ---------------------------------------------------------------------------- */
 (function () {
   AA.on("group:done", () => AA.safe("arrangeGroupedParts", run));
 
@@ -1010,7 +1004,8 @@ ul.appendChild(li);
     const state = getState();
     const parts = Array.isArray(state.parts) ? state.parts : [];
     const groups = Array.isArray(state.groupedAssignments) ? state.groupedAssignments : [];
-    if (!parts.length || !groups.length) return;
+    console.log(`[M3] arrangeGroupedParts: parts=${parts.length}, groups=${groups.length}`);
+    if (!parts.length || !groups.length) { console.warn("[M3] Missing inputs — aborting."); return; }
 
     const partByName = new Map(parts.map(p => [norm(p.partName), p]));
     const arranged = [];
@@ -1025,23 +1020,22 @@ ul.appendChild(li);
             clef: inst.clef ?? null,
             transpose: inst.transpose ?? null
           });
-          // PATCH: ensure the XML has a header for downstream tools
-          xml = ensureXmlHeader(xml);
-
+          xml = ensureXmlHeader(xml); // header required by OSMD
           arranged.push({
-            instrumentName: inst.instanceLabel, // "Violin 2"
-            baseName: inst.name,                // "Violin"
+            instrumentName: inst.instanceLabel,
+            baseName: inst.name,
             assignedPart: inst.assignedPart,
             sourcePartId: src.id,
             sourcePartName: src.partName,
             xml
           });
         } catch (e) {
-          console.error(`[arrangeGroupedParts] transform failed for ${inst.instanceLabel}`, e);
+          console.error(`[M3] transform failed for ${inst.instanceLabel}`, e);
         }
       }
     }
 
+    console.log(`[M3] arrangeGroupedParts: arranged files = ${arranged.length}`);
     mergeState({ arrangedFiles: arranged, arrangeDone: true });
     AA.emit("arrange:done");
   }
@@ -1053,14 +1047,14 @@ ul.appendChild(li);
     const parser = new DOMParser();
     const xmlDoc = parser.parseFromString(singlePartXml, "application/xml");
 
-    // (1) part-name → instrument instance; part-abbreviation → "abbrev."
+    // part-name → instance; abbreviation → "abbrev."
     const scorePart = xmlDoc.querySelector("score-part");
     const partName = scorePart?.querySelector("part-name");
     if (partName) partName.textContent = instanceLabel;
     const partAbbrev = scorePart?.querySelector("part-abbreviation");
     if (partAbbrev) partAbbrev.textContent = "abbrev.";
 
-    // (2) Clef replacement (if provided)
+    // Clef substitution (first <attributes><clef>)
     if (clef) {
       const firstClef = xmlDoc.querySelector("attributes > clef");
       if (firstClef) {
@@ -1069,14 +1063,14 @@ ul.appendChild(li);
           ? `<sign>F</sign><line>4</line>`
           : (clef === "alto"
               ? `<sign>C</sign><line>3</line>`
-              : `<sign>G</sign><line>2</line>`); // treble default
+              : `<sign>G</sign><line>2</line>`);
         const frag = parser.parseFromString(`<x>${tpl}</x>`, "application/xml");
         const x = frag.querySelector("x");
         while (x.firstChild) firstClef.appendChild(x.firstChild);
       }
     }
 
-    // (3) Transpose: clear all, then insert only meta.transpose (if any) into first <attributes>
+    // Transpose: remove all, then insert only `meta.transpose` into first <attributes>
     xmlDoc.querySelectorAll("transpose").forEach(n => n.remove());
     if (transpose && typeof transpose === "string") {
       const tnode = parser.parseFromString(`<wrap>${transpose}</wrap>`, "application/xml").querySelector("transpose");
@@ -1090,7 +1084,7 @@ ul.appendChild(li);
       }
     }
 
-    // (4) Cleanups
+    // Cleanups
     xmlDoc.querySelectorAll("lyric").forEach(n => n.remove());
     xmlDoc.querySelectorAll("harmony").forEach(n => n.remove());
 
@@ -1099,14 +1093,15 @@ ul.appendChild(li);
 })();
 
 
-/* =========================================================================
-   M4) reassignPartNamesAbbrev (safety pass; already set in arranger)
-   ------------------------------------------------------------------------- */
+/* ============================================================================
+   M4) reassignPartNamesAbbrev — safety pass (names already set in M3)
+   ---------------------------------------------------------------------------- */
 (function(){
   AA.on("arrange:done", () => AA.safe("renameParts", run));
   function run(){
     const state = getState();
     const arranged = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
+    console.log(`[M4] renameParts: arranged files = ${arranged.length}`);
     for (const f of arranged) {
       try {
         const parser = new DOMParser();
@@ -1117,7 +1112,7 @@ ul.appendChild(li);
         const pa = sp?.querySelector("part-abbreviation");
         if (pa) pa.textContent = "abbrev.";
         f.xml = new XMLSerializer().serializeToString(xmlDoc);
-      } catch(e){ console.warn("[renameParts]", e); }
+      } catch(e){ console.warn("[M4] renameParts error", e); }
     }
     mergeState({ arrangedFiles: arranged, renameDone: true });
     AA.emit("rename:done");
@@ -1125,11 +1120,9 @@ ul.appendChild(li);
 })();
 
 
-/* =========================================================================
-   M5) reassignPartIdsByScoreOrder
-   - Uses base scoreOrder + .(instance number / 10) for duplicates
-   - Assigns P1..Pn by ascending effective scoreOrder
-   ------------------------------------------------------------------------- */
+/* ============================================================================
+   M5) reassignPartIdsByScoreOrder — assign P1..Pn by scoreOrder (+instance /10)
+   ---------------------------------------------------------------------------- */
 (function(){
   AA.on("rename:done", () => AA.safe("reassignPartIdsByScoreOrder", run));
 
@@ -1141,7 +1134,8 @@ ul.appendChild(li);
   function run(){
     const state = getState();
     const arranged = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
-    if (!arranged.length) return;
+    console.log(`[M5] reassignPartIdsByScoreOrder: arranged files = ${arranged.length}`);
+    if (!arranged.length) { console.warn("[M5] Nothing to re-ID — aborting."); return; }
 
     // Build base order from selections
     const baseOrder = new Map();
@@ -1149,7 +1143,6 @@ ul.appendChild(li);
     for (const s of selections) {
       if (s?.name && Number.isFinite(Number(s.scoreOrder))) baseOrder.set(String(s.name), Number(s.scoreOrder));
     }
-    // Fill gaps
     for (const [k,v] of Object.entries(FALLBACK_ORDER)) if (!baseOrder.has(k)) baseOrder.set(k, v);
 
     const rows = arranged.map(f => {
@@ -1172,6 +1165,7 @@ ul.appendChild(li);
       file.newPartId = newId;
     }
 
+    console.log(`[M5] reassignPartIdsByScoreOrder: assigned IDs 1..${rows.length}`);
     mergeState({ arrangedFiles: arranged, reassignByScoreDone: true });
     AA.emit("reid:done");
   }
@@ -1183,16 +1177,17 @@ ul.appendChild(li);
 })();
 
 
-/* =========================================================================
-   M6) combineArrangedParts → combinedScoreXml
-   ------------------------------------------------------------------------- */
+/* ============================================================================
+   M6) combineArrangedParts — build full score XML into state.combinedScoreXml
+   ---------------------------------------------------------------------------- */
 (function(){
   AA.on("reid:done", () => AA.safe("combineArrangedParts", run));
 
   function run(){
     const state = getState();
     const files = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
-    if (!files.length) return;
+    console.log(`[M6] combineArrangedParts: files = ${files.length}`);
+    if (!files.length) { console.warn("[M6] No files to combine — aborting."); return; }
 
     const rows = [];
     for (const f of files) {
@@ -1223,9 +1218,8 @@ ul.appendChild(li);
     }
     if (!/<\/score-partwise>\s*$/i.test(combined)) combined += "\n</score-partwise>";
 
-    // PATCH: Ensure the Score also has an XML header (needed by OSMD)
-    combined = ensureXmlHeader(combined);
-
+    combined = ensureXmlHeader(combined); // ensure header for OSMD
+    console.log("[M6] combineArrangedParts: combined score built.");
     mergeState({ combinedScoreXml: combined, combineDone: true });
     AA.emit("combine:done");
   }
@@ -1243,10 +1237,9 @@ ul.appendChild(li);
 })();
 
 
-/* =========================================================================
-   M7) FINAL VIEWER (centered, back clears processing, shrink-to-fit vertical)
-   Loads OSMD/html2canvas/jsPDF from repo root
-   ------------------------------------------------------------------------- */
+/* ============================================================================
+   M7) FINAL VIEWER — OSMD viewer with PDF/XML export and Back
+   ---------------------------------------------------------------------------- */
 (function () {
   AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
 
@@ -1257,6 +1250,7 @@ ul.appendChild(li);
     await ensureLib("html2canvas", "./html2canvas.min.js");
     await ensureLib("jspdf", "./jspdf.umd.min.js");
 
+    console.log("[M7] finalViewer: libs ensured, building UI…");
     buildViewerUI();
   }
 
@@ -1377,7 +1371,7 @@ ul.appendChild(li);
       try {
         lastXml = xml;
         const processed = transformXmlForSlashes(xml);
-        const xmlToLoad = ensureXmlHeader(processed); // PATCH: guarantee XML header
+        const xmlToLoad = ensureXmlHeader(processed);
 
         if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
         await osmd.load(xmlToLoad);
@@ -1416,7 +1410,7 @@ ul.appendChild(li);
       for (const p of parts) {
         try {
           const processed = transformXmlForSlashes(p.xml);
-          await osmd.load(ensureXmlHeader(processed)); // PATCH
+          await osmd.load(ensureXmlHeader(processed));
           await osmd.render();
           const { canvas, w, h } = await snapshotCanvas(osmdBox);
           if (!doc) doc = new (jspdfNS.jsPDF)({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
@@ -1431,7 +1425,7 @@ ul.appendChild(li);
       const parts = sortPartsByPid(Array.isArray(getState().arrangedFiles)?getState().arrangedFiles:[]);
       if (!parts.length) return alert("No parts found.");
       for (const p of parts) {
-        downloadText(ensureXmlHeader(p.xml), `${safe(p.instrumentName)}.musicxml`, "application/xml"); // PATCH
+        downloadText(ensureXmlHeader(p.xml), `${safe(p.instrumentName)}.musicxml`, "application/xml");
         await new Promise(r => setTimeout(r, 60));
       }
     });
@@ -1446,7 +1440,7 @@ ul.appendChild(li);
           .find(f => f.instrumentName === choice);
         xml = hit?.xml || "";
       }
-      return { xml: ensureXmlHeader(xml) }; // PATCH
+      return { xml: ensureXmlHeader(xml) };
     }
   }
 
@@ -1454,14 +1448,11 @@ ul.appendChild(li);
   function sortPartsByPid(files){
     const out = [];
     for (const f of (files || [])) {
-      // try score-part id first
       let pid = extractPidFromXml(f.xml);
       if (!pid) {
-        // try <part id="...">
         const m = String(f.xml || "").match(/<part\s+id="([^"]+)"/i);
         pid = m ? m[1] : null;
       }
-      // include even if PID not parseable; sort those to the end
       const n = pid ? parseInt(String(pid).replace(/^P/i, ""), 10) : NaN;
       out.push({ ...f, _pnum: Number.isFinite(n) ? n : 999, _pid: pid || "" });
     }
@@ -1517,12 +1508,10 @@ ul.appendChild(li);
 })();
 
 
-/* =========================================================================
-   H1) Helper addition required by OSMD header checks
-   ------------------------------------------------------------------------- */
+/* ============================================================================
+   H1) Helper — ensure every XML we hand to OSMD starts with an XML header
+   ---------------------------------------------------------------------------- */
 function ensureXmlHeader(xml) {
   const s = String(xml || "").trimStart();
   return s.startsWith("<?xml") ? s : `<?xml version="1.0" encoding="UTF-8"?>\n${s}`;
 }
-
-// NOTE: `safe(...)` and `escapeHtml(...)` are assumed to be defined earlier in your file.
