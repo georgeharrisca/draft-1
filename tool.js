@@ -470,12 +470,12 @@ function extractPartsFromScore(xmlText){
 
 
 /* ============================================================================
-   I) STEP 3: INSTRUMENT PICKER UI (left list → Add; right list → Selections)
-   - Numbering rule:
-     • One instance of a base → show bare name (e.g., "Violin")
-     • 2+ instances → show "Base 1..N" (e.g., "Violin 1", "Violin 2", …)
-   - Right pane is ALWAYS sorted alphabetically:
-     • Sort by base name (locale-aware), then by instance number (0 for singleton)
+   I) STEP 3: INSTRUMENT PICKER UI (Categories → Instruments → Selections)
+   - Left pane adds a Category list (folders). Clicking a category filters
+     the instruments list below it.
+   - Right pane stays alphabetically sorted with smart numbering:
+       * One instance → bare name (e.g., "Violin")
+       * 2+ instances → "Violin 1", "Violin 2", …
    ========================================================================== */
 (function(){
 
@@ -493,28 +493,34 @@ function extractPartsFromScore(xmlText){
     return host;
   }
 
-  // Build UI once; if it already exists, just ensure Back button is present.
+  // Build UI once; if it already exists, ensure Back button & category list exist.
   function ensureInstrumentPickerMarkup(){
     const host = ensureStep3Host();
 
     // De-dupe: if multiple #aa-pickers somehow exist, keep the first.
     const containers = Array.from(document.querySelectorAll("#aa-pickers"));
     let container = containers[0];
-    if (containers.length > 1) {
-      containers.slice(1).forEach(n => n.remove());
-    }
+    if (containers.length > 1) containers.slice(1).forEach(n => n.remove());
 
     if (!container) {
       host.insertAdjacentHTML("beforeend", `
         <div id="aa-pickers" class="aa-grid" style="margin-top:12px;">
           <div class="aa-pane">
             <h4>Instruments</h4>
+
+            <!-- NEW: Category "folders" -->
+            <label style="display:block; font-size:12px; color:var(--muted); margin:0 0 6px;">Category</label>
+            <select id="categorySelect" size="6" style="width:100%; margin-bottom:10px;"></select>
+
+            <label style="display:block; font-size:12px; color:var(--muted); margin:8px 0 6px;">Items</label>
             <select id="instrumentList" size="10"></select>
+
             <div id="leftControls" style="display:flex; gap:10px; margin-top:10px;">
               <button id="btnBackToSong" class="aa-btn" style="background:#1a1f2a;border:1px solid var(--line);color:var(--text);">Back</button>
               <button id="btnAddInstrument" class="aa-btn">Add to Score</button>
             </div>
           </div>
+
           <div class="aa-pane">
             <h4>Selections</h4>
             <select id="selectionsList" size="10"></select>
@@ -528,7 +534,7 @@ function extractPartsFromScore(xmlText){
       container = document.getElementById("aa-pickers");
       console.log("[AA] Built Step 3 instrument picker UI.");
     } else {
-      // Upgrade existing UI: add Back button if it’s missing
+      // Ensure Back button exists
       if (!document.getElementById("btnBackToSong")) {
         const controls = container.querySelector("#leftControls") ||
                          container.querySelector("#btnAddInstrument")?.parentElement;
@@ -542,6 +548,26 @@ function extractPartsFromScore(xmlText){
           console.log("[AA] Added Back button to existing Step 3 UI.");
         }
       }
+      // Ensure categorySelect exists
+      if (!document.getElementById("categorySelect")) {
+        const instrumentsLabel = container.querySelector("h4 + select#instrumentList");
+        if (instrumentsLabel) {
+          const wrap = instrumentsLabel.parentElement;
+          const catLabel = document.createElement("label");
+          catLabel.textContent = "Category";
+          catLabel.style.cssText = "display:block; font-size:12px; color:var(--muted); margin:0 0 6px;";
+          const catSel = document.createElement("select");
+          catSel.id = "categorySelect";
+          catSel.size = 6;
+          catSel.style.cssText = "width:100%; margin-bottom:10px;";
+          wrap.insertBefore(catSel, instrumentsLabel);
+          const itemsLabel = document.createElement("label");
+          itemsLabel.textContent = "Items";
+          itemsLabel.style.cssText = "display:block; font-size:12px; color:var(--muted); margin:8px 0 6px;";
+          wrap.insertBefore(itemsLabel, instrumentsLabel);
+          console.log("[AA] Added Category selector to existing Step 3 UI.");
+        }
+      }
     }
     return container;
   }
@@ -551,6 +577,7 @@ function extractPartsFromScore(xmlText){
     if (!container) return;
 
     // Always scope to the single container to avoid duplicate-id issues
+    const catSel    = container.querySelector("#categorySelect");
     const listLeft  = container.querySelector("#instrumentList");
     const btnAdd    = container.querySelector("#btnAddInstrument");
     const btnBack   = container.querySelector("#btnBackToSong");
@@ -559,57 +586,82 @@ function extractPartsFromScore(xmlText){
     const btnSave   = container.querySelector("#btnSaveSelections");
     const note      = document.getElementById("instStatus");
 
-    if (!listLeft || !btnAdd || !btnBack || !listRight || !btnRemove || !btnSave) {
+    if (!catSel || !listLeft || !btnAdd || !btnBack || !listRight || !btnRemove || !btnSave) {
       console.warn("[AA] Step 3 UI elements missing; picker not wired.");
       return;
     }
 
-    // Populate/refresh left list
-    const populateLeftList = () => {
-      const s = getState();
-      const instruments = Array.isArray(s.instrumentData) ? s.instrumentData : [];
-      if (instruments.length) {
-        listLeft.innerHTML = instruments
-          .map(ins => `<option value="${escapeHtml(ins.name)}">${escapeHtml(ins.name)}</option>`)
-          .join("");
-        if (note) note.textContent = "";
-      } else {
-        listLeft.innerHTML = "";
-        if (note) note.textContent = "No instruments found in instrumentData.json.";
-      }
+    // Local state for this view
+    const stateSel = {
+      selections: [],        // base names only (e.g., ["Violin","Violin","Flute"])
+      currentCategory: "All" // currently selected category
     };
 
-    // Avoid double-wiring; but still allow repopulation
+    // Build category list from instrumentData
+    function buildCategoryList(){
+      const s = getState();
+      const data = Array.isArray(s.instrumentData) ? s.instrumentData : [];
+      const catsSet = new Set();
+      data.forEach(d => catsSet.add((d.category || "Other").trim()));
+      const cats = ["All", ...Array.from(catsSet).sort((a,b)=> a.localeCompare(b, undefined, { sensitivity:"base" }))];
+      catSel.innerHTML = cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
+      // restore or default
+      if (!cats.includes(stateSel.currentCategory)) stateSel.currentCategory = cats[0] || "All";
+      catSel.value = stateSel.currentCategory;
+    }
+
+    // Populate/refresh left instruments list based on category
+    function populateLeftList(){
+      const s = getState();
+      let instruments = Array.isArray(s.instrumentData) ? s.instrumentData : [];
+      if (!instruments.length) {
+        listLeft.innerHTML = "";
+        if (note) note.textContent = "No instruments found in instrumentData.json.";
+        return;
+      }
+      const cat = stateSel.currentCategory;
+      if (cat && cat !== "All") {
+        instruments = instruments.filter(ins => (ins.category || "Other").trim() === cat);
+      }
+      instruments.sort((a,b)=> String(a.name).localeCompare(String(b.name), undefined, { sensitivity:"base" }));
+      listLeft.innerHTML = instruments.map(ins =>
+        `<option value="${escapeHtml(ins.name)}">${escapeHtml(ins.name)}</option>`
+      ).join("");
+      if (note) note.textContent = "";
+    }
+
+    // Avoid double-wiring; but still allow repopulation on data change
     if (container.dataset.wired === "1") {
+      buildCategoryList();
       populateLeftList();
       return;
     }
     container.dataset.wired = "1";
 
     // Initial population + listen for data refresh
+    buildCategoryList();
     populateLeftList();
-    AA.on("data:instrumentData", populateLeftList);
+    AA.on("data:instrumentData", () => { buildCategoryList(); populateLeftList(); });
 
-    // Right pane state: store BASE names only; display labels computed each refresh
-    const stateSel = { selections: [] }; // e.g., ["Violin","Violin","Flute"]
+    // Category change → filter instruments
+    catSel.addEventListener("change", () => {
+      stateSel.currentCategory = catSel.value || "All";
+      populateLeftList();
+    });
 
+    // ---------- Right pane (Selections) ----------
     const baseOf = (name) => String(name).replace(/\s+\d+$/, "");
 
-    /**
-     * Build labels and render the right list, sorted alphabetically.
-     * - Compute per-base counts and assign instance numbers in insertion order.
-     * - Render sorted by base (localeCompare), then by num (0 for singleton).
-     * - Each option's value = ORIGINAL index, so Remove works.
-     */
+    // Build labels and render the right list, sorted alphabetically
     function refreshRight(){
-      // 1) group original indices by base (in insertion order)
+      // group by base (preserve insertion order within each base)
       const groups = new Map(); // base -> [idx, idx, ...]
       stateSel.selections.forEach((base, idx) => {
         if (!groups.has(base)) groups.set(base, []);
         groups.get(base).push(idx);
       });
 
-      // 2) compute display records with numbering
+      // compute display records
       const records = [];
       for (const [base, indices] of groups.entries()) {
         if (indices.length === 1) {
@@ -623,14 +675,13 @@ function extractPartsFromScore(xmlText){
         }
       }
 
-      // 3) sort alphabetically (by base), then by num (singletons first as 0)
+      // sort alphabetically (by base), then by num (singletons first as 0)
       records.sort((a, b) => {
         const byName = a.base.localeCompare(b.base, undefined, { sensitivity: "base" });
         if (byName !== 0) return byName;
         return a.num - b.num;
       });
 
-      // 4) render
       listRight.innerHTML = records
         .map(rec => `<option value="${rec.idx}">${escapeHtml(rec.label)}</option>`)
         .join("");
@@ -654,32 +705,28 @@ function extractPartsFromScore(xmlText){
       addSelection(sel);
     });
 
-    // 🔙 Back to "Select Song" — clear song & instrument picks and repopulate song list
+    // Back to "Select Song" — clear song & instrument picks and repopulate song list
     btnBack.addEventListener("click", () => {
       const s = getState();
 
-      // Clear the chosen song + downstream artifacts; keep the library pack
       mergeState({
         songIndex: null,
         song: null,
         selectedSong: null,
         parts: [],
-        instrumentSelections: [] // clear in-progress selections too
+        instrumentSelections: []
       });
 
-      // Reset local right-pane selections
       stateSel.selections = [];
       refreshRight();
       if (note) note.textContent = "";
 
-      // Rebuild the Song dropdown for the current pack and blank it out
       if (Number.isInteger(s.packIndex)) {
         populateSongsForPack(s.packIndex);
       }
-      const sSel = songSelectEl();
+      const sSel = (typeof songSelectEl === "function" ? songSelectEl() : document.getElementById("songSelect"));
       if (sSel) sSel.value = "";
 
-      // Show Step 2 (Select Song)
       setWizardStage("song");
     });
 
@@ -694,8 +741,7 @@ function extractPartsFromScore(xmlText){
       const s = getState();
       const metaIndex = Object.fromEntries((s.instrumentData||[]).map(m => [m.name, m]));
 
-      // Build labels to save (use the same grouping/numbering logic as UI,
-      // but we preserve insertion order for the underlying array)
+      // Numbering for save payload (same rules as UI)
       const groups = new Map();
       stateSel.selections.forEach((base, idx) => {
         if (!groups.has(base)) groups.set(base, []);
@@ -703,11 +749,8 @@ function extractPartsFromScore(xmlText){
       });
       const instanceNumberByIndex = {};
       for (const [base, indices] of groups.entries()) {
-        if (indices.length === 1) {
-          instanceNumberByIndex[indices[0]] = 0; // singleton → 0 (bare)
-        } else {
-          indices.forEach((i, k) => instanceNumberByIndex[i] = k + 1);
-        }
+        if (indices.length === 1) instanceNumberByIndex[indices[0]] = 0;
+        else indices.forEach((i, k) => instanceNumberByIndex[i] = k + 1);
       }
 
       const instrumentSelections = stateSel.selections.map((base, i) => {
@@ -716,13 +759,15 @@ function extractPartsFromScore(xmlText){
         const label = num === 0 ? base : `${base} ${num}`;
         return {
           name: base,
-          instanceLabel: label,               // "Violin" or "Violin 1/2/…"
+          instanceLabel: label,
           instrumentPart: meta.instrumentPart || "",
           sortingOctave: Number(meta.sortingOctave)||0,
           clef: meta.clef ?? null,
           transpose: meta.transpose ?? null,
           scoreOrder: Number(meta.scoreOrder)||999,
-          assignedPart: ""
+          assignedPart: "",
+          // carry through category for later UI or sorting if useful
+          category: meta.category || "Other"
         };
       });
 
@@ -737,6 +782,7 @@ function extractPartsFromScore(xmlText){
   AA.on("wizard:stage", (stage) => { if (stage === "instruments") setupInstrumentPicker(); });
 
 })(); // end Step 3
+
 
 
 
