@@ -860,79 +860,46 @@ ul.appendChild(li);
   AA.on("instruments:saved", () => AA.safe("assignParts", run));
 
   const PART_LABELS = [
-    "1 Melody",
-    "2 Harmony I",
-    "3 Harmony II",
-    "4 Counter Melody",
-    "5 Counter Melody Harmony",
-    "6 Bass",
-    "7 Groove",
-    "8 Chords",
-    "9 Drum Kit",
-    "10 Melody & Bass",
-    "11 Melody & Chords",
-    "12 Chords & Bass",
-    "13 Melody & Chords & Bass",
-    "14 Timpani",
-    "15 Triangle"
+    "1 Melody","2 Harmony I","3 Harmony II","4 Counter Melody","5 Counter Melody Harmony","6 Bass",
+    "7 Groove","8 Chords","9 Drum Kit","10 Melody & Bass","11 Melody & Chords","12 Chords & Bass",
+    "13 Melody & Chords & Bass","14 Timpani","15 Triangle"
   ];
-
-  // Allow either numbered labels or category-only labels
   const CATEGORY_TO_INDEX = {
-    "melody": 1,
-    "harmony i": 2, "harmony 1": 2,
-    "harmony ii": 3, "harmony 2": 3,
-    "counter melody": 4, "counter-melody": 4,
-    "counter melody harmony": 5, "counter-melody harmony": 5,
-    "bass": 6,
-    "groove": 7,
-    "chords": 8,
-    "drum kit": 9, "drumkit": 9,
-    "melody & bass": 10, "melody and bass": 10,
-    "melody & chords": 11, "melody and chords": 11,
-    "chords & bass": 12, "chords and bass": 12,
-    "melody & chords & bass": 13, "melody and chords and bass": 13,
-    "timpani": 14,
-    "triangle": 15
+    "melody":1,"harmony i":2,"harmony 1":2,"harmony ii":3,"harmony 2":3,
+    "counter melody":4,"counter-melody":4,"counter melody harmony":5,"counter-melody harmony":5,
+    "bass":6,"groove":7,"chords":8,"drum kit":9,"drumkit":9,
+    "melody & bass":10,"melody and bass":10,"melody & chords":11,"melody and chords":11,
+    "chords & bass":12,"chords and bass":12,"melody & chords & bass":13,"melody and chords and bass":13,
+    "timpani":14,"triangle":15
   };
+  const fmt = n => PART_LABELS[n-1] || String(n);
 
-  function indexOfPartFlexible(label){
+  function idxFlexible(label){
     if (!label) return -1;
-    const norm = String(label).toLowerCase().replace(/\s+/g, " ").trim();
-
-    // 1) If it already looks like "1 melody", "3 harmony ii", etc.
-    const fullIdx = PART_LABELS.findIndex(p => p.toLowerCase() === norm);
-    if (fullIdx >= 0) return fullIdx + 1;
-
-    // 2) If it starts with a number, trust it
+    const norm = String(label).toLowerCase().replace(/\s+/g," ").trim();
+    const exact = PART_LABELS.findIndex(p => p.toLowerCase() === norm);
+    if (exact >= 0) return exact+1;
     const m = /^(\d{1,2})\b/.exec(norm);
     if (m) {
-      const n = parseInt(m[1], 10);
-      if (n >= 1 && n <= 15) return n;
+      const n = +m[1]; if (n>=1 && n<=15) return n;
     }
-
-    // 3) Category-only string → index
-    const stripped = norm.replace(/^\d+\s*/, ""); // drop any accidental leading number + space
-    if (CATEGORY_TO_INDEX.hasOwnProperty(stripped)) return CATEGORY_TO_INDEX[stripped];
-
-    // 4) Last attempt: compare category-only against each PART_LABEL without the number
-    for (let i = 0; i < PART_LABELS.length; i++){
-      const cat = PART_LABELS[i].toLowerCase().replace(/^\d+\s*/, "");
-      if (cat === stripped) return i + 1;
+    const stripped = norm.replace(/^\d+\s*/,"");
+    if (CATEGORY_TO_INDEX[stripped]) return CATEGORY_TO_INDEX[stripped];
+    for (let i=0;i<PART_LABELS.length;i++){
+      const cat = PART_LABELS[i].toLowerCase().replace(/^\d+\s*/,"");
+      if (cat === stripped) return i+1;
     }
     return -1;
   }
-
-  function formatPart(n){ return PART_LABELS[n-1] || String(n); }
 
   function run(){
     const state = getState();
     const sel = Array.isArray(state.instrumentSelections) ? state.instrumentSelections : [];
     console.log(`[M1] assignParts: received instrumentSelections = ${sel.length}`);
-    if (!sel.length) { console.warn("[M1] No selections — aborting."); return; }
+    if (!sel.length) return;
 
     const rows = sel.map(item => {
-      const ipIdx = indexOfPartFlexible(item.instrumentPart);
+      const ipIdx = idxFlexible(item.instrumentPart);
       let sortNum = null;
       if (ipIdx >= 1 && ipIdx <= 6) {
         sortNum = ipIdx;
@@ -941,133 +908,99 @@ ul.appendChild(li);
         else if (oct < 0) sortNum += Math.abs(oct);
       }
       return {
-        label: item.instanceLabel, // "Violin 2"
-        base: item.name,           // "Violin"
+        label: item.instanceLabel, base: item.name,
         instrumentPart: item.instrumentPart,
-        sortingOctave: item.sortingOctave,
-        clef: item.clef,
-        transpose: item.transpose,
-        scoreOrder: item.scoreOrder,
-        sortNumber: sortNum,
-        idx: ipIdx,
-        assignedPart: ""
+        sortingOctave: item.sortingOctave, clef: item.clef,
+        transpose: item.transpose, scoreOrder: item.scoreOrder,
+        sortNumber: sortNum, idx: ipIdx, assignedPart: ""
       };
     });
 
-    // Pass-through 7..15 directly
-    for (const r of rows) {
-      if (r.idx >= 7 && r.idx <= 15) r.assignedPart = formatPart(r.idx);
-    }
+    for (const r of rows) if (r.idx>=7 && r.idx<=15) r.assignedPart = fmt(r.idx);
 
-    // Pool 1..6 only (and not already assigned)
-    const pool = rows.filter(r => r.idx >= 1 && r.idx <= 6 && r.sortNumber != null && !r.assignedPart);
-
-    // Tie-break within equal integers by alpha, injecting .1/.2 decimals
+    const pool = rows.filter(r => r.idx>=1 && r.idx<=6 && r.sortNumber!=null && !r.assignedPart);
     pool.sort((a,b) => (a.sortNumber - b.sortNumber) || String(a.label).localeCompare(b.label));
     for (let i=0; i<pool.length;) {
       const intVal = Math.floor(pool[i].sortNumber);
-      let j = i;
-      while (j<pool.length && Math.floor(pool[j].sortNumber) === intVal) j++;
-      const group = pool.slice(i, j);
-      group.forEach((r,k) => r.sortNumber = Number((intVal + (k+1)/10).toFixed(2)));
-      i = j;
+      let j=i; while (j<pool.length && Math.floor(pool[j].sortNumber)===intVal) j++;
+      const group = pool.slice(i,j);
+      group.forEach((r,k)=> r.sortNumber = Number((intVal + (k+1)/10).toFixed(2)));
+      i=j;
     }
-    pool.sort((a,b) => a.sortNumber - b.sortNumber);
+    pool.sort((a,b)=> a.sortNumber - b.sortNumber);
 
-    // Assign required pattern
     if (pool.length >= 1) pool[0].assignedPart = "1 Melody";
     if (pool.length >= 2) pool[pool.length-1].assignedPart = "6 Bass";
 
-    const mids = pool.filter(r => r.assignedPart === "");
-    const firstFour = mids.splice(0,4);
-    const orderFirst4 = ["2 Harmony I", "4 Counter Melody", "3 Harmony II", "5 Counter Melody Harmony"];
-    firstFour.forEach((r,idx) => r.assignedPart = orderFirst4[idx]);
+    const mids = pool.filter(r=>!r.assignedPart);
+    const orderFirst4 = ["2 Harmony I","4 Counter Melody","3 Harmony II","5 Counter Melody Harmony"];
+    mids.splice(0,4).forEach((r,i)=> r.assignedPart = orderFirst4[i]);
 
     const cycle = ["1 Melody","6 Bass","2 Harmony I","4 Counter Melody","3 Harmony II","5 Counter Melody Harmony"];
-    for (let i=0; i<mids.length; i++) mids[i].assignedPart = cycle[i % cycle.length];
+    for (let i=0;i<mids.length;i++) mids[i].assignedPart = cycle[i % cycle.length];
 
     const assignedResults = rows.map(r => ({
-      name: r.label,
-      baseName: r.base,
-      instrumentPart: r.instrumentPart,
-      assignedPart: r.assignedPart || "",
-      sortNumber: r.sortNumber,
-      sortingOctave: r.sortingOctave,
-      clef: r.clef,
-      transpose: r.transpose,
-      scoreOrder: r.scoreOrder
+      name: r.label, baseName: r.base, instrumentPart: r.instrumentPart,
+      assignedPart: r.assignedPart || "", sortNumber: r.sortNumber,
+      sortingOctave: r.sortingOctave, clef: r.clef, transpose: r.transpose, scoreOrder: r.scoreOrder
     }));
-
     console.log(`[M1] assignParts: produced assignedResults = ${assignedResults.length}`);
     mergeState({ assignedResults });
     AA.emit("assign:done");
   }
 })();
 
-
-
 /* ============================================================================
    M2) groupAssignments — match assignedPart to extracted partName
    ---------------------------------------------------------------------------- */
 (function(){
   AA.on("assign:done", () => AA.safe("groupAssignments", run));
-
   function run(){
-    const state = getState();
-    const parts = Array.isArray(state.parts) ? state.parts : [];
-    const assigned = Array.isArray(state.assignedResults) ? state.assignedResults : [];
+    const s = getState();
+    const parts = Array.isArray(s.parts) ? s.parts : [];
+    const assigned = Array.isArray(s.assignedResults) ? s.assignedResults : [];
     console.log(`[M2] groupAssignments: parts=${parts.length}, assigned=${assigned.length}`);
-    if (!parts.length || !assigned.length) { console.warn("[M2] Missing inputs — aborting."); return; }
+    if (!parts.length || !assigned.length) return;
 
-    const norm = s => String(s||"").toLowerCase().replace(/\s+/g," ").trim();
-    const groups = [];
-    for (const p of parts) {
-      const key = norm(p.partName);
-      const members = assigned.filter(a => norm(a.assignedPart) === key);
-      groups.push({ partName: p.partName, partId: p.id, instruments: members });
-    }
-
+    const norm = x => String(x||"").toLowerCase().replace(/\s+/g," ").trim();
+    const groups = parts.map(p => ({
+      partName: p.partName, partId: p.id,
+      instruments: assigned.filter(a => norm(a.assignedPart) === norm(p.partName))
+    }));
     console.log(`[M2] groupAssignments: created groups = ${groups.length}`);
     mergeState({ groupedAssignments: groups });
     AA.emit("group:done");
   }
 })();
 
-
 /* ============================================================================
-   M3) arrangeGroupedParts — Apply clef/transpose, fix names, ensure XML header
+   M3) arrangeGroupedParts — set clef/transpose; ensure names & abbrev
    ---------------------------------------------------------------------------- */
 (function () {
   AA.on("group:done", () => AA.safe("arrangeGroupedParts", run));
 
   function run() {
-    const state = getState();
-    const parts = Array.isArray(state.parts) ? state.parts : [];
-    const groups = Array.isArray(state.groupedAssignments) ? state.groupedAssignments : [];
+    const s = getState();
+    const parts = Array.isArray(s.parts) ? s.parts : [];
+    const groups = Array.isArray(s.groupedAssignments) ? s.groupedAssignments : [];
     console.log(`[M3] arrangeGroupedParts: parts=${parts.length}, groups=${groups.length}`);
-    if (!parts.length || !groups.length) { console.warn("[M3] Missing inputs — aborting."); return; }
+    if (!parts.length || !groups.length) return;
 
-    const partByName = new Map(parts.map(p => [norm(p.partName), p]));
+    const byName = new Map(parts.map(p => [norm(p.partName), p]));
     const arranged = [];
 
     for (const grp of groups) {
-      const src = partByName.get(norm(grp.partName));
+      const src = byName.get(norm(grp.partName));
       if (!src) continue;
-
       for (const inst of (grp.instruments || [])) {
         try {
-          let xml = arrangeXmlForInstrument(src.xml, inst.name, inst.instanceLabel, {
-            clef: inst.clef ?? null,
-            transpose: inst.transpose ?? null
+          const xml = arrangeXmlForInstrument(src.xml, inst.name, inst.instanceLabel, {
+            clef: inst.clef ?? null, transpose: inst.transpose ?? null
           });
-          xml = ensureXmlHeader(xml); // header required by OSMD
           arranged.push({
-            instrumentName: inst.instanceLabel,
-            baseName: inst.name,
-            assignedPart: inst.assignedPart,
-            sourcePartId: src.id,
-            sourcePartName: src.partName,
-            xml
+            instrumentName: inst.instanceLabel, // "Violin 2"
+            baseName: inst.name, assignedPart: inst.assignedPart,
+            sourcePartId: src.id, sourcePartName: src.partName, xml
           });
         } catch (e) {
           console.error(`[M3] transform failed for ${inst.instanceLabel}`, e);
@@ -1080,77 +1013,105 @@ ul.appendChild(li);
     AA.emit("arrange:done");
   }
 
-  const norm = (s) => String(s ?? "").toLowerCase().replace(/\s+/g," ").trim();
+  const norm = s => String(s??"").toLowerCase().replace(/\s+/g," ").trim();
 
   function arrangeXmlForInstrument(singlePartXml, baseName, instanceLabel, meta) {
-    const { clef, transpose } = meta;
     const parser = new DOMParser();
     const xmlDoc = parser.parseFromString(singlePartXml, "application/xml");
 
-    // part-name → instance; abbreviation → "abbrev."
-    const scorePart = xmlDoc.querySelector("score-part");
-    const partName = scorePart?.querySelector("part-name");
-    if (partName) partName.textContent = instanceLabel;
-    const partAbbrev = scorePart?.querySelector("part-abbreviation");
-    if (partAbbrev) partAbbrev.textContent = "abbrev.";
+    // (0) guarantee a <part-list><score-part> exists (should already)
+    const scorePart = xmlDoc.querySelector("part-list > score-part") || xmlDoc.querySelector("score-part");
+    if (scorePart) {
+      // part-name
+      let partNameEl = scorePart.querySelector("part-name");
+      if (!partNameEl) {
+        partNameEl = xmlDoc.createElement("part-name");
+        scorePart.insertBefore(partNameEl, scorePart.firstChild);
+      }
+      partNameEl.textContent = instanceLabel;
 
-    // Clef substitution (first <attributes><clef>)
-    if (clef) {
+      // part-abbreviation
+      let partAbbrev = scorePart.querySelector("part-abbreviation");
+      if (!partAbbrev) {
+        partAbbrev = xmlDoc.createElement("part-abbreviation");
+        scorePart.appendChild(partAbbrev);
+      }
+      partAbbrev.textContent = "abbrev.";
+
+      // instrument-name (inside score-instrument)
+      let scoreInstr = scorePart.querySelector("score-instrument");
+      if (!scoreInstr) {
+        scoreInstr = xmlDoc.createElement("score-instrument");
+        scoreInstr.setAttribute("id", (scorePart.getAttribute("id")||"P1") + "_INST");
+        scorePart.appendChild(scoreInstr);
+      }
+      let instrName = scoreInstr.querySelector("instrument-name");
+      if (!instrName) {
+        instrName = xmlDoc.createElement("instrument-name");
+        scoreInstr.appendChild(instrName);
+      }
+      instrName.textContent = instanceLabel;
+    }
+
+    // (1) Clef
+    if (meta.clef) {
       const firstClef = xmlDoc.querySelector("attributes > clef");
       if (firstClef) {
         while (firstClef.firstChild) firstClef.removeChild(firstClef.firstChild);
-        const tpl = clef === "bass"
-          ? `<sign>F</sign><line>4</line>`
-          : (clef === "alto"
-              ? `<sign>C</sign><line>3</line>`
-              : `<sign>G</sign><line>2</line>`);
-        const frag = parser.parseFromString(`<x>${tpl}</x>`, "application/xml");
-        const x = frag.querySelector("x");
-        while (x.firstChild) firstClef.appendChild(x.firstChild);
+        const tpl = meta.clef === "bass" ? `<sign>F</sign><line>4</line>`
+                  : meta.clef === "alto" ? `<sign>C</sign><line>3</line>`
+                  : `<sign>G</sign><line>2</line>`;
+        const frag = parser.parseFromString(`<x>${tpl}</x>`,"application/xml").querySelector("x");
+        while (frag.firstChild) firstClef.appendChild(frag.firstChild);
       }
     }
 
-    // Transpose: remove all, then insert only `meta.transpose` into first <attributes>
+    // (2) Transpose: clear, then insert if provided
     xmlDoc.querySelectorAll("transpose").forEach(n => n.remove());
-    if (transpose && typeof transpose === "string") {
-      const tnode = parser.parseFromString(`<wrap>${transpose}</wrap>`, "application/xml").querySelector("transpose");
+    if (typeof meta.transpose === "string" && meta.transpose.trim()) {
+      const tnode = parser.parseFromString(`<wrap>${meta.transpose}</wrap>`,"application/xml").querySelector("transpose");
       if (tnode) {
         const attributes = xmlDoc.querySelector("attributes");
-        if (attributes) {
-          const key = attributes.querySelector("key");
-          if (key && key.nextSibling) attributes.insertBefore(tnode.cloneNode(true), key.nextSibling);
-          else attributes.appendChild(tnode.cloneNode(true));
-        }
+        if (attributes) attributes.appendChild(tnode.cloneNode(true));
       }
     }
 
-    // Cleanups
-    xmlDoc.querySelectorAll("lyric").forEach(n => n.remove());
-    xmlDoc.querySelectorAll("harmony").forEach(n => n.remove());
+    // (3) small cleanups
+    xmlDoc.querySelectorAll("lyric, harmony").forEach(n => n.remove());
 
     return new XMLSerializer().serializeToString(xmlDoc);
   }
 })();
 
-
 /* ============================================================================
-   M4) reassignPartNamesAbbrev — safety pass (names already set in M3)
+   M4) reassignPartNamesAbbrev — safety pass, ensure instrument-name too
    ---------------------------------------------------------------------------- */
 (function(){
   AA.on("arrange:done", () => AA.safe("renameParts", run));
   function run(){
-    const state = getState();
-    const arranged = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
+    const s = getState();
+    const arranged = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
     console.log(`[M4] renameParts: arranged files = ${arranged.length}`);
     for (const f of arranged) {
       try {
         const parser = new DOMParser();
         const xmlDoc = parser.parseFromString(f.xml, "application/xml");
-        const sp = xmlDoc.querySelector("score-part");
-        const pn = sp?.querySelector("part-name");
-        if (pn) pn.textContent = f.instrumentName;
-        const pa = sp?.querySelector("part-abbreviation");
-        if (pa) pa.textContent = "abbrev.";
+        const sp = xmlDoc.querySelector("part-list > score-part") || xmlDoc.querySelector("score-part");
+        if (sp) {
+          let pn = sp.querySelector("part-name");
+          if (!pn) { pn = xmlDoc.createElement("part-name"); sp.insertBefore(pn, sp.firstChild); }
+          pn.textContent = f.instrumentName;
+
+          let pa = sp.querySelector("part-abbreviation");
+          if (!pa) { pa = xmlDoc.createElement("part-abbreviation"); sp.appendChild(pa); }
+          pa.textContent = "abbrev.";
+
+          let si = sp.querySelector("score-instrument");
+          if (!si) { si = xmlDoc.createElement("score-instrument"); si.setAttribute("id",(sp.getAttribute("id")||"P1")+"_INST"); sp.appendChild(si); }
+          let iname = si.querySelector("instrument-name");
+          if (!iname) { iname = xmlDoc.createElement("instrument-name"); si.appendChild(iname); }
+          iname.textContent = f.instrumentName;
+        }
         f.xml = new XMLSerializer().serializeToString(xmlDoc);
       } catch(e){ console.warn("[M4] renameParts error", e); }
     }
@@ -1159,42 +1120,35 @@ ul.appendChild(li);
   }
 })();
 
-
 /* ============================================================================
-   M5) reassignPartIdsByScoreOrder — assign P1..Pn by scoreOrder (+instance /10)
+   M5) reassignPartIdsByScoreOrder — P1..Pn by scoreOrder (with dup decimals)
    ---------------------------------------------------------------------------- */
 (function(){
   AA.on("rename:done", () => AA.safe("reassignPartIdsByScoreOrder", run));
-
   const FALLBACK_ORDER = {
     "Piccolo": 1, "Flute": 2, "Oboe": 3, "Bb Clarinet": 4, "Bassoon": 5,
     "Violin": 6, "Viola": 7, "Cello": 8, "Double Bass": 9
   };
 
   function run(){
-    const state = getState();
-    const arranged = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
+    const s = getState();
+    const arranged = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
     console.log(`[M5] reassignPartIdsByScoreOrder: arranged files = ${arranged.length}`);
-    if (!arranged.length) { console.warn("[M5] Nothing to re-ID — aborting."); return; }
+    if (!arranged.length) { console.log("[M5] Nothing to re-ID — aborting."); return; }
 
-    // Build base order from selections
     const baseOrder = new Map();
-    const selections = Array.isArray(state.instrumentSelections) ? state.instrumentSelections : [];
-    for (const s of selections) {
-      if (s?.name && Number.isFinite(Number(s.scoreOrder))) baseOrder.set(String(s.name), Number(s.scoreOrder));
-    }
-    for (const [k,v] of Object.entries(FALLBACK_ORDER)) if (!baseOrder.has(k)) baseOrder.set(k, v);
+    const selections = Array.isArray(s.instrumentSelections) ? s.instrumentSelections : [];
+    for (const x of selections) if (x?.name && Number.isFinite(+x.scoreOrder)) baseOrder.set(String(x.name), +x.scoreOrder);
+    for (const [k,v] of Object.entries(FALLBACK_ORDER)) if (!baseOrder.has(k)) baseOrder.set(k,v);
 
     const rows = arranged.map(f => {
       const base = String(f.baseName || f.instrumentName).replace(/\s+\d+$/,"");
       const baseVal = baseOrder.get(base);
       const m = String(f.instrumentName).match(/\s+(\d+)$/);
-      const idx = m ? parseInt(m[1], 10) : 0;
+      const idx = m ? parseInt(m[1],10) : 0;
       const eff = (Number.isFinite(baseVal)? baseVal : 999) + (idx>0 ? idx/10 : 0);
       return { f, effOrder: eff };
-    });
-
-    rows.sort((a,b)=> a.effOrder - b.effOrder);
+    }).sort((a,b)=> a.effOrder - b.effOrder);
 
     for (let i=0;i<rows.length;i++){
       const file = rows[i].f;
@@ -1204,7 +1158,6 @@ ul.appendChild(li);
       file.xml = file.xml.split(oldId).join(newId);
       file.newPartId = newId;
     }
-
     console.log(`[M5] reassignPartIdsByScoreOrder: assigned IDs 1..${rows.length}`);
     mergeState({ arrangedFiles: arranged, reassignByScoreDone: true });
     AA.emit("reid:done");
@@ -1216,49 +1169,41 @@ ul.appendChild(li);
   }
 })();
 
-
 /* ============================================================================
-   M6) combineArrangedParts — build full score XML into state.combinedScoreXml
+   M6) combineArrangedParts → combinedScoreXml
    ---------------------------------------------------------------------------- */
 (function(){
   AA.on("reid:done", () => AA.safe("combineArrangedParts", run));
 
   function run(){
-    const state = getState();
-    const files = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
+    const s = getState();
+    const files = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
     console.log(`[M6] combineArrangedParts: files = ${files.length}`);
-    if (!files.length) { console.warn("[M6] No files to combine — aborting."); return; }
+    if (!files.length) return;
 
-    const rows = [];
-    for (const f of files) {
-      const pid = f.newPartId || extractPidFromXml(f.xml);
-      if (!pid) continue;
-      const num = parseInt(String(pid).replace(/^P/i, ""), 10);
-      rows.push({ f, partId: pid, partNum: Number.isFinite(num) ? num : Number.POSITIVE_INFINITY });
-    }
-    rows.sort((a,b)=> (a.partNum - b.partNum) || String(a.partId).localeCompare(String(b.partId)));
+    const rows = files.map(f => {
+      const pid = f.newPartId || extractPidFromXml(f.xml) || "";
+      const n = parseInt(String(pid).replace(/^P/i,""), 10);
+      return { f, partId: pid, partNum: Number.isFinite(n) ? n : 999 };
+    }).sort((a,b)=> (a.partNum - b.partNum) || String(a.partId).localeCompare(String(b.partId)));
 
-    let combined = rows[0].f.xml;
-    combined = combined.replace(/<\/score-partwise>\s*$/i, "");
+    let combined = rows[0].f.xml.replace(/<\/score-partwise>\s*$/i, "");
 
     for (let i=1;i<rows.length;i++){
       const { f, partId } = rows[i];
       const text = f.xml;
-      const scorePartBlock = block(text, `<score-part\\s+id="${esc(partId)}">`, `</score-part>`);
-      if (scorePartBlock) {
+      const spBlock = block(text, `<score-part\\s+id="${esc(partId)}">`, `</score-part>`);
+      if (spBlock) {
         const plEnd = combined.lastIndexOf("</part-list>");
-        if (plEnd !== -1) combined = combined.slice(0,plEnd) + "\n" + scorePartBlock + combined.slice(plEnd);
+        combined = plEnd !== -1 ? combined.slice(0,plEnd) + "\n" + spBlock + combined.slice(plEnd) : combined + "\n" + spBlock;
       }
-      const partBlock = block(text, `<part\\s+id="${esc(partId)}">`, `</part>`);
-      if (partBlock) {
+      const pBlock = block(text, `<part\\s+id="${esc(partId)}">`, `</part>`);
+      if (pBlock) {
         const rootEnd = combined.lastIndexOf("</score-partwise>");
-        if (rootEnd !== -1) combined = combined.slice(0, rootEnd) + "\n" + partBlock + combined.slice(rootEnd);
-        else combined += "\n" + partBlock;
+        combined = rootEnd !== -1 ? combined.slice(0,rootEnd) + "\n" + pBlock + combined.slice(rootEnd) : combined + "\n" + pBlock;
       }
     }
     if (!/<\/score-partwise>\s*$/i.test(combined)) combined += "\n</score-partwise>";
-
-    combined = ensureXmlHeader(combined); // ensure header for OSMD
     console.log("[M6] combineArrangedParts: combined score built.");
     mergeState({ combinedScoreXml: combined, combineDone: true });
     AA.emit("combine:done");
@@ -1269,28 +1214,24 @@ ul.appendChild(li);
     const m = String(xml).match(re);
     return m ? m[0] : null;
   }
+  function esc(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
   function extractPidFromXml(xml){
     const m = String(xml||"").match(/<score-part\s+id="([^"]+)"/i);
     return m ? m[1] : null;
   }
-  function esc(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 })();
 
-
 /* ============================================================================
-   M7) FINAL VIEWER — OSMD viewer with PDF/XML export and Back
+   M7) Final Viewer — dropdown lists all parts; ensure title before render
    ---------------------------------------------------------------------------- */
 (function () {
   AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
 
   async function bootWhenReady() {
     if (document.getElementById('aa-viewer')) return;
-
     await ensureLib("opensheetmusicdisplay", "./opensheetmusicdisplay.min.js");
     await ensureLib("html2canvas", "./html2canvas.min.js");
     await ensureLib("jspdf", "./jspdf.umd.min.js");
-
-    console.log("[M7] finalViewer: libs ensured, building UI…");
     buildViewerUI();
   }
 
@@ -1314,86 +1255,57 @@ ul.appendChild(li);
     const partsRaw = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
     const hasScore = typeof state.combinedScoreXml === "string" && state.combinedScoreXml.length > 0;
 
-    const parts = sortPartsByPid(partsRaw);
+    const parts = sortPartsEvenIfNoPid(partsRaw);
 
     const wrap = ce("div");
     wrap.id = "aa-viewer";
     wrap.style.cssText = `
-      position: fixed; inset: 0; z-index: 99999;
-      display: flex; flex-direction: column;
-      height: 100vh; background: rgba(0,0,0,0.08);
-      padding: 28px; box-sizing: border-box; overflow:hidden;
-    `;
-
+      position: fixed; inset: 0; z-index: 99999; display: flex; flex-direction: column;
+      height: 100vh; background: rgba(0,0,0,0.08); padding: 28px; box-sizing: border-box; overflow:hidden;`;
     const backBtn = ce("button");
     backBtn.textContent = "← Back";
     backBtn.title = "Back to instrument selection";
-    backBtn.style.cssText = `
-      position: absolute; top: 16px; left: 16px; padding: 8px 12px; border-radius: 8px; border: none;
-      background: #e5e7eb; color: #111; font: 600 13px system-ui; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.06);
-    `;
+    backBtn.style.cssText = `position:absolute;top:16px;left:16px;padding:8px 12px;border-radius:8px;border:none;background:#e5e7eb;color:#111;font:600 13px system-ui;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)`;
     backBtn.addEventListener("click", () => backToInstrumentSelection(state));
     wrap.appendChild(backBtn);
 
     const card = ce("div");
-    card.style.cssText = `
-      margin: auto; width: min(1200px, 100%); height: calc(100vh - 56px);
-      background: #ffffff; border-radius: 14px; box-shadow: 0 12px 36px rgba(0,0,0,0.18);
-      padding: 20px 20px 18px; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px; overflow: hidden;
-    `;
+    card.style.cssText = `margin:auto;width:min(1200px,100%);height:calc(100vh - 56px);background:#fff;border-radius:14px;box-shadow:0 12px 36px rgba(0,0,0,.18);padding:20px 20px 18px;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;overflow:hidden;`;
     wrap.appendChild(card);
 
     const title = ce("h2", { textContent: songName });
-    title.style.cssText = `margin:0; text-align:center; color:#000; font:700 20px/1.2 system-ui,Arial`;
+    title.style.cssText = `margin:0;text-align:center;color:#000;font:700 20px/1.2 system-ui,Arial`;
     card.appendChild(title);
 
-    const controls = ce("div");
-    controls.style.cssText = `display:flex; flex-direction:column; align-items:center; gap:8px; margin-top:2px;`;
-    card.appendChild(controls);
+    const controls = ce("div"); controls.style.cssText = `display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:2px;`; card.appendChild(controls);
+    const label = ce("div", { textContent: "Select Score or Part" }); label.style.cssText = `color:#000;font:600 13px/1 system-ui;`; controls.appendChild(label);
 
-    const label = ce("div", { textContent: "Select Score or Part" });
-    label.style.cssText = `color:#000; font:600 13px/1 system-ui;`;
-    controls.appendChild(label);
-
-    const select = ce("select");
-    select.id = "aa-viewer-select";
-    select.style.cssText = `padding:8px 10px; font:14px system-ui;`;
+    const select = ce("select"); select.id = "aa-viewer-select"; select.style.cssText = `padding:8px 10px;font:14px system-ui;`;
     if (hasScore) select.appendChild(new Option("Score","__SCORE__"));
-    for (const p of parts) select.appendChild(new Option(p.instrumentName, p.instrumentName));
+    for (const p of parts) select.appendChild(new Option(p.instrumentName || p.baseName || "Part", p.instrumentName || p.baseName || "Part"));
     controls.appendChild(select);
 
-    const btnRow = ce("div");
-    btnRow.style.cssText = `display:flex; gap:8px; flex-wrap:nowrap; justify-content:center; align-items:center;`;
+    const btnRow = ce("div"); btnRow.style.cssText = `display:flex;gap:8px;flex-wrap:nowrap;justify-content:center;align-items:center;`;
     btnRow.innerHTML = `
       <button id="aa-btn-visualize" class="aa-btn">Visualize</button>
       <button id="aa-btn-pdf" class="aa-btn" disabled>Download PDF</button>
       <button id="aa-btn-xml" class="aa-btn" disabled>Download XML</button>
       <button id="aa-btn-pdf-all" class="aa-btn">Download PDF All Parts</button>
-      <button id="aa-btn-xml-all" class="aa-btn">Download XML ALL Parts</button>
-    `;
+      <button id="aa-btn-xml-all" class="aa-btn">Download XML ALL Parts</button>`;
     controls.appendChild(btnRow);
 
     const styleBtn = ce("style");
-    styleBtn.textContent = `
-      .aa-btn { padding:8px 12px; border-radius:8px; background:#0f62fe; color:white; border:none; cursor:pointer; font:600 13px system-ui; }
-      .aa-btn[disabled] { opacity:0.5; cursor:not-allowed; }
-      .aa-btn:hover:not([disabled]) { filter:brightness(0.92); }
-    `;
+    styleBtn.textContent = `.aa-btn{padding:8px 12px;border-radius:8px;background:#0f62fe;color:#fff;border:none;cursor:pointer;font:600 13px system-ui}.aa-btn[disabled]{opacity:.5;cursor:not-allowed}.aa-btn:hover:not([disabled]){filter:brightness(0.92)}`;
     card.appendChild(styleBtn);
 
     const osmdBox = ce("div");
     osmdBox.id = "aa-osmd-box";
-    osmdBox.style.cssText = `
-      margin-top:8px; border:1px solid #e5e5e5; border-radius:10px; background:#fff; padding:14px;
-      flex:1 1 auto; min-height:0; overflow-y:hidden; overflow-x:auto; white-space:nowrap;
-    `;
+    osmdBox.style.cssText = `margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;`;
     card.appendChild(osmdBox);
-
     document.body.appendChild(wrap);
 
     const OSMD = lookupGlobal("opensheetmusicdisplay");
     const osmd = new OSMD.OpenSheetMusicDisplay(osmdBox, { autoResize:true, backend:"svg", drawingParameters:"default" });
-
     window.addEventListener("resize", () => fitScoreToHeight(osmd, osmdBox));
 
     const btnVis = btnRow.querySelector("#aa-btn-visualize");
@@ -1407,21 +1319,15 @@ ul.appendChild(li);
     btnVis.addEventListener("click", async () => {
       const { xml } = pickXml(select.value);
       if (!xml) return alert("No XML found to visualize.");
-
       try {
-        lastXml = xml;
-        const processed = transformXmlForSlashes(xml);
-        const xmlToLoad = ensureXmlHeader(processed);
-
+        lastXml = ensureTitle(xml, songName);
+        const processed = transformXmlForSlashes(lastXml);
         if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
-        await osmd.load(xmlToLoad);
+        await osmd.load(processed);
         await osmd.render();
-
         await new Promise(r => requestAnimationFrame(r));
         fitScoreToHeight(osmd, osmdBox);
-
-        btnPDF.disabled = false;
-        btnXML.disabled = false;
+        btnPDF.disabled = false; btnXML.disabled = false;
       } catch(e){
         console.error("[finalViewer] render failed", e);
         alert("Failed to render this selection.");
@@ -1437,20 +1343,18 @@ ul.appendChild(li);
       const name = (select.value === "__SCORE__" ? "Score" : select.value) || "part";
       downloadText(lastXml, `${safe(name)}.musicxml`, "application/xml");
     });
-
     btnPDFAll.addEventListener("click", async () => {
-      const parts = sortPartsByPid(Array.isArray(getState().arrangedFiles)?getState().arrangedFiles:[]);
+      const parts = sortPartsEvenIfNoPid(Array.isArray(getState().arrangedFiles)?getState().arrangedFiles:[]);
       if (!parts.length) return alert("No parts found.");
       const jspdfNS = window.jspdf || window.jspdf?.jsPDF ? window.jspdf : window;
       const jsPDF = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
       if (!jsPDF) return alert("jsPDF not available.");
-
       const docName = `${safe(songName)} - All Parts.pdf`;
       let doc = null;
       for (const p of parts) {
         try {
-          const processed = transformXmlForSlashes(p.xml);
-          await osmd.load(ensureXmlHeader(processed));
+          const processed = transformXmlForSlashes(ensureTitle(p.xml, p.instrumentName));
+          await osmd.load(processed);
           await osmd.render();
           const { canvas, w, h } = await snapshotCanvas(osmdBox);
           if (!doc) doc = new (jspdfNS.jsPDF)({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
@@ -1460,43 +1364,32 @@ ul.appendChild(li);
       }
       if (doc) doc.save(docName);
     });
-
     btnXMLAll.addEventListener("click", async () => {
-      const parts = sortPartsByPid(Array.isArray(getState().arrangedFiles)?getState().arrangedFiles:[]);
+      const parts = sortPartsEvenIfNoPid(Array.isArray(getState().arrangedFiles)?getState().arrangedFiles:[]);
       if (!parts.length) return alert("No parts found.");
       for (const p of parts) {
-        downloadText(ensureXmlHeader(p.xml), `${safe(p.instrumentName)}.musicxml`, "application/xml");
+        downloadText(ensureTitle(p.xml, p.instrumentName), `${safe(p.instrumentName || "Part")}.musicxml`, "application/xml");
         await new Promise(r => setTimeout(r, 60));
       }
     });
 
     function pickXml(choice){
       const s = getState();
-      let xml = "";
-      if (choice === "__SCORE__") {
-        xml = s.combinedScoreXml || "";
-      } else {
-        const hit = (Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [])
-          .find(f => f.instrumentName === choice);
-        xml = hit?.xml || "";
-      }
-      return { xml: ensureXmlHeader(xml) };
+      if (choice === "__SCORE__") return { xml: s.combinedScoreXml || "" };
+      const hit = (Array.isArray(s.arrangedFiles) ? s.arrangedFiles : []).find(f => (f.instrumentName || f.baseName) === choice);
+      return { xml: hit?.xml || "" };
     }
   }
 
   /* viewer helpers */
-  function sortPartsByPid(files){
+  function sortPartsEvenIfNoPid(files){
     const out = [];
-    for (const f of (files || [])) {
-      let pid = extractPidFromXml(f.xml);
-      if (!pid) {
-        const m = String(f.xml || "").match(/<part\s+id="([^"]+)"/i);
-        pid = m ? m[1] : null;
-      }
-      const n = pid ? parseInt(String(pid).replace(/^P/i, ""), 10) : NaN;
-      out.push({ ...f, _pnum: Number.isFinite(n) ? n : 999, _pid: pid || "" });
+    for (const f of files) {
+      const pid = f.newPartId || extractPidFromXml(f.xml) || "";  // ← don’t drop if missing
+      const n = parseInt(String(pid).replace(/^P/i,""), 10);
+      out.push({ ...f, _pnum: Number.isFinite(n)?n:999 });
     }
-    out.sort((a,b)=> (a._pnum - b._pnum) || String(a.instrumentName).localeCompare(String(b.instrumentName)));
+    out.sort((a,b)=> (a._pnum - b._pnum) || String(a.instrumentName||"").localeCompare(String(b.instrumentName||"")));
     return out;
   }
   function extractPidFromXml(xml){ const m = String(xml||"").match(/<score-part\s+id="([^"]+)"/i); return m ? m[1] : null; }
@@ -1514,21 +1407,14 @@ ul.appendChild(li);
     const packName = prevState?.pack || prevState?.selectedPack?.name || "";
     const songName = prevState?.song || prevState?.selectedSong?.name || "";
     setState({ pack: packName, song: songName, packIndex: getState().packIndex, songIndex: getState().songIndex, timestamp: Date.now() });
-
     document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
     hideArrangingLoading();
-
-    qs("step1")?.classList.add("hidden");
-    qs("step2")?.classList.add("hidden");
-    qs("step3")?.classList.remove("hidden");
+    qs("step1")?.classList.add("hidden"); qs("step2")?.classList.add("hidden"); qs("step3")?.classList.remove("hidden");
   }
   function fitScoreToHeight(osmd, host){
-    const svg = host.querySelector("svg");
-    if (!svg) return;
-    const maxH = host.clientHeight;
-    if (!maxH) return;
-    let svgH = 0;
-    try { svgH = svg.getBBox().height; } catch {}
+    const svg = host.querySelector("svg"); if (!svg) return;
+    const maxH = host.clientHeight; if (!maxH) return;
+    let svgH = 0; try { svgH = svg.getBBox().height; } catch {}
     if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
     if (!svgH) return;
     const current = typeof osmd.zoom === "number" ? osmd.zoom : 1;
@@ -1537,6 +1423,23 @@ ul.appendChild(li);
     target = Math.max(0.3, Math.min(1.5, target));
     if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
   }
+
+  // Ensure we have a title
+  function ensureTitle(xmlString, title){
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(xmlString, "application/xml");
+      const hasMovement = !!doc.querySelector("movement-title");
+      const hasWork = !!doc.querySelector("work > work-title");
+      if (!hasMovement && !hasWork) {
+        const root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
+        const mv = doc.createElement("movement-title"); mv.textContent = title || "Auto Arranger Score";
+        root.insertBefore(mv, root.firstChild);
+      }
+      return new XMLSerializer().serializeToString(doc);
+    } catch { return xmlString; }
+  }
+
   function transformXmlForSlashes(xmlString) {
     try {
       const parser = new DOMParser();
@@ -1546,6 +1449,7 @@ ul.appendChild(li);
     } catch { return xmlString; }
   }
 })();
+
 
 
 /* ============================================================================
