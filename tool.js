@@ -471,16 +471,12 @@ function extractPartsFromScore(xmlText){
 
 /* ============================================================================
    I) STEP 3: INSTRUMENT PICKER UI — Folder Tree (Categories) → Instruments
-   - Left pane becomes a collapsible "folder tree":
-       • Category rows (folders) are clickable to expand/collapse
-       • Instrument rows under each folder are selectable
-   - Right pane keeps alphabetical sorting + smart numbering:
-       • One instance → bare name (e.g., "Violin")
-       • 2+ instances → "Violin 1", "Violin 2", …
+   - Removes legacy <select id="instrumentList"> if present
+   - No bullets (root or children) in the tree
+   - Right pane: alphabetical + smart numbering (bare name if single instance)
    ========================================================================== */
 (function(){
 
-  // Ensure we have a Step 3 host; create if missing
   function ensureStep3Host(){
     let host = document.getElementById("step3");
     if (!host) {
@@ -494,11 +490,10 @@ function extractPartsFromScore(xmlText){
     return host;
   }
 
-  // Build UI once; if it already exists, ensure Back button and tree container exist
   function ensureInstrumentPickerMarkup(){
     const host = ensureStep3Host();
 
-    // De-dupe: if multiple #aa-pickers somehow exist, keep the first.
+    // De-dupe containers
     const containers = Array.from(document.querySelectorAll("#aa-pickers"));
     let container = containers[0];
     if (containers.length > 1) containers.slice(1).forEach(n => n.remove());
@@ -527,26 +522,6 @@ function extractPartsFromScore(xmlText){
           </div>
         </div>
       `);
-
-      // Minimal tree CSS (uses your .list base styles if present)
-      if (!document.getElementById("aa-tree-css")) {
-        const st = document.createElement("style");
-        st.id = "aa-tree-css";
-        st.textContent = `
-          #instrumentTree { list-style:none; padding:0; margin:0; }
-          #instrumentTree li { user-select:none; }
-          .aa-folder { display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--line); cursor:pointer; }
-          .aa-folder .aa-caret { width:14px; text-align:center; font-size:12px; opacity:0.9; }
-          .aa-folder .aa-name { font-weight:600; color:var(--text); }
-          .aa-children { margin:0; padding:0 0 0 22px; }
-          .aa-ins { padding:8px 12px; border-bottom:1px dashed var(--line); cursor:pointer; }
-          .aa-ins:hover { background:#0f131b; }
-          .aa-ins.active { outline:2px solid var(--brand-600); background:#11171f; }
-          .aa-hide { display:none !important; }
-        `;
-        document.head.appendChild(st);
-      }
-
       container = document.getElementById("aa-pickers");
       console.log("[AA] Built Step 3 instrument picker UI (folder tree).");
     } else {
@@ -576,6 +551,33 @@ function extractPartsFromScore(xmlText){
       }
     }
 
+    // 🔧 Remove any legacy <select id="instrumentList"> if it’s still around
+    const legacySelect = container.querySelector("#instrumentList");
+    if (legacySelect) {
+      legacySelect.remove();
+      console.log("[AA] Removed legacy #instrumentList select from Step 3.");
+    }
+
+    // Inject/refresh minimal tree CSS
+    let st = document.getElementById("aa-tree-css");
+    if (!st) {
+      st = document.createElement("style");
+      st.id = "aa-tree-css";
+      document.head.appendChild(st);
+    }
+    st.textContent = `
+      #instrumentTree, #instrumentTree ul { list-style:none; padding:0; margin:0; }
+      .aa-folder { display:flex; align-items:center; gap:8px; padding:10px 12px;
+                   border-bottom:1px solid var(--line); cursor:pointer; }
+      .aa-folder .aa-caret { width:14px; text-align:center; font-size:12px; opacity:0.9; }
+      .aa-folder .aa-name   { font-weight:600; color:var(--text); }
+      .aa-children { margin:0; padding:0 0 0 22px; }
+      .aa-ins { padding:8px 12px; border-bottom:1px dashed var(--line); cursor:pointer; }
+      .aa-ins:hover { background:#0f131b; }
+      .aa-ins.active { outline:2px solid var(--brand-600); background:#11171f; }
+      .aa-hide { display:none !important; }
+    `;
+
     return container;
   }
 
@@ -596,14 +598,8 @@ function extractPartsFromScore(xmlText){
       return;
     }
 
-    // Local UI state for Step 3
-    const stateSel = {
-      selections: [],     // base names only
-      openCats: new Set(),// which categories are open
-      selectedBase: ""    // currently highlighted instrument in tree
-    };
+    const stateSel = { selections: [], openCats: new Set(), selectedBase: "" };
 
-    // -------- Build & render the folder tree ----------
     function buildTree(){
       const s = getState();
       const data = Array.isArray(s.instrumentData) ? s.instrumentData : [];
@@ -614,22 +610,17 @@ function extractPartsFromScore(xmlText){
       }
       if (note) note.textContent = "";
 
-      // Map category -> [instruments]
       const catMap = new Map();
       for (const ins of data) {
         const cat = (ins.category || "Other").trim();
         if (!catMap.has(cat)) catMap.set(cat, []);
         catMap.get(cat).push(ins.name);
       }
-
-      // Sort categories & instruments
       const cats = Array.from(catMap.keys()).sort((a,b)=> a.localeCompare(b, undefined, { sensitivity:"base" }));
       cats.forEach(c => catMap.get(c).sort((a,b)=> a.localeCompare(b, undefined, { sensitivity:"base" })));
 
-      // Open first category by default if none is open yet
       if (stateSel.openCats.size === 0 && cats.length) stateSel.openCats.add(cats[0]);
 
-      // Render
       const parts = [];
       for (const cat of cats) {
         const open = stateSel.openCats.has(cat);
@@ -649,37 +640,28 @@ function extractPartsFromScore(xmlText){
       tree.innerHTML = parts.join("");
     }
 
-    // Tree click handling (event delegation)
     function onTreeClick(e){
       const target = e.target;
       const liFolder = target.closest('[data-role="folder"]');
       const liIns    = target.closest('[data-role="instrument"]');
 
-      // Toggle folder
       if (liFolder) {
         const cat = liFolder.getAttribute("data-cat") || "";
-        const open = stateSel.openCats.has(cat);
-        if (open) stateSel.openCats.delete(cat); else stateSel.openCats.add(cat);
-        buildTree(); // re-render to update caret + children
+        if (stateSel.openCats.has(cat)) stateSel.openCats.delete(cat); else stateSel.openCats.add(cat);
+        buildTree();
         return;
       }
-
-      // Select instrument
       if (liIns) {
-        const base = liIns.getAttribute("data-ins") || "";
-        stateSel.selectedBase = base;
-        // highlight selection (re-render is easiest to clear previous)
+        stateSel.selectedBase = liIns.getAttribute("data-ins") || "";
         buildTree();
         return;
       }
     }
 
-    // ---------- Right pane (Selections) ----------
     const baseOf = (name) => String(name).replace(/\s+\d+$/, "");
 
-    // Build labels and render the right list, sorted alphabetically
     function refreshRight(){
-      const groups = new Map(); // base -> [idx, idx, ...]
+      const groups = new Map(); // base -> [idx...]
       stateSel.selections.forEach((base, idx) => {
         if (!groups.has(base)) groups.set(base, []);
         groups.get(base).push(idx);
@@ -697,8 +679,6 @@ function extractPartsFromScore(xmlText){
           });
         }
       }
-
-      // Sort alphabetically by base then by instance number (singletons first)
       records.sort((a, b) => {
         const byName = a.base.localeCompare(b.base, undefined, { sensitivity: "base" });
         if (byName !== 0) return byName;
@@ -714,42 +694,29 @@ function extractPartsFromScore(xmlText){
       stateSel.selections.push(baseName);
       refreshRight();
     }
-
     function removeSelectionByIndex(idx){
       if (idx < 0 || idx >= stateSel.selections.length) return;
       stateSel.selections.splice(idx, 1);
-      refreshRight(); // renumber + resort
+      refreshRight();
     }
 
-    // ---------- Wire (avoid double-wire; allow rebuilds) ----------
-    if (container.dataset.wired === "1") {
-      buildTree();
-      refreshRight();
-      return;
-    }
+    if (container.dataset.wired === "1") { buildTree(); refreshRight(); return; }
     container.dataset.wired = "1";
 
-    // Initial render
     buildTree();
     refreshRight();
-
-    // Rebuild tree if instrumentData changes
     AA.on("data:instrumentData", () => { buildTree(); });
 
-    // Tree clicks
     tree.addEventListener("click", onTreeClick);
 
-    // Add
     btnAdd.addEventListener("click", () => {
       const sel = stateSel.selectedBase;
       if (!sel) return alert("Select an instrument from the list first.");
       addSelection(sel);
     });
 
-    // Back to "Select Song" — clear song & instrument picks and repopulate song list
     btnBack.addEventListener("click", () => {
       const s = getState();
-
       mergeState({
         songIndex: null,
         song: null,
@@ -757,34 +724,26 @@ function extractPartsFromScore(xmlText){
         parts: [],
         instrumentSelections: []
       });
-
       stateSel.selections = [];
       stateSel.selectedBase = "";
       refreshRight();
 
-      if (Number.isInteger(s.packIndex)) {
-        populateSongsForPack(s.packIndex);
-      }
+      if (Number.isInteger(s.packIndex)) populateSongsForPack(s.packIndex);
       const sSel = (typeof songSelectEl === "function" ? songSelectEl() : document.getElementById("songSelect"));
       if (sSel) sSel.value = "";
-
       setWizardStage("song");
     });
 
-    // Remove
     btnRemove.addEventListener("click", () => {
       const opt = listRight.options[listRight.selectedIndex];
       if (!opt) return;
-      const idx = parseInt(opt.value, 10);
-      removeSelectionByIndex(idx);
+      removeSelectionByIndex(parseInt(opt.value, 10));
     });
 
-    // Save
     btnSave.addEventListener("click", () => {
       const s = getState();
       const metaIndex = Object.fromEntries((s.instrumentData||[]).map(m => [m.name, m]));
 
-      // Numbering for save payload (same rules as UI)
       const groups = new Map();
       stateSel.selections.forEach((base, idx) => {
         if (!groups.has(base)) groups.set(base, []);
@@ -818,13 +777,10 @@ function extractPartsFromScore(xmlText){
     });
   }
 
-  // Build on DOM ready (in case state restore lands on Step 3)
   document.addEventListener("DOMContentLoaded", setupInstrumentPicker);
-  // Rebuild when entering instruments stage
   AA.on("wizard:stage", (stage) => { if (stage === "instruments") setupInstrumentPicker(); });
 
 })(); // end Step 3
-
 
 
 
