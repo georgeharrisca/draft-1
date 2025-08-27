@@ -611,12 +611,13 @@ function extractPartsFromScore(xmlText){
         `;
         const ul = catEl.querySelector("ul");
         byCat.get(cat).forEach(name => {
-          const li = document.createElement("li");
-          li.className = "item";
-          li.textContent = name;
-          li.dataset.name = name;
-          li.addEventListener("click", () => addSelection(name));
-          ul.appendChild(li);
+       const li = document.createElement("li");
+li.className = "item";
+li.textContent = name;
+li.dataset.name = name;
+// no addSelection here — click just highlights (handled below)
+ul.appendChild(li);
+
         });
         catEl.querySelector(".hdr").addEventListener("click", () => {
           if (stateSel.openCats.has(cat)) stateSel.openCats.delete(cat);
@@ -678,12 +679,18 @@ function extractPartsFromScore(xmlText){
     });
 
     // Buttons
-    btnAdd.addEventListener("click", () => {
-      const highlighted = treeHost.querySelector(".item.highlight");
-      const fallback = treeHost.querySelector(".item");
-      const pick = highlighted?.dataset.name || fallback?.dataset.name || "";
-      if (pick) addSelection(pick);
-    });
+   btnAdd.addEventListener("click", () => {
+  const highlighted = treeHost.querySelector(".item.highlight");
+  if (!highlighted) {
+    if (note) {
+      note.textContent = "Select an instrument on the left, then click Add to Score.";
+      setTimeout(() => { if (note.textContent.includes("Add to Score")) note.textContent = ""; }, 2000);
+    }
+    return;
+  }
+  addSelection(highlighted.dataset.name);
+});
+
 
     btnBack.addEventListener("click", () => {
       const s = getState();
