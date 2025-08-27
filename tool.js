@@ -1029,7 +1029,10 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     const parts  = Array.isArray(state.parts) ? state.parts : [];
     const groups = Array.isArray(state.groupedAssignments) ? state.groupedAssignments : [];
 
-    if (!parts.length || !groups.length) { console.warn("[M3] nothing to do"); return; }
+    if (!parts.length || !groups.length) {
+      console.warn("[M3] nothing to do");
+      return;
+    }
 
     const byName = new Map(parts.map(p => [norm(p.partName), p]));
     const arranged = [];
@@ -1040,23 +1043,26 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
       for (const inst of (grp.instruments || [])) {
         try {
+          // MISMATCH FIX: assignedResults gives us the instance label in `inst.name`
+          const display = (inst.instanceLabel || inst.name || inst.baseName || "").trim() || "Part";
+
           const xml = arrangeXmlForInstrument(src.xml, {
-            longName:  inst.instanceLabel, // "Violin 2"
-            shortName: inst.instanceLabel, // show same in short form
+            longName:  display,           // show “Violin 1”
+            shortName: display,           // keep short name identical to avoid OSMD fallback
             clef:      inst.clef ?? null,
             transpose: inst.transpose ?? null
           });
 
           arranged.push({
-            instrumentName: inst.instanceLabel,
-            baseName:       inst.name,
+            instrumentName: display,      // keep for M4/M6 enforcement
+            baseName:       inst.baseName || inst.name || display,
             assignedPart:   inst.assignedPart,
             sourcePartId:   src.id,
             sourcePartName: src.partName,
             xml
           });
         } catch (e) {
-          console.error(`[M3] transform failed for ${inst.instanceLabel}`, e);
+          console.error(`[M3] transform failed for ${(inst.instanceLabel || inst.name || inst.baseName || "Part")}`, e);
         }
       }
     }
@@ -1084,17 +1090,15 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     // (1) Write names into <score-part>
     const scorePart = xmlDoc.querySelector("score-part");
     if (scorePart) {
-      // long
       const pn = ensure(scorePart, "part-name");
       pn.textContent = longName || "Part";
       pn.removeAttribute("print-object");
 
-      // short
       const pa = ensure(scorePart, "part-abbreviation");
       pa.textContent = shortName || longName || "Part";
       pa.removeAttribute("print-object");
 
-      // display variants (OSMD reads these too)
+      // OSMD-visible display variants
       const pnd = ensure(scorePart, "part-name-display");
       pnd.textContent = "";
       const pndt = xmlDoc.createElementNS(ns, "display-text");
@@ -1108,10 +1112,11 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       pad.appendChild(padt);
 
       // score-instrument / instrument-name
+      const partId = scorePart.getAttribute("id") || "P1";
       let si = scorePart.querySelector("score-instrument");
       if (!si) {
         si = xmlDoc.createElementNS(ns, "score-instrument");
-        si.setAttribute("id", `${scorePart.getAttribute("id") || "P1"}-I1`);
+        si.setAttribute("id", `${partId}-I1`);
         scorePart.appendChild(si);
       }
       let iname = si.querySelector("instrument-name");
@@ -1151,12 +1156,13 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       }
     }
 
-    // (4) Light cleanup
+    // (4) Cleanup
     xmlDoc.querySelectorAll("lyric, harmony").forEach(n => n.remove());
 
     return new XMLSerializer().serializeToString(xmlDoc);
   }
 })();
+
 
 
 
@@ -1462,7 +1468,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         const sp = doc.querySelector(`score-part[id="${partId}"]`);
         if (!sp) continue;
 
-        const label = f.instrumentName || "Part";
+        const label = (f.instrumentName || f.baseName || "").trim() || "Part";
+
 
         const pn = ensure(sp, "part-name");
         pn.textContent = label;
