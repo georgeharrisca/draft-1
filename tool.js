@@ -618,14 +618,42 @@ function extractPartsFromScore(xmlText){
       if (!sel) return;
       addSelection(sel);
     });
+
+    // 🔙 Back to "Select Song" — clear song & instrument picks and repopulate song list
     btnBack.addEventListener("click", () => {
+      const s = getState();
+
+      // Clear the chosen song + downstream artifacts; keep the library pack
+      mergeState({
+        songIndex: null,
+        song: null,
+        selectedSong: null,
+        parts: [],
+        instrumentSelections: [] // clear in-progress selections too
+      });
+
+      // Reset local right-pane selections
+      stateSel.selections = [];
+      refreshRight();
+      if (note) note.textContent = "";
+
+      // Rebuild the Song dropdown for the current pack and blank it out
+      if (Number.isInteger(s.packIndex)) {
+        populateSongsForPack(s.packIndex);
+      }
+      const sSel = songSelectEl();
+      if (sSel) sSel.value = "";
+
+      // Show Step 2 (Select Song)
       setWizardStage("song");
     });
+
     btnRemove.addEventListener("click", () => {
       const sel = listRight.value;
       if (!sel) return;
       removeSelection(sel);
     });
+
     btnSave.addEventListener("click", () => {
       const s = getState();
       const metaIndex = Object.fromEntries((s.instrumentData||[]).map(m => [m.name, m]));
@@ -654,9 +682,6 @@ function extractPartsFromScore(xmlText){
   AA.on("wizard:stage", (stage) => { if (stage === "instruments") setupInstrumentPicker(); });
 
 })(); // end Step 3
-
-
-
 
 /* ============================================================================
    J) PIPELINE RESET (RUNS RIGHT AFTER "SAVE SELECTIONS")
