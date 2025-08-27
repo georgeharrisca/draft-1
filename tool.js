@@ -587,6 +587,125 @@ function extractPartsFromScore(xmlText){
 
     // Initial population + listen for data refresh
     populateLeftList();
+    AA.on("data:instrumentData", popula/* ============================================================================
+   I) STEP 3: INSTRUMENT PICKER UI (left list → Add; right list → Selections)
+   - Numbering rule:
+     • One instance of a base → show bare name (e.g., "Violin")
+     • 2+ instances → show "Base 1..N" (e.g., "Violin 1", "Violin 2", …)
+   - Right pane is ALWAYS sorted alphabetically:
+     • Sort by base name (locale-aware), then by instance number (0 for singleton)
+   ========================================================================== */
+(function(){
+
+  // Ensure we have a Step 3 host; create if missing
+  function ensureStep3Host(){
+    let host = document.getElementById("step3");
+    if (!host) {
+      const cardBody = document.querySelector(".card-body") || document.body;
+      host = document.createElement("div");
+      host.id = "step3";
+      host.className = "hidden";
+      host.innerHTML = `<div class="field"><label>Select Instruments</label></div>`;
+      cardBody.appendChild(host);
+    }
+    return host;
+  }
+
+  // Build UI once; if it already exists, just ensure Back button is present.
+  function ensureInstrumentPickerMarkup(){
+    const host = ensureStep3Host();
+
+    // De-dupe: if multiple #aa-pickers somehow exist, keep the first.
+    const containers = Array.from(document.querySelectorAll("#aa-pickers"));
+    let container = containers[0];
+    if (containers.length > 1) {
+      containers.slice(1).forEach(n => n.remove());
+    }
+
+    if (!container) {
+      host.insertAdjacentHTML("beforeend", `
+        <div id="aa-pickers" class="aa-grid" style="margin-top:12px;">
+          <div class="aa-pane">
+            <h4>Instruments</h4>
+            <select id="instrumentList" size="10"></select>
+            <div id="leftControls" style="display:flex; gap:10px; margin-top:10px;">
+              <button id="btnBackToSong" class="aa-btn" style="background:#1a1f2a;border:1px solid var(--line);color:var(--text);">Back</button>
+              <button id="btnAddInstrument" class="aa-btn">Add to Score</button>
+            </div>
+          </div>
+          <div class="aa-pane">
+            <h4>Selections</h4>
+            <select id="selectionsList" size="10"></select>
+            <div style="display:flex; gap:10px; margin-top:10px;">
+              <button id="btnRemoveSelected" class="aa-btn">Remove</button>
+              <button id="btnSaveSelections" class="aa-btn aa-accent">Save Selections</button>
+            </div>
+          </div>
+        </div>
+      `);
+      container = document.getElementById("aa-pickers");
+      console.log("[AA] Built Step 3 instrument picker UI.");
+    } else {
+      // Upgrade existing UI: add Back button if it’s missing
+      if (!document.getElementById("btnBackToSong")) {
+        const controls = container.querySelector("#leftControls") ||
+                         container.querySelector("#btnAddInstrument")?.parentElement;
+        if (controls) {
+          const back = document.createElement("button");
+          back.id = "btnBackToSong";
+          back.className = "aa-btn";
+          back.textContent = "Back";
+          back.style.cssText = "background:#1a1f2a;border:1px solid var(--line);color:var(--text);";
+          controls.insertBefore(back, controls.querySelector("#btnAddInstrument"));
+          console.log("[AA] Added Back button to existing Step 3 UI.");
+        }
+      }
+    }
+    return container;
+  }
+
+  function setupInstrumentPicker(){
+    const container = ensureInstrumentPickerMarkup();
+    if (!container) return;
+
+    // Always scope to the single container to avoid duplicate-id issues
+    const listLeft  = container.querySelector("#instrumentList");
+    const btnAdd    = container.querySelector("#btnAddInstrument");
+    const btnBack   = container.querySelector("#btnBackToSong");
+    const listRight = container.querySelector("#selectionsList");
+    const btnRemove = container.querySelector("#btnRemoveSelected");
+    const btnSave   = container.querySelector("#btnSaveSelections");
+    const note      = document.getElementById("instStatus");
+
+    if (!listLeft || !btnAdd || !btnBack || !listRight || !btnRemove || !btnSave) {
+      console.warn("[AA] Step 3 UI elements missing; picker not wired.");
+      return;
+    }
+
+    // Populate/refresh left list
+    const populateLeftList = () => {
+      const s = getState();
+      const instruments = Array.isArray(s.instrumentData) ? s.instrumentData : [];
+      if (instruments.length) {
+        listLeft.innerHTML = instruments
+          .map(ins => `<option value="${escapeHtml(ins.name)}">${escapeHtml(ins.name)}</option>`)
+          .join("");
+        if (note) note.textContent = "";
+      } else {
+        listLeft.innerHTML = "";
+        if (note) note.textContent = "No instruments found in instrumentData.json.";
+      }
+    };
+
+    // Avoid double-wiring; but still allow repopulation
+    if (container.dataset.wired === "1") {
+      populateLeftList();
+      return;
+    }
+    container.dataset.wired = "1";
+
+    // Initial population + listen for data refresh
+    populateLeftList();
     AA.on("data:instrumentData", populateLeftList);
 
     // Right pane state: store BASE names only; display labels computed each refresh
@@ -594,21 +713,45 @@ function extractPartsFromScore(xmlText){
 
     const baseOf = (name) => String(name).replace(/\s+\d+$/, "");
 
-    // Build display labels & update the right select. Option values are the index in stateSel.selections.
+    /**
+     * Build labels and render the right list, sorted alphabetically.
+     * - Compute per-base counts and assign instance numbers in insertion order.
+     * - Render sorted by base (localeCompare), then by num (0 for singleton).
+     * - Each option's value = ORIGINAL index, so Remove works.
+     */
     function refreshRight(){
-      // Count total per base
-      const totalByBase = {};
-      for (const b of stateSel.selections) totalByBase[b] = (totalByBase[b] || 0) + 1;
-
-      // Occurrence counters for numbering 1..N
-      const occ = {};
-      const options = stateSel.selections.map((base, i) => {
-        occ[base] = (occ[base] || 0) + 1;
-        const label = totalByBase[base] === 1 ? base : `${base} ${occ[base]}`;
-        return `<option value="${i}">${escapeHtml(label)}</option>`;
+      // 1) group original indices by base (in insertion order)
+      const groups = new Map(); // base -> [idx, idx, ...]
+      stateSel.selections.forEach((base, idx) => {
+        if (!groups.has(base)) groups.set(base, []);
+        groups.get(base).push(idx);
       });
 
-      listRight.innerHTML = options.join("");
+      // 2) compute display records with numbering
+      const records = [];
+      for (const [base, indices] of groups.entries()) {
+        if (indices.length === 1) {
+          const i = indices[0];
+          records.push({ base, idx: i, num: 0, label: base });
+        } else {
+          indices.forEach((i, k) => {
+            const num = k + 1;
+            records.push({ base, idx: i, num, label: `${base} ${num}` });
+          });
+        }
+      }
+
+      // 3) sort alphabetically (by base), then by num (singletons first as 0)
+      records.sort((a, b) => {
+        const byName = a.base.localeCompare(b.base, undefined, { sensitivity: "base" });
+        if (byName !== 0) return byName;
+        return a.num - b.num;
+      });
+
+      // 4) render
+      listRight.innerHTML = records
+        .map(rec => `<option value="${rec.idx}">${escapeHtml(rec.label)}</option>`)
+        .join("");
     }
 
     function addSelection(baseName){
@@ -619,7 +762,7 @@ function extractPartsFromScore(xmlText){
     function removeSelectionByIndex(idx){
       if (idx < 0 || idx >= stateSel.selections.length) return;
       stateSel.selections.splice(idx, 1);
-      refreshRight(); // renumber happens here automatically
+      refreshRight(); // renumber + resort
     }
 
     // Handlers
@@ -669,18 +812,26 @@ function extractPartsFromScore(xmlText){
       const s = getState();
       const metaIndex = Object.fromEntries((s.instrumentData||[]).map(m => [m.name, m]));
 
-      // Build the final labels with numbering rules (same logic as refreshRight)
-      const totalByBase = {};
-      for (const b of stateSel.selections) totalByBase[b] = (totalByBase[b] || 0) + 1;
-      const occ = {};
-      const labeled = stateSel.selections.map(base => {
-        occ[base] = (occ[base] || 0) + 1;
-        return totalByBase[base] === 1 ? base : `${base} ${occ[base]}`;
+      // Build labels to save (use the same grouping/numbering logic as UI,
+      // but we preserve insertion order for the underlying array)
+      const groups = new Map();
+      stateSel.selections.forEach((base, idx) => {
+        if (!groups.has(base)) groups.set(base, []);
+        groups.get(base).push(idx);
       });
+      const instanceNumberByIndex = {};
+      for (const [base, indices] of groups.entries()) {
+        if (indices.length === 1) {
+          instanceNumberByIndex[indices[0]] = 0; // singleton → 0 (bare)
+        } else {
+          indices.forEach((i, k) => instanceNumberByIndex[i] = k + 1);
+        }
+      }
 
-      const instrumentSelections = labeled.map(label => {
-        const base = baseOf(label);
+      const instrumentSelections = stateSel.selections.map((base, i) => {
         const meta = metaIndex[base] || {};
+        const num = instanceNumberByIndex[i] || 0;
+        const label = num === 0 ? base : `${base} ${num}`;
         return {
           name: base,
           instanceLabel: label,               // "Violin" or "Violin 1/2/…"
@@ -704,6 +855,7 @@ function extractPartsFromScore(xmlText){
   AA.on("wizard:stage", (stage) => { if (stage === "instruments") setupInstrumentPicker(); });
 
 })(); // end Step 3
+
 
 
 /* ============================================================================
