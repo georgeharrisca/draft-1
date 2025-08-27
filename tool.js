@@ -470,12 +470,13 @@ function extractPartsFromScore(xmlText){
 
 
 /* ============================================================================
-   I) STEP 3: INSTRUMENT PICKER UI (Categories → Instruments → Selections)
-   - Left pane adds a Category list (folders). Clicking a category filters
-     the instruments list below it.
-   - Right pane stays alphabetically sorted with smart numbering:
-       * One instance → bare name (e.g., "Violin")
-       * 2+ instances → "Violin 1", "Violin 2", …
+   I) STEP 3: INSTRUMENT PICKER UI — Folder Tree (Categories) → Instruments
+   - Left pane becomes a collapsible "folder tree":
+       • Category rows (folders) are clickable to expand/collapse
+       • Instrument rows under each folder are selectable
+   - Right pane keeps alphabetical sorting + smart numbering:
+       • One instance → bare name (e.g., "Violin")
+       • 2+ instances → "Violin 1", "Violin 2", …
    ========================================================================== */
 (function(){
 
@@ -493,7 +494,7 @@ function extractPartsFromScore(xmlText){
     return host;
   }
 
-  // Build UI once; if it already exists, ensure Back button & category list exist.
+  // Build UI once; if it already exists, ensure Back button and tree container exist
   function ensureInstrumentPickerMarkup(){
     const host = ensureStep3Host();
 
@@ -507,13 +508,8 @@ function extractPartsFromScore(xmlText){
         <div id="aa-pickers" class="aa-grid" style="margin-top:12px;">
           <div class="aa-pane">
             <h4>Instruments</h4>
-
-            <!-- NEW: Category "folders" -->
-            <label style="display:block; font-size:12px; color:var(--muted); margin:0 0 6px;">Category</label>
-            <select id="categorySelect" size="6" style="width:100%; margin-bottom:10px;"></select>
-
-            <label style="display:block; font-size:12px; color:var(--muted); margin:8px 0 6px;">Items</label>
-            <select id="instrumentList" size="10"></select>
+            <!-- Folder tree -->
+            <ul id="instrumentTree" class="list" style="max-height:340px; overflow:auto; margin-bottom:10px;"></ul>
 
             <div id="leftControls" style="display:flex; gap:10px; margin-top:10px;">
               <button id="btnBackToSong" class="aa-btn" style="background:#1a1f2a;border:1px solid var(--line);color:var(--text);">Back</button>
@@ -531,8 +527,28 @@ function extractPartsFromScore(xmlText){
           </div>
         </div>
       `);
+
+      // Minimal tree CSS (uses your .list base styles if present)
+      if (!document.getElementById("aa-tree-css")) {
+        const st = document.createElement("style");
+        st.id = "aa-tree-css";
+        st.textContent = `
+          #instrumentTree { list-style:none; padding:0; margin:0; }
+          #instrumentTree li { user-select:none; }
+          .aa-folder { display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--line); cursor:pointer; }
+          .aa-folder .aa-caret { width:14px; text-align:center; font-size:12px; opacity:0.9; }
+          .aa-folder .aa-name { font-weight:600; color:var(--text); }
+          .aa-children { margin:0; padding:0 0 0 22px; }
+          .aa-ins { padding:8px 12px; border-bottom:1px dashed var(--line); cursor:pointer; }
+          .aa-ins:hover { background:#0f131b; }
+          .aa-ins.active { outline:2px solid var(--brand-600); background:#11171f; }
+          .aa-hide { display:none !important; }
+        `;
+        document.head.appendChild(st);
+      }
+
       container = document.getElementById("aa-pickers");
-      console.log("[AA] Built Step 3 instrument picker UI.");
+      console.log("[AA] Built Step 3 instrument picker UI (folder tree).");
     } else {
       // Ensure Back button exists
       if (!document.getElementById("btnBackToSong")) {
@@ -548,27 +564,18 @@ function extractPartsFromScore(xmlText){
           console.log("[AA] Added Back button to existing Step 3 UI.");
         }
       }
-      // Ensure categorySelect exists
-      if (!document.getElementById("categorySelect")) {
-        const instrumentsLabel = container.querySelector("h4 + select#instrumentList");
-        if (instrumentsLabel) {
-          const wrap = instrumentsLabel.parentElement;
-          const catLabel = document.createElement("label");
-          catLabel.textContent = "Category";
-          catLabel.style.cssText = "display:block; font-size:12px; color:var(--muted); margin:0 0 6px;";
-          const catSel = document.createElement("select");
-          catSel.id = "categorySelect";
-          catSel.size = 6;
-          catSel.style.cssText = "width:100%; margin-bottom:10px;";
-          wrap.insertBefore(catSel, instrumentsLabel);
-          const itemsLabel = document.createElement("label");
-          itemsLabel.textContent = "Items";
-          itemsLabel.style.cssText = "display:block; font-size:12px; color:var(--muted); margin:8px 0 6px;";
-          wrap.insertBefore(itemsLabel, instrumentsLabel);
-          console.log("[AA] Added Category selector to existing Step 3 UI.");
-        }
+      // Ensure tree exists
+      if (!document.getElementById("instrumentTree")) {
+        const leftPane = container.querySelector(".aa-pane");
+        const tree = document.createElement("ul");
+        tree.id = "instrumentTree";
+        tree.className = "list";
+        tree.style.cssText = "max-height:340px; overflow:auto; margin-bottom:10px;";
+        leftPane.insertBefore(tree, leftPane.querySelector("#leftControls"));
+        console.log("[AA] Added instrument tree to existing Step 3 UI.");
       }
     }
+
     return container;
   }
 
@@ -576,9 +583,7 @@ function extractPartsFromScore(xmlText){
     const container = ensureInstrumentPickerMarkup();
     if (!container) return;
 
-    // Always scope to the single container to avoid duplicate-id issues
-    const catSel    = container.querySelector("#categorySelect");
-    const listLeft  = container.querySelector("#instrumentList");
+    const tree      = container.querySelector("#instrumentTree");
     const btnAdd    = container.querySelector("#btnAddInstrument");
     const btnBack   = container.querySelector("#btnBackToSong");
     const listRight = container.querySelector("#selectionsList");
@@ -586,82 +591,100 @@ function extractPartsFromScore(xmlText){
     const btnSave   = container.querySelector("#btnSaveSelections");
     const note      = document.getElementById("instStatus");
 
-    if (!catSel || !listLeft || !btnAdd || !btnBack || !listRight || !btnRemove || !btnSave) {
+    if (!tree || !btnAdd || !btnBack || !listRight || !btnRemove || !btnSave) {
       console.warn("[AA] Step 3 UI elements missing; picker not wired.");
       return;
     }
 
-    // Local state for this view
+    // Local UI state for Step 3
     const stateSel = {
-      selections: [],        // base names only (e.g., ["Violin","Violin","Flute"])
-      currentCategory: "All" // currently selected category
+      selections: [],     // base names only
+      openCats: new Set(),// which categories are open
+      selectedBase: ""    // currently highlighted instrument in tree
     };
 
-    // Build category list from instrumentData
-    function buildCategoryList(){
+    // -------- Build & render the folder tree ----------
+    function buildTree(){
       const s = getState();
       const data = Array.isArray(s.instrumentData) ? s.instrumentData : [];
-      const catsSet = new Set();
-      data.forEach(d => catsSet.add((d.category || "Other").trim()));
-      const cats = ["All", ...Array.from(catsSet).sort((a,b)=> a.localeCompare(b, undefined, { sensitivity:"base" }))];
-      catSel.innerHTML = cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
-      // restore or default
-      if (!cats.includes(stateSel.currentCategory)) stateSel.currentCategory = cats[0] || "All";
-      catSel.value = stateSel.currentCategory;
-    }
-
-    // Populate/refresh left instruments list based on category
-    function populateLeftList(){
-      const s = getState();
-      let instruments = Array.isArray(s.instrumentData) ? s.instrumentData : [];
-      if (!instruments.length) {
-        listLeft.innerHTML = "";
+      if (!data.length) {
+        tree.innerHTML = `<li class="aa-ins" style="opacity:.7; pointer-events:none;">No instruments found</li>`;
         if (note) note.textContent = "No instruments found in instrumentData.json.";
         return;
       }
-      const cat = stateSel.currentCategory;
-      if (cat && cat !== "All") {
-        instruments = instruments.filter(ins => (ins.category || "Other").trim() === cat);
-      }
-      instruments.sort((a,b)=> String(a.name).localeCompare(String(b.name), undefined, { sensitivity:"base" }));
-      listLeft.innerHTML = instruments.map(ins =>
-        `<option value="${escapeHtml(ins.name)}">${escapeHtml(ins.name)}</option>`
-      ).join("");
       if (note) note.textContent = "";
+
+      // Map category -> [instruments]
+      const catMap = new Map();
+      for (const ins of data) {
+        const cat = (ins.category || "Other").trim();
+        if (!catMap.has(cat)) catMap.set(cat, []);
+        catMap.get(cat).push(ins.name);
+      }
+
+      // Sort categories & instruments
+      const cats = Array.from(catMap.keys()).sort((a,b)=> a.localeCompare(b, undefined, { sensitivity:"base" }));
+      cats.forEach(c => catMap.get(c).sort((a,b)=> a.localeCompare(b, undefined, { sensitivity:"base" })));
+
+      // Open first category by default if none is open yet
+      if (stateSel.openCats.size === 0 && cats.length) stateSel.openCats.add(cats[0]);
+
+      // Render
+      const parts = [];
+      for (const cat of cats) {
+        const open = stateSel.openCats.has(cat);
+        parts.push(`
+          <li class="aa-folder" data-cat="${escapeHtml(cat)}" data-role="folder">
+            <span class="aa-caret">${open ? "▾" : "▸"}</span>
+            <span class="aa-name">${escapeHtml(cat)}</span>
+          </li>
+        `);
+        parts.push(`<ul class="aa-children ${open ? "" : "aa-hide"}" data-cat="${escapeHtml(cat)}">`);
+        for (const nm of catMap.get(cat)) {
+          const active = (stateSel.selectedBase === nm) ? " active" : "";
+          parts.push(`<li class="aa-ins${active}" data-ins="${escapeHtml(nm)}" data-role="instrument">${escapeHtml(nm)}</li>`);
+        }
+        parts.push(`</ul>`);
+      }
+      tree.innerHTML = parts.join("");
     }
 
-    // Avoid double-wiring; but still allow repopulation on data change
-    if (container.dataset.wired === "1") {
-      buildCategoryList();
-      populateLeftList();
-      return;
+    // Tree click handling (event delegation)
+    function onTreeClick(e){
+      const target = e.target;
+      const liFolder = target.closest('[data-role="folder"]');
+      const liIns    = target.closest('[data-role="instrument"]');
+
+      // Toggle folder
+      if (liFolder) {
+        const cat = liFolder.getAttribute("data-cat") || "";
+        const open = stateSel.openCats.has(cat);
+        if (open) stateSel.openCats.delete(cat); else stateSel.openCats.add(cat);
+        buildTree(); // re-render to update caret + children
+        return;
+      }
+
+      // Select instrument
+      if (liIns) {
+        const base = liIns.getAttribute("data-ins") || "";
+        stateSel.selectedBase = base;
+        // highlight selection (re-render is easiest to clear previous)
+        buildTree();
+        return;
+      }
     }
-    container.dataset.wired = "1";
-
-    // Initial population + listen for data refresh
-    buildCategoryList();
-    populateLeftList();
-    AA.on("data:instrumentData", () => { buildCategoryList(); populateLeftList(); });
-
-    // Category change → filter instruments
-    catSel.addEventListener("change", () => {
-      stateSel.currentCategory = catSel.value || "All";
-      populateLeftList();
-    });
 
     // ---------- Right pane (Selections) ----------
     const baseOf = (name) => String(name).replace(/\s+\d+$/, "");
 
     // Build labels and render the right list, sorted alphabetically
     function refreshRight(){
-      // group by base (preserve insertion order within each base)
       const groups = new Map(); // base -> [idx, idx, ...]
       stateSel.selections.forEach((base, idx) => {
         if (!groups.has(base)) groups.set(base, []);
         groups.get(base).push(idx);
       });
 
-      // compute display records
       const records = [];
       for (const [base, indices] of groups.entries()) {
         if (indices.length === 1) {
@@ -675,7 +698,7 @@ function extractPartsFromScore(xmlText){
         }
       }
 
-      // sort alphabetically (by base), then by num (singletons first as 0)
+      // Sort alphabetically by base then by instance number (singletons first)
       records.sort((a, b) => {
         const byName = a.base.localeCompare(b.base, undefined, { sensitivity: "base" });
         if (byName !== 0) return byName;
@@ -698,10 +721,28 @@ function extractPartsFromScore(xmlText){
       refreshRight(); // renumber + resort
     }
 
-    // Handlers
+    // ---------- Wire (avoid double-wire; allow rebuilds) ----------
+    if (container.dataset.wired === "1") {
+      buildTree();
+      refreshRight();
+      return;
+    }
+    container.dataset.wired = "1";
+
+    // Initial render
+    buildTree();
+    refreshRight();
+
+    // Rebuild tree if instrumentData changes
+    AA.on("data:instrumentData", () => { buildTree(); });
+
+    // Tree clicks
+    tree.addEventListener("click", onTreeClick);
+
+    // Add
     btnAdd.addEventListener("click", () => {
-      const sel = listLeft.value;
-      if (!sel) return;
+      const sel = stateSel.selectedBase;
+      if (!sel) return alert("Select an instrument from the list first.");
       addSelection(sel);
     });
 
@@ -718,8 +759,8 @@ function extractPartsFromScore(xmlText){
       });
 
       stateSel.selections = [];
+      stateSel.selectedBase = "";
       refreshRight();
-      if (note) note.textContent = "";
 
       if (Number.isInteger(s.packIndex)) {
         populateSongsForPack(s.packIndex);
@@ -730,6 +771,7 @@ function extractPartsFromScore(xmlText){
       setWizardStage("song");
     });
 
+    // Remove
     btnRemove.addEventListener("click", () => {
       const opt = listRight.options[listRight.selectedIndex];
       if (!opt) return;
@@ -737,6 +779,7 @@ function extractPartsFromScore(xmlText){
       removeSelectionByIndex(idx);
     });
 
+    // Save
     btnSave.addEventListener("click", () => {
       const s = getState();
       const metaIndex = Object.fromEntries((s.instrumentData||[]).map(m => [m.name, m]));
@@ -766,7 +809,6 @@ function extractPartsFromScore(xmlText){
           transpose: meta.transpose ?? null,
           scoreOrder: Number(meta.scoreOrder)||999,
           assignedPart: "",
-          // carry through category for later UI or sorting if useful
           category: meta.category || "Other"
         };
       });
