@@ -853,19 +853,17 @@ ul.appendChild(li);
    ========================================================================== */
 
 
-/* ============================================================================
-   M1) assignParts
-   - Robustly maps instrumentPart labels ("Melody", "Harmony II", … OR "1 Melody")
-   - For part indices 7..15: direct passthrough assignedPart; sortNumber = null
-   - For 1..6: sortNumber starts at index, adjusted by sortingOctave
-     (octave >0 ⇒ subtract; octave <0 ⇒ add abs)
-   - Tie-break ties alphabetically with .1, .2, …
-   - Assignments order:
-       lowest  -> 1
-       highest -> 6   (only if there are >=2)
-       next 4 lowest -> 2,4,3,5
-       remaining (lowest→highest) cycle 1,6,2,4,3,5
-   ========================================================================== */
+/* =========================================================================
+   M1) assignParts (uses sortingOctave; 7–15 passthrough)
+   Rules:
+   - Any instrument with instrumentPart ∈ {7..15} => assignedPart = instrumentPart; sortNumber = null
+   - For 1..6: sortNumber = base(1..6) then adjust by sortingOctave (positive subtract, negative add abs)
+   - After tie-break (alphabetical -> +0.1, +0.2...), assign:
+     * lowest sortNumber -> "1 Melody"
+     * highest sortNumber -> "6 Bass" (if at least 2 instruments)
+     * next four lowest -> 2,4,3,5
+     * remaining (lowest→highest) cycle 1,6,2,4,3,5
+   ------------------------------------------------------------------------- */
 (function(){
   AA.on("instruments:saved", () => AA.safe("assignParts", run));
 
@@ -887,34 +885,15 @@ ul.appendChild(li);
     "15 Triangle"
   ];
 
-  // --- canonical mapping that accepts both "1 Melody" and "Melody", etc. ---
-  const LABEL_MAP = (function(){
-    const m = new Map();
-    const norm = s => String(s||"").toLowerCase().replace(/\s+/g," ").trim();
-    for (let i=0;i<PART_LABELS.length;i++){
-      const full = PART_LABELS[i];
-      const idx = i+1;
-      const nFull = norm(full);
-      m.set(nFull, idx);
-      // also accept without the leading number (e.g., "Melody", "Harmony II", …)
-      const noNum = norm(full.replace(/^\d+\s+/, ""));
-      m.set(noNum, idx);
-      // also accept Arabic variants for I/II synonyms (Harmony 1/2)
-      if (noNum.startsWith("harmony i")) m.set(norm("Harmony 1"), idx);
-      if (noNum.startsWith("harmony ii")) m.set(norm("Harmony 2"), idx);
-    }
-    return { norm, get(s){ return m.get(norm(s)) ?? -1; } };
-  })();
-
   function run(){
     const state = getState();
     const sel = Array.isArray(state.instrumentSelections) ? state.instrumentSelections : [];
     if (!sel.length) return;
 
     const rows = sel.map(item => {
-      const ipIdx = LABEL_MAP.get(item.instrumentPart);
+      const ipIdx = indexOfPart(item.instrumentPart);
       let sortNum = null;
-      if (ipIdx >= 1 && ipIdx <= 6) {
+      if (ipIdx >=1 && ipIdx<=6) {
         sortNum = ipIdx;
         const oct = Number(item.sortingOctave)||0;
         if (oct > 0) sortNum -= oct;
@@ -933,39 +912,41 @@ ul.appendChild(li);
       };
     });
 
-    // Direct assignment for 7..15
+    // Early assignment for 7..15
     for (const r of rows) {
-      const idx = LABEL_MAP.get(r.instrumentPart);
-      if (idx >= 7 && idx <= 15) r.assignedPart = PART_LABELS[idx-1];
+      const idx = indexOfPart(r.instrumentPart);
+      if (idx >=7 && idx<=15) r.assignedPart = formatPart(idx);
     }
 
-    // Pool needing 1..6 logic
+    // Numeric pool 1..6 only (and not already locked by 7..15)
     const pool = rows.filter(r => r.sortNumber != null && !r.assignedPart);
 
-    // Tie-break: numeric → alpha; then embed decimals .1,.2…
+    // Tie-break: sort by integer sortNumber then alpha, then inject .1/.2 decimals
     pool.sort((a,b) => (a.sortNumber - b.sortNumber) || String(a.label).localeCompare(b.label));
-    for (let i=0; i<pool.length;){
+    for (let i=0; i<pool.length;) {
       const intVal = Math.floor(pool[i].sortNumber);
-      let j=i; while (j<pool.length && Math.floor(pool[j].sortNumber)===intVal) j++;
-      const grp = pool.slice(i,j);
-      grp.forEach((r,k)=> r.sortNumber = Number((intVal + (k+1)/10).toFixed(2)));
-      i=j;
+      let j = i;
+      while (j<pool.length && Math.floor(pool[j].sortNumber) === intVal) j++;
+      const group = pool.slice(i, j);
+      group.forEach((r,k) => r.sortNumber = Number((intVal + (k+1)/10).toFixed(2)));
+      i = j;
     }
-    pool.sort((a,b)=> a.sortNumber - b.sortNumber);
+    pool.sort((a,b) => a.sortNumber - b.sortNumber);
 
-    // Required assignment pattern
-    if (pool.length >= 1) pool[0].assignedPart = PART_LABELS[0];   // 1 Melody
-    if (pool.length >= 2) pool[pool.length-1].assignedPart = PART_LABELS[5]; // 6 Bass
+    // Assign required pattern:
+    // lowest -> 1, highest -> 6, next 4 -> 2,4,3,5; remaining cycle {1,6,2,4,3,5}
+    if (pool.length >= 1) pool[0].assignedPart = "1 Melody";
+    if (pool.length >= 2) pool[pool.length-1].assignedPart = "6 Bass";
 
-    const mids = pool.filter(r => !r.assignedPart);
+    const mids = pool.filter(r => r.assignedPart === "");
     const firstFour = mids.splice(0,4);
-    const orderFirst4 = [PART_LABELS[1], PART_LABELS[3], PART_LABELS[2], PART_LABELS[4]]; // 2,4,3,5
-    firstFour.forEach((r,i)=> r.assignedPart = orderFirst4[i]);
+    const orderFirst4 = ["2 Harmony I", "4 Counter Melody", "3 Harmony II", "5 Counter Melody Harmony"];
+    firstFour.forEach((r,idx) => r.assignedPart = orderFirst4[idx]);
 
-    const cycle = [PART_LABELS[0],PART_LABELS[5],PART_LABELS[1],PART_LABELS[3],PART_LABELS[2],PART_LABELS[4]];
-    for (let i=0;i<mids.length;i++) mids[i].assignedPart = cycle[i % cycle.length];
+    const cycle = ["1 Melody","6 Bass","2 Harmony I","4 Counter Melody","3 Harmony II","5 Counter Melody Harmony"];
+    for (let i=0; i<mids.length; i++) mids[i].assignedPart = cycle[i % cycle.length];
 
-    // Persist
+    // Merge back
     const assignedResults = rows.map(r => ({
       name: r.label,
       baseName: r.base,
@@ -981,12 +962,21 @@ ul.appendChild(li);
     mergeState({ assignedResults });
     AA.emit("assign:done");
   }
+
+  function indexOfPart(label){
+    const norm = String(label||"").replace(/\s+/g," ").trim().toLowerCase();
+    for (let i=0;i<PART_LABELS.length;i++){
+      if (PART_LABELS[i].toLowerCase() === norm) return i+1;
+    }
+    return -1;
+  }
+  function formatPart(n){ return PART_LABELS[n-1] || String(n); }
 })();
 
 
-/* ============================================================================
+/* =========================================================================
    M2) groupAssignments — match assignedPart to extracted partName
-   ========================================================================== */
+   ------------------------------------------------------------------------- */
 (function(){
   AA.on("assign:done", () => AA.safe("groupAssignments", run));
   function run(){
@@ -998,7 +988,8 @@ ul.appendChild(li);
     const norm = s => String(s||"").toLowerCase().replace(/\s+/g," ").trim();
     const groups = [];
     for (const p of parts) {
-      const members = assigned.filter(a => norm(a.assignedPart) === norm(p.partName));
+      const key = norm(p.partName);
+      const members = assigned.filter(a => norm(a.assignedPart) === key);
       groups.push({ partName: p.partName, partId: p.id, instruments: members });
     }
 
@@ -1008,10 +999,10 @@ ul.appendChild(li);
 })();
 
 
-/* ============================================================================
-   M3) arrangeGroupedParts — Clef & Transpose only (no octave edits)
-        Also: part-name ← instrument instance, part-abbreviation ← "abbrev."
-   ========================================================================== */
+/* =========================================================================
+   M3) arrangeGroupedParts — Clef & Transpose only, NO octave edits
+   Also set part-name to instrument instance label, part-abbreviation → "abbrev."
+   ------------------------------------------------------------------------- */
 (function () {
   AA.on("group:done", () => AA.safe("arrangeGroupedParts", run));
 
@@ -1021,7 +1012,6 @@ ul.appendChild(li);
     const groups = Array.isArray(state.groupedAssignments) ? state.groupedAssignments : [];
     if (!parts.length || !groups.length) return;
 
-    const norm = (s) => String(s ?? "").toLowerCase().replace(/\s+/g," ").trim();
     const partByName = new Map(parts.map(p => [norm(p.partName), p]));
     const arranged = [];
 
@@ -1031,10 +1021,13 @@ ul.appendChild(li);
 
       for (const inst of (grp.instruments || [])) {
         try {
-          const xml = arrangeXmlForInstrument(src.xml, inst.name, inst.instanceLabel, {
+          let xml = arrangeXmlForInstrument(src.xml, inst.name, inst.instanceLabel, {
             clef: inst.clef ?? null,
             transpose: inst.transpose ?? null
           });
+          // PATCH: ensure the XML has a header for downstream tools
+          xml = ensureXmlHeader(xml);
+
           arranged.push({
             instrumentName: inst.instanceLabel, // "Violin 2"
             baseName: inst.name,                // "Violin"
@@ -1053,33 +1046,37 @@ ul.appendChild(li);
     AA.emit("arrange:done");
   }
 
+  const norm = (s) => String(s ?? "").toLowerCase().replace(/\s+/g," ").trim();
+
   function arrangeXmlForInstrument(singlePartXml, baseName, instanceLabel, meta) {
     const { clef, transpose } = meta;
     const parser = new DOMParser();
     const xmlDoc = parser.parseFromString(singlePartXml, "application/xml");
 
-    // (1) Names/abbrev
+    // (1) part-name → instrument instance; part-abbreviation → "abbrev."
     const scorePart = xmlDoc.querySelector("score-part");
     const partName = scorePart?.querySelector("part-name");
     if (partName) partName.textContent = instanceLabel;
     const partAbbrev = scorePart?.querySelector("part-abbreviation");
     if (partAbbrev) partAbbrev.textContent = "abbrev.";
 
-    // (2) Clef
+    // (2) Clef replacement (if provided)
     if (clef) {
       const firstClef = xmlDoc.querySelector("attributes > clef");
       if (firstClef) {
         while (firstClef.firstChild) firstClef.removeChild(firstClef.firstChild);
         const tpl = clef === "bass"
           ? `<sign>F</sign><line>4</line>`
-          : (clef === "alto" ? `<sign>C</sign><line>3</line>` : `<sign>G</sign><line>2</line>`);
+          : (clef === "alto"
+              ? `<sign>C</sign><line>3</line>`
+              : `<sign>G</sign><line>2</line>`); // treble default
         const frag = parser.parseFromString(`<x>${tpl}</x>`, "application/xml");
         const x = frag.querySelector("x");
         while (x.firstChild) firstClef.appendChild(x.firstChild);
       }
     }
 
-    // (3) Transpose: clear all, then insert provided transpose into first <attributes>
+    // (3) Transpose: clear all, then insert only meta.transpose (if any) into first <attributes>
     xmlDoc.querySelectorAll("transpose").forEach(n => n.remove());
     if (transpose && typeof transpose === "string") {
       const tnode = parser.parseFromString(`<wrap>${transpose}</wrap>`, "application/xml").querySelector("transpose");
@@ -1102,11 +1099,11 @@ ul.appendChild(li);
 })();
 
 
-/* ============================================================================
-   M4) reassignPartNamesAbbrev (safety re-pass; usually already set)
-   ========================================================================== */
+/* =========================================================================
+   M4) reassignPartNamesAbbrev (safety pass; already set in arranger)
+   ------------------------------------------------------------------------- */
 (function(){
-  AA.on("arrange:done", () => AA.safe("reassignPartNamesAbbrev", run));
+  AA.on("arrange:done", () => AA.safe("renameParts", run));
   function run(){
     const state = getState();
     const arranged = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
@@ -1120,7 +1117,7 @@ ul.appendChild(li);
         const pa = sp?.querySelector("part-abbreviation");
         if (pa) pa.textContent = "abbrev.";
         f.xml = new XMLSerializer().serializeToString(xmlDoc);
-      } catch(e){ console.warn("[reassignPartNamesAbbrev]", e); }
+      } catch(e){ console.warn("[renameParts]", e); }
     }
     mergeState({ arrangedFiles: arranged, renameDone: true });
     AA.emit("rename:done");
@@ -1128,11 +1125,11 @@ ul.appendChild(li);
 })();
 
 
-/* ============================================================================
+/* =========================================================================
    M5) reassignPartIdsByScoreOrder
-   - scoreOrder from instrumentSelections; duplicates get .1, .2, …
-   - Assign P1..Pn by ascending effective scoreOrder
-   ========================================================================== */
+   - Uses base scoreOrder + .(instance number / 10) for duplicates
+   - Assigns P1..Pn by ascending effective scoreOrder
+   ------------------------------------------------------------------------- */
 (function(){
   AA.on("rename:done", () => AA.safe("reassignPartIdsByScoreOrder", run));
 
@@ -1146,13 +1143,13 @@ ul.appendChild(li);
     const arranged = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
     if (!arranged.length) return;
 
+    // Build base order from selections
     const baseOrder = new Map();
     const selections = Array.isArray(state.instrumentSelections) ? state.instrumentSelections : [];
     for (const s of selections) {
-      if (s?.name && Number.isFinite(Number(s.scoreOrder))) {
-        baseOrder.set(String(s.name), Number(s.scoreOrder));
-      }
+      if (s?.name && Number.isFinite(Number(s.scoreOrder))) baseOrder.set(String(s.name), Number(s.scoreOrder));
     }
+    // Fill gaps
     for (const [k,v] of Object.entries(FALLBACK_ORDER)) if (!baseOrder.has(k)) baseOrder.set(k, v);
 
     const rows = arranged.map(f => {
@@ -1186,9 +1183,9 @@ ul.appendChild(li);
 })();
 
 
-/* ============================================================================
+/* =========================================================================
    M6) combineArrangedParts → combinedScoreXml
-   ========================================================================== */
+   ------------------------------------------------------------------------- */
 (function(){
   AA.on("reid:done", () => AA.safe("combineArrangedParts", run));
 
@@ -1226,6 +1223,9 @@ ul.appendChild(li);
     }
     if (!/<\/score-partwise>\s*$/i.test(combined)) combined += "\n</score-partwise>";
 
+    // PATCH: Ensure the Score also has an XML header (needed by OSMD)
+    combined = ensureXmlHeader(combined);
+
     mergeState({ combinedScoreXml: combined, combineDone: true });
     AA.emit("combine:done");
   }
@@ -1243,11 +1243,10 @@ ul.appendChild(li);
 })();
 
 
-/* ============================================================================
-   M7) finalViewer (centered, back returns to instrument selection)
-   - Loads OSMD / html2canvas / jsPDF from repo root
-   - Shrinks SVG to fit vertically
-   ========================================================================== */
+/* =========================================================================
+   M7) FINAL VIEWER (centered, back clears processing, shrink-to-fit vertical)
+   Loads OSMD/html2canvas/jsPDF from repo root
+   ------------------------------------------------------------------------- */
 (function () {
   AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
 
@@ -1299,7 +1298,7 @@ ul.appendChild(li);
       position: absolute; top: 16px; left: 16px; padding: 8px 12px; border-radius: 8px; border: none;
       background: #e5e7eb; color: #111; font: 600 13px system-ui; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.06);
     `;
-    backBtn.addEventListener("click", () => backToInstrumentSelection());
+    backBtn.addEventListener("click", () => backToInstrumentSelection(state));
     wrap.appendChild(backBtn);
 
     const card = ce("div");
@@ -1378,9 +1377,10 @@ ul.appendChild(li);
       try {
         lastXml = xml;
         const processed = transformXmlForSlashes(xml);
+        const xmlToLoad = ensureXmlHeader(processed); // PATCH: guarantee XML header
 
         if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
-        await osmd.load(processed);
+        await osmd.load(xmlToLoad);
         await osmd.render();
 
         await new Promise(r => requestAnimationFrame(r));
@@ -1403,6 +1403,7 @@ ul.appendChild(li);
       const name = (select.value === "__SCORE__" ? "Score" : select.value) || "part";
       downloadText(lastXml, `${safe(name)}.musicxml`, "application/xml");
     });
+
     btnPDFAll.addEventListener("click", async () => {
       const parts = sortPartsByPid(Array.isArray(getState().arrangedFiles)?getState().arrangedFiles:[]);
       if (!parts.length) return alert("No parts found.");
@@ -1415,7 +1416,7 @@ ul.appendChild(li);
       for (const p of parts) {
         try {
           const processed = transformXmlForSlashes(p.xml);
-          await osmd.load(processed);
+          await osmd.load(ensureXmlHeader(processed)); // PATCH
           await osmd.render();
           const { canvas, w, h } = await snapshotCanvas(osmdBox);
           if (!doc) doc = new (jspdfNS.jsPDF)({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
@@ -1425,31 +1426,44 @@ ul.appendChild(li);
       }
       if (doc) doc.save(docName);
     });
+
     btnXMLAll.addEventListener("click", async () => {
       const parts = sortPartsByPid(Array.isArray(getState().arrangedFiles)?getState().arrangedFiles:[]);
       if (!parts.length) return alert("No parts found.");
       for (const p of parts) {
-        downloadText(p.xml, `${safe(p.instrumentName)}.musicxml`, "application/xml");
+        downloadText(ensureXmlHeader(p.xml), `${safe(p.instrumentName)}.musicxml`, "application/xml"); // PATCH
         await new Promise(r => setTimeout(r, 60));
       }
     });
 
     function pickXml(choice){
       const s = getState();
-      if (choice === "__SCORE__") return { xml: s.combinedScoreXml || "" };
-      const hit = (Array.isArray(s.arrangedFiles) ? s.arrangedFiles : []).find(f => f.instrumentName === choice);
-      return { xml: hit?.xml || "" };
+      let xml = "";
+      if (choice === "__SCORE__") {
+        xml = s.combinedScoreXml || "";
+      } else {
+        const hit = (Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [])
+          .find(f => f.instrumentName === choice);
+        xml = hit?.xml || "";
+      }
+      return { xml: ensureXmlHeader(xml) }; // PATCH
     }
   }
 
-  // viewer helpers
+  /* viewer helpers */
   function sortPartsByPid(files){
     const out = [];
-    for (const f of files) {
-      const pid = f.newPartId || extractPidFromXml(f.xml);
-      if (!pid) continue;
-      const n = parseInt(String(pid).replace(/^P/i,""), 10);
-      out.push({ ...f, _pnum: Number.isFinite(n)?n:999 });
+    for (const f of (files || [])) {
+      // try score-part id first
+      let pid = extractPidFromXml(f.xml);
+      if (!pid) {
+        // try <part id="...">
+        const m = String(f.xml || "").match(/<part\s+id="([^"]+)"/i);
+        pid = m ? m[1] : null;
+      }
+      // include even if PID not parseable; sort those to the end
+      const n = pid ? parseInt(String(pid).replace(/^P/i, ""), 10) : NaN;
+      out.push({ ...f, _pnum: Number.isFinite(n) ? n : 999, _pid: pid || "" });
     }
     out.sort((a,b)=> (a._pnum - b._pnum) || String(a.instrumentName).localeCompare(String(b.instrumentName)));
     return out;
@@ -1465,26 +1479,18 @@ ul.appendChild(li);
     pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
     pdf.save(`${safe(baseName)}.pdf`);
   }
-  function backToInstrumentSelection(){
-    // Clear processing but keep current pack/song; return to step 3
-    const s = getState();
-    setState({
-      packIndex: s.packIndex, pack: s.pack,
-      songIndex: s.songIndex, song: s.song,
-      selectedSong: s.selectedSong,
-      libraryPacks: s.libraryPacks, instrumentData: s.instrumentData,
-      instrumentSelections: s.instrumentSelections || [],
-      parts: s.parts || [],
-      assignedResults: [], groupedAssignments: [], arrangedFiles: [],
-      combinedScoreXml: "", arrangeDone:false, renameDone:false,
-      reassignByScoreDone:false, combineDone:false, timestamp: Date.now()
-    });
+  function backToInstrumentSelection(prevState){
+    const packName = prevState?.pack || prevState?.selectedPack?.name || "";
+    const songName = prevState?.song || prevState?.selectedSong?.name || "";
+    setState({ pack: packName, song: songName, packIndex: getState().packIndex, songIndex: getState().songIndex, timestamp: Date.now() });
 
     document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
     hideArrangingLoading();
-    setWizardStage("instruments");
-  }
 
+    qs("step1")?.classList.add("hidden");
+    qs("step2")?.classList.add("hidden");
+    qs("step3")?.classList.remove("hidden");
+  }
   function fitScoreToHeight(osmd, host){
     const svg = host.querySelector("svg");
     if (!svg) return;
@@ -1500,20 +1506,23 @@ ul.appendChild(li);
     target = Math.max(0.3, Math.min(1.5, target));
     if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
   }
-
   function transformXmlForSlashes(xmlString) {
     try {
       const parser = new DOMParser();
       const xmlDoc = parser.parseFromString(xmlString, "application/xml");
-      xmlDoc.querySelectorAll("lyric").forEach(n => n.remove()); // keep clean
+      xmlDoc.querySelectorAll("lyric").forEach(n => n.remove());
       return new XMLSerializer().serializeToString(xmlDoc);
     } catch { return xmlString; }
   }
 })();
 
 
-/* ============================================================================
-   H1) helpers
-   - Avoid duplicate escapeHtml declaration (core script already defines it)
-   ========================================================================== */
-function safe(s){ return String(s||"").replace(/[\/\\:?*"<>|]+/g,"-"); }
+/* =========================================================================
+   H1) Helper addition required by OSMD header checks
+   ------------------------------------------------------------------------- */
+function ensureXmlHeader(xml) {
+  const s = String(xml || "").trimStart();
+  return s.startsWith("<?xml") ? s : `<?xml version="1.0" encoding="UTF-8"?>\n${s}`;
+}
+
+// NOTE: `safe(...)` and `escapeHtml(...)` are assumed to be defined earlier in your file.
