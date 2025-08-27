@@ -139,6 +139,8 @@ function setWizardStage(stage /* 'library' | 'song' | 'instruments' */){
   if (s3) s3.classList.toggle("hidden", stage !== "instruments");
 
   updateStepDots(stage);
+   updateChoiceFlow();
+
   AA.emit("wizard:stage", stage);
 }
 function updateStepDots(stage){
@@ -146,6 +148,30 @@ function updateStepDots(stage){
   // tolerant to your HTML: it uses .stepper .dot
   const dots = document.querySelectorAll(".aa-step-dot, .stepper .dot, [data-step-dot]");
   dots.forEach((el, i) => el.classList.toggle("active", i === idx));
+}
+
+/* --- Breadcrumb (below dots): shows Library Pack and (optionally) Song --- */
+function updateChoiceFlow(){
+  const el = document.getElementById("choiceFlow");
+  if (!el) return;
+
+  const s = getState();
+  const packName =
+    s.pack ??
+    (s.libraryPacks?.[s.packIndex]?.name) ??
+    "";
+  const songName =
+    s.song ??
+    (s.libraryPacks?.[s.packIndex]?.songs?.[s.songIndex]?.name) ??
+    "";
+
+  if (packName && songName){
+    el.innerHTML = `${escapeHtml(packName)} <span aria-hidden="true">›</span> ${escapeHtml(songName)}`;
+  } else if (packName){
+    el.textContent = packName;
+  } else {
+    el.textContent = "";
+  }
 }
 
 
@@ -245,6 +271,8 @@ if (backBtn && !backBtn.dataset.wired) {
     setWizardStage(haveParts ? "instruments" : "song");
   }
 
+updateChoiceFlow();
+   
   if (!packs.length) {
     console.warn("[AA] No library packs found. Last URL tried:", getState().libraryJsonUrl);
   }
@@ -383,6 +411,8 @@ function onLibraryChosen(){
 
   mergeState({ packIndex: idx, pack: pack?.name || "", songIndex: null, song: null, parts: [] });
   populateSongsForPack(idx);
+   updateChoiceFlow();
+
 
   setWizardStage("song");
 
@@ -402,6 +432,8 @@ async function onSongChosen(){
 
   const song = pack.songs[songIdx];
   mergeState({ songIndex: songIdx, song: song?.name || "", selectedSong: song });
+   updateChoiceFlow();
+
 
   if (song?.url) {
     try {
