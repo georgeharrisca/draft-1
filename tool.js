@@ -471,9 +471,9 @@ function extractPartsFromScore(xmlText){
 
 /* ============================================================================
    I) STEP 3: INSTRUMENT PICKER UI — Folder Tree (Categories) → Instruments
-   - Removes legacy <select id="instrumentList"> if present
-   - No bullets (root or children) in the tree
-   - Right pane: alphabetical + smart numbering (bare name if single instance)
+   - Fixed-height scrollable list; buttons at the bottom
+   - Collapsible folders (no re-open glitch)
+   - Right pane sorted alphabetically; smart numbering
    ========================================================================== */
 (function(){
 
@@ -501,20 +501,24 @@ function extractPartsFromScore(xmlText){
     if (!container) {
       host.insertAdjacentHTML("beforeend", `
         <div id="aa-pickers" class="aa-grid" style="margin-top:12px;">
-          <div class="aa-pane">
+          <div class="aa-pane" style="display:flex; flex-direction:column;">
             <h4>Instruments</h4>
-            <!-- Folder tree -->
-            <ul id="instrumentTree" class="list" style="max-height:340px; overflow:auto; margin-bottom:10px;"></ul>
 
+            <!-- Fixed-height scroll area -->
+            <div id="aa-tree-wrap" style="flex:1 1 auto; min-height:260px; max-height:340px; overflow:auto; border-top:1px solid var(--line);">
+              <ul id="instrumentTree" class="list" style="margin:0;"></ul>
+            </div>
+
+            <!-- Controls anchored at bottom -->
             <div id="leftControls" style="display:flex; gap:10px; margin-top:10px;">
               <button id="btnBackToSong" class="aa-btn" style="background:#1a1f2a;border:1px solid var(--line);color:var(--text);">Back</button>
               <button id="btnAddInstrument" class="aa-btn">Add to Score</button>
             </div>
           </div>
 
-          <div class="aa-pane">
+          <div class="aa-pane" style="display:flex; flex-direction:column;">
             <h4>Selections</h4>
-            <select id="selectionsList" size="10"></select>
+            <select id="selectionsList" size="10" style="flex:1 1 auto; min-height:260px; max-height:340px;"></select>
             <div style="display:flex; gap:10px; margin-top:10px;">
               <button id="btnRemoveSelected" class="aa-btn">Remove</button>
               <button id="btnSaveSelections" class="aa-btn aa-accent">Save Selections</button>
@@ -523,8 +527,21 @@ function extractPartsFromScore(xmlText){
         </div>
       `);
       container = document.getElementById("aa-pickers");
-      console.log("[AA] Built Step 3 instrument picker UI (folder tree).");
+      console.log("[AA] Built Step 3 instrument picker UI (folder tree, fixed height).");
     } else {
+      // Ensure tree wrap / tree exist
+      if (!document.getElementById("aa-tree-wrap")) {
+        const leftPane = container.querySelector(".aa-pane");
+        const wrap = document.createElement("div");
+        wrap.id = "aa-tree-wrap";
+        wrap.style.cssText = "flex:1 1 auto; min-height:260px; max-height:340px; overflow:auto; border-top:1px solid var(--line);";
+        const tree = document.createElement("ul");
+        tree.id = "instrumentTree";
+        tree.className = "list";
+        tree.style.margin = "0";
+        wrap.appendChild(tree);
+        leftPane.insertBefore(wrap, leftPane.querySelector("#leftControls"));
+      }
       // Ensure Back button exists
       if (!document.getElementById("btnBackToSong")) {
         const controls = container.querySelector("#leftControls") ||
@@ -536,35 +553,16 @@ function extractPartsFromScore(xmlText){
           back.textContent = "Back";
           back.style.cssText = "background:#1a1f2a;border:1px solid var(--line);color:var(--text);";
           controls.insertBefore(back, controls.querySelector("#btnAddInstrument"));
-          console.log("[AA] Added Back button to existing Step 3 UI.");
         }
       }
-      // Ensure tree exists
-      if (!document.getElementById("instrumentTree")) {
-        const leftPane = container.querySelector(".aa-pane");
-        const tree = document.createElement("ul");
-        tree.id = "instrumentTree";
-        tree.className = "list";
-        tree.style.cssText = "max-height:340px; overflow:auto; margin-bottom:10px;";
-        leftPane.insertBefore(tree, leftPane.querySelector("#leftControls"));
-        console.log("[AA] Added instrument tree to existing Step 3 UI.");
-      }
+      // Remove any legacy select
+      const legacySelect = container.querySelector("#instrumentList");
+      if (legacySelect) legacySelect.remove();
     }
 
-    // 🔧 Remove any legacy <select id="instrumentList"> if it’s still around
-    const legacySelect = container.querySelector("#instrumentList");
-    if (legacySelect) {
-      legacySelect.remove();
-      console.log("[AA] Removed legacy #instrumentList select from Step 3.");
-    }
-
-    // Inject/refresh minimal tree CSS
+    // Minimal tree CSS (no bullets, tidy folders)
     let st = document.getElementById("aa-tree-css");
-    if (!st) {
-      st = document.createElement("style");
-      st.id = "aa-tree-css";
-      document.head.appendChild(st);
-    }
+    if (!st) { st = document.createElement("style"); st.id = "aa-tree-css"; document.head.appendChild(st); }
     st.textContent = `
       #instrumentTree, #instrumentTree ul { list-style:none; padding:0; margin:0; }
       .aa-folder { display:flex; align-items:center; gap:8px; padding:10px 12px;
@@ -598,7 +596,8 @@ function extractPartsFromScore(xmlText){
       return;
     }
 
-    const stateSel = { selections: [], openCats: new Set(), selectedBase: "" };
+    // Local state
+    const stateSel = { selections: [], openCats: new Set(), selectedBase: "", everBuilt:false };
 
     function buildTree(){
       const s = getState();
@@ -610,6 +609,7 @@ function extractPartsFromScore(xmlText){
       }
       if (note) note.textContent = "";
 
+      // Group by category
       const catMap = new Map();
       for (const ins of data) {
         const cat = (ins.category || "Other").trim();
@@ -619,13 +619,16 @@ function extractPartsFromScore(xmlText){
       const cats = Array.from(catMap.keys()).sort((a,b)=> a.localeCompare(b, undefined, { sensitivity:"base" }));
       cats.forEach(c => catMap.get(c).sort((a,b)=> a.localeCompare(b, undefined, { sensitivity:"base" })));
 
-      if (stateSel.openCats.size === 0 && cats.length) stateSel.openCats.add(cats[0]);
+      // Open the first category only once (initial render only)
+      if (!stateSel.everBuilt && stateSel.openCats.size === 0 && cats.length) {
+        stateSel.openCats.add(cats[0]);
+      }
 
       const parts = [];
       for (const cat of cats) {
         const open = stateSel.openCats.has(cat);
         parts.push(`
-          <li class="aa-folder" data-cat="${escapeHtml(cat)}" data-role="folder">
+          <li class="aa-folder" data-cat="${escapeHtml(cat)}" data-role="folder" aria-expanded="${open}">
             <span class="aa-caret">${open ? "▾" : "▸"}</span>
             <span class="aa-name">${escapeHtml(cat)}</span>
           </li>
@@ -638,6 +641,7 @@ function extractPartsFromScore(xmlText){
         parts.push(`</ul>`);
       }
       tree.innerHTML = parts.join("");
+      stateSel.everBuilt = true;
     }
 
     function onTreeClick(e){
@@ -647,7 +651,8 @@ function extractPartsFromScore(xmlText){
 
       if (liFolder) {
         const cat = liFolder.getAttribute("data-cat") || "";
-        if (stateSel.openCats.has(cat)) stateSel.openCats.delete(cat); else stateSel.openCats.add(cat);
+        if (stateSel.openCats.has(cat)) stateSel.openCats.delete(cat);
+        else stateSel.openCats.add(cat);
         buildTree();
         return;
       }
@@ -700,6 +705,7 @@ function extractPartsFromScore(xmlText){
       refreshRight();
     }
 
+    // Wire once
     if (container.dataset.wired === "1") { buildTree(); refreshRight(); return; }
     container.dataset.wired = "1";
 
@@ -781,6 +787,7 @@ function extractPartsFromScore(xmlText){
   AA.on("wizard:stage", (stage) => { if (stage === "instruments") setupInstrumentPicker(); });
 
 })(); // end Step 3
+
 
 
 
