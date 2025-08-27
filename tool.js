@@ -1371,36 +1371,67 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     }
   }
 
-  // --- enforce visible part names for all P# in combined (namespace-aware) ---
-  function enforcePartNamesInCombined(xmlString, rows){
-    try {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(xmlString, "application/xml");
+ // Force long/short/display names per P# in the combined score (namespace-aware)
+function enforcePartNamesInCombined(xmlString, rows){
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xmlString, "application/xml");
+    const root = doc.documentElement;
+    const ns = root.namespaceURI || null;
 
-      for (const { partId, f } of rows) {
-        const sp = doc.querySelector(`score-part[id="${partId}"]`);
-        if (!sp) continue;
+    const ensure = (parent, tag) => {
+      let el = parent.querySelector(tag);
+      if (!el) { el = doc.createElementNS(ns, tag); parent.appendChild(el); }
+      return el;
+    };
 
-        setTagTextNS(sp, "part-name", f.instrumentName, /*unsetPrintObject*/true);
-        setTagTextNS(sp, "part-abbreviation", f.instrumentName, /*unsetPrintObject*/true);
-        ensureDisplayNS(sp, "part-name-display", f.instrumentName);
-        ensureDisplayNS(sp, "part-abbreviation-display", f.instrumentName);
+    for (const { partId, f } of rows) {
+      const sp = doc.querySelector(`score-part[id="${partId}"]`);
+      if (!sp) continue;
 
-        // <score-instrument><instrument-name>
-        let si = sp.querySelector("score-instrument");
-        if (!si) {
-          si = createNS(sp, "score-instrument");
-          si.setAttribute("id", `${partId}-I1`);
-          sp.appendChild(si);
-        }
-        setTagTextNS(si, "instrument-name", f.instrumentName, false);
+      // <part-name>
+      const pn = ensure(sp, "part-name");
+      pn.textContent = f.instrumentName;
+      pn.removeAttribute("print-object");
+
+      // <part-abbreviation>
+      const pa = ensure(sp, "part-abbreviation");
+      pa.textContent = f.instrumentName; // make abbrev match long name
+      pa.removeAttribute("print-object");
+
+      // <part-name-display><display-text>...</display-text>
+      const pnd = ensure(sp, "part-name-display");
+      pnd.textContent = "";
+      const pndt = doc.createElementNS(ns, "display-text");
+      pndt.textContent = f.instrumentName;
+      pnd.appendChild(pndt);
+
+      // <part-abbreviation-display><display-text>...</display-text>
+      const pad = ensure(sp, "part-abbreviation-display");
+      pad.textContent = "";
+      const padt = doc.createElementNS(ns, "display-text");
+      padt.textContent = f.instrumentName;
+      pad.appendChild(padt);
+
+      // <score-instrument><instrument-name>...</instrument-name>
+      let si = sp.querySelector("score-instrument");
+      if (!si) {
+        si = doc.createElementNS(ns, "score-instrument");
+        si.setAttribute("id", `${partId}-I1`);
+        sp.appendChild(si);
       }
-
-      return new XMLSerializer().serializeToString(doc);
-    } catch {
-      return xmlString;
+      let iname = si.querySelector("instrument-name");
+      if (!iname) { iname = doc.createElementNS(ns, "instrument-name"); si.appendChild(iname); }
+      iname.textContent = f.instrumentName;
+      iname.removeAttribute("print-object");
     }
+
+    return new XMLSerializer().serializeToString(doc);
+  } catch {
+    return xmlString;
   }
+}
+
 
   // --- NS helpers shared in M6 ---
   function createNS(parent, tag){
