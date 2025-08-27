@@ -471,6 +471,10 @@ function extractPartsFromScore(xmlText){
 
 /* ============================================================================
    I) STEP 3: INSTRUMENT PICKER UI (left list → Add; right list → Selections)
+   - Numbering rule:
+     • One instance of a base → show bare name (e.g., "Violin")
+     • 2+ instances → show "Base 1..N" (e.g., "Violin 1", "Violin 2", …)
+     • Renumber on add/remove; revert to bare name if only one remains
    ========================================================================== */
 (function(){
 
@@ -585,41 +589,37 @@ function extractPartsFromScore(xmlText){
     populateLeftList();
     AA.on("data:instrumentData", populateLeftList);
 
-    // Right pane state & helpers
-    const stateSel = { selections: [] };
+    // Right pane state: store BASE names only; display labels computed each refresh
+    const stateSel = { selections: [] }; // e.g., ["Violin","Violin","Flute"]
 
-    // Strip trailing number to get base (e.g., "Violin 2" → "Violin")
     const baseOf = (name) => String(name).replace(/\s+\d+$/, "");
 
-    const refreshRight = () => {
-      listRight.innerHTML = stateSel.selections
-        .map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`)
-        .join("");
-    };
+    // Build display labels & update the right select. Option values are the index in stateSel.selections.
+    function refreshRight(){
+      // Count total per base
+      const totalByBase = {};
+      for (const b of stateSel.selections) totalByBase[b] = (totalByBase[b] || 0) + 1;
 
-    // ALWAYS number from 1: first selection becomes "Base 1"
+      // Occurrence counters for numbering 1..N
+      const occ = {};
+      const options = stateSel.selections.map((base, i) => {
+        occ[base] = (occ[base] || 0) + 1;
+        const label = totalByBase[base] === 1 ? base : `${base} ${occ[base]}`;
+        return `<option value="${i}">${escapeHtml(label)}</option>`;
+      });
+
+      listRight.innerHTML = options.join("");
+    }
+
     function addSelection(baseName){
-      const count = stateSel.selections.filter(n => baseOf(n) === baseName).length;
-      stateSel.selections.push(`${baseName} ${count + 1}`);
+      stateSel.selections.push(baseName);
       refreshRight();
     }
 
-    // Remove and renumber remaining of same base: "Base 1..N"
-    function removeSelection(label){
-      const b = baseOf(label);
-      const i = stateSel.selections.indexOf(label);
-      if (i >= 0) stateSel.selections.splice(i, 1);
-
-      const idxs = stateSel.selections
-        .map((n,i)=>({n,i}))
-        .filter(x => baseOf(x.n) === b)
-        .map(x=>x.i);
-
-      idxs.forEach((ii, k) => {
-        stateSel.selections[ii] = `${b} ${k + 1}`;
-      });
-
-      refreshRight();
+    function removeSelectionByIndex(idx){
+      if (idx < 0 || idx >= stateSel.selections.length) return;
+      stateSel.selections.splice(idx, 1);
+      refreshRight(); // renumber happens here automatically
     }
 
     // Handlers
@@ -659,20 +659,31 @@ function extractPartsFromScore(xmlText){
     });
 
     btnRemove.addEventListener("click", () => {
-      const sel = listRight.value;
-      if (!sel) return;
-      removeSelection(sel);
+      const opt = listRight.options[listRight.selectedIndex];
+      if (!opt) return;
+      const idx = parseInt(opt.value, 10);
+      removeSelectionByIndex(idx);
     });
 
     btnSave.addEventListener("click", () => {
       const s = getState();
       const metaIndex = Object.fromEntries((s.instrumentData||[]).map(m => [m.name, m]));
-      const instrumentSelections = stateSel.selections.map(label => {
+
+      // Build the final labels with numbering rules (same logic as refreshRight)
+      const totalByBase = {};
+      for (const b of stateSel.selections) totalByBase[b] = (totalByBase[b] || 0) + 1;
+      const occ = {};
+      const labeled = stateSel.selections.map(base => {
+        occ[base] = (occ[base] || 0) + 1;
+        return totalByBase[base] === 1 ? base : `${base} ${occ[base]}`;
+      });
+
+      const instrumentSelections = labeled.map(label => {
         const base = baseOf(label);
         const meta = metaIndex[base] || {};
         return {
           name: base,
-          instanceLabel: label,
+          instanceLabel: label,               // "Violin" or "Violin 1/2/…"
           instrumentPart: meta.instrumentPart || "",
           sortingOctave: Number(meta.sortingOctave)||0,
           clef: meta.clef ?? null,
@@ -681,6 +692,7 @@ function extractPartsFromScore(xmlText){
           assignedPart: ""
         };
       });
+
       mergeState({ instrumentSelections });
       AA.emit("instruments:saved");
     });
@@ -692,6 +704,7 @@ function extractPartsFromScore(xmlText){
   AA.on("wizard:stage", (stage) => { if (stage === "instruments") setupInstrumentPicker(); });
 
 })(); // end Step 3
+
 
 /* ============================================================================
    J) PIPELINE RESET (RUNS RIGHT AFTER "SAVE SELECTIONS")
