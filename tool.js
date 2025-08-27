@@ -182,18 +182,36 @@ async function initDraft1UI(){
   } else {
     console.warn("[AA] Could not find song select element (id='songSelect' or 'songSelectDropdown').");
   }
-   // Wire Step-2 Back button → return to Library
+ // Wire Step-2 Back button → clear Song + Library and return to Step 1
 const backBtn = document.getElementById("backButton");
 if (backBtn && !backBtn.dataset.wired) {
   backBtn.dataset.wired = "1";
   backBtn.addEventListener("click", () => {
-    // clear song choice & extracted parts, keep library selection
-    mergeState({ songIndex: null, song: null, selectedSong: null, parts: [] });
+    // Clear current selections but keep the loaded data lists
+    mergeState({
+      packIndex: null,
+      pack: null,
+      songIndex: null,
+      song: null,
+      selectedSong: null,
+      parts: []
+    });
+
+    // Reset the selects visually
+    const libSel = libSelectEl();
+    if (libSel) libSel.value = "";
+
     const sSel = songSelectEl();
-    if (sSel) sSel.value = "";
-    setWizardStage("library"); // updates dots + shows Step 1
+    if (sSel) {
+      sSel.innerHTML = `<option value="">-- Select a Song --</option>`;
+      sSel.value = "";
+    }
+
+    // Show Step 1 (updates dots too)
+    setWizardStage("library");
   });
 }
+
 
 
   // Validate saved state and choose stage (do not auto-advance)
