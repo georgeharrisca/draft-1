@@ -619,10 +619,11 @@ function extractPartsFromScore(xmlText){
       const cats = Array.from(catMap.keys()).sort((a,b)=> a.localeCompare(b, undefined, { sensitivity:"base" }));
       cats.forEach(c => catMap.get(c).sort((a,b)=> a.localeCompare(b, undefined, { sensitivity:"base" })));
 
-      // Open the first category only once (initial render only)
-      if (!stateSel.everBuilt && stateSel.openCats.size === 0 && cats.length) {
-        stateSel.openCats.add(cats[0]);
-      }
+    // Start fully collapsed on first render (no auto-open)
+if (!stateSel.everBuilt && stateSel.openCats.size === 0) {
+  // leave all categories collapsed
+}
+
 
       const parts = [];
       for (const cat of cats) {
