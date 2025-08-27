@@ -470,14 +470,11 @@ function extractPartsFromScore(xmlText){
 
 
 /* ============================================================================
-   I) STEP 3: INSTRUMENT PICKER UI (folders in a fixed-height pane)
-   - Constant-height scroll area
-   - Back / Add to Score buttons at the bottom
-   - Left tree fonts match right list
+   I) STEP 3: INSTRUMENT PICKER UI (folders, fixed-height, robust rebuild)
    ========================================================================== */
 (function(){
 
-  // Inject minimal CSS for the fixed-height pane + typography (once)
+  // Inject minimal CSS once
   (function ensureStep3CSS(){
     if (document.getElementById("aa-step3-css")) return;
     const st = document.createElement("style");
@@ -486,11 +483,10 @@ function extractPartsFromScore(xmlText){
       #aa-pickers{display:grid;grid-template-columns:1fr 1fr;gap:18px}
       #aa-pickers .aa-pane{background:#0d1016;border:1px solid var(--line);border-radius:10px;padding:12px}
       #aa-pickers .aa-pane h4{margin:0 0 10px 0;font-size:14px;color:var(--metal-3)}
-
-      /* left pane layout */
       #aa-pickers .aa-pane-left{display:flex;flex-direction:column}
+
+      /* constant-height scroll area */
       #instrumentTree{
-        /* constant height; tweak if you want a bit taller/shorter */
         height: 360px;
         overflow: auto;
         border:1px solid var(--line);
@@ -500,11 +496,9 @@ function extractPartsFromScore(xmlText){
       }
       #aa-left-controls{display:flex;gap:10px;margin-top:10px}
 
-      /* typography – match right pane select size */
+      /* match font sizes */
       #instrumentTree, #instrumentTree .hdr, #instrumentTree .item,
-      #aa-pickers select{
-        font-size:14px;
-      }
+      #aa-pickers select{ font-size:14px; }
 
       /* tree visuals */
       .aa-cat{margin:6px 0}
@@ -513,11 +507,12 @@ function extractPartsFromScore(xmlText){
       .aa-cat .list{margin:4px 0 0 20px;padding:0;list-style:none}
       .aa-cat .item{padding:6px 4px;border-bottom:1px dashed rgba(255,255,255,.05);cursor:pointer;color:#e8edf6}
       .aa-cat .item:hover{background:#11171f}
+      .aa-cat .item.highlight{outline:1px dashed #3c4a5f;outline-offset:2px}
     `;
     document.head.appendChild(st);
   })();
 
-  // Ensure we have a Step 3 host; create if missing
+  // Ensure a Step 3 host exists
   function ensureStep3Host(){
     let host = document.getElementById("step3");
     if (!host) {
@@ -531,60 +526,40 @@ function extractPartsFromScore(xmlText){
     return host;
   }
 
-  // Build UI once; Back/Add live at the bottom; tree gets a fixed-height box
-  function ensureInstrumentPickerMarkup(){
+  // Always (re)build the Step-3 container to avoid stale legacy markup
+  function buildStep3Container(){
     const host = ensureStep3Host();
+    // remove any previous container entirely — we’ll rebuild cleanly
+    host.querySelectorAll("#aa-pickers").forEach(n => n.remove());
 
-    // De-dupe: keep a single container
-    const containers = Array.from(document.querySelectorAll("#aa-pickers"));
-    let container = containers[0];
-    if (containers.length > 1) containers.slice(1).forEach(n => n.remove());
-
-    if (!container) {
-      host.insertAdjacentHTML("beforeend", `
-        <div id="aa-pickers">
-          <!-- LEFT: instruments with folders -->
-          <div class="aa-pane aa-pane-left">
-            <h4>Instruments</h4>
-            <div id="instrumentTree" aria-label="Instrument categories"></div>
-            <div id="aa-left-controls">
-              <button id="btnBackToSong" class="aa-btn" style="background:#1a1f2a;border:1px solid var(--line);color:var(--text);">Back</button>
-              <button id="btnAddInstrument" class="aa-btn">Add to Score</button>
-            </div>
-          </div>
-
-          <!-- RIGHT: selections -->
-          <div class="aa-pane">
-            <h4>Selections</h4>
-            <select id="selectionsList" size="14" style="width:100%;height:360px;"></select>
-            <div style="display:flex; gap:10px; margin-top:10px;">
-              <button id="btnRemoveSelected" class="aa-btn">Remove</button>
-              <button id="btnSaveSelections" class="aa-btn aa-accent">Save Selections</button>
-            </div>
+    host.insertAdjacentHTML("beforeend", `
+      <div id="aa-pickers">
+        <!-- LEFT: instruments with folders -->
+        <div class="aa-pane aa-pane-left">
+          <h4>Instruments</h4>
+          <div id="instrumentTree" aria-label="Instrument categories"></div>
+          <div id="aa-left-controls">
+            <button id="btnBackToSong" class="aa-btn" style="background:#1a1f2a;border:1px solid var(--line);color:var(--text);">Back</button>
+            <button id="btnAddInstrument" class="aa-btn">Add to Score</button>
           </div>
         </div>
-      `);
-      container = document.getElementById("aa-pickers");
-    } else {
-      // If container exists, make sure our controls are at the bottom
-      if (!document.getElementById("aa-left-controls")) {
-        const leftPane = container.querySelector(".aa-pane-left");
-        const controls = document.createElement("div");
-        controls.id = "aa-left-controls";
-        controls.innerHTML = `
-          <button id="btnBackToSong" class="aa-btn" style="background:#1a1f2a;border:1px solid var(--line);color:var(--text);">Back</button>
-          <button id="btnAddInstrument" class="aa-btn">Add to Score</button>
-        `;
-        leftPane.appendChild(controls);
-      }
-    }
-    return container;
+
+        <!-- RIGHT: selections -->
+        <div class="aa-pane">
+          <h4>Selections</h4>
+          <select id="selectionsList" size="14" style="width:100%;height:360px;"></select>
+          <div style="display:flex; gap:10px; margin-top:10px;">
+            <button id="btnRemoveSelected" class="aa-btn">Remove</button>
+            <button id="btnSaveSelections" class="aa-btn aa-accent">Save Selections</button>
+          </div>
+        </div>
+      </div>
+    `);
+    return document.getElementById("aa-pickers");
   }
 
   function setupInstrumentPicker(){
-    const container = ensureInstrumentPickerMarkup();
-    if (!container) return;
-
+    const container = buildStep3Container();
     const treeHost  = container.querySelector("#instrumentTree");
     const listRight = container.querySelector("#selectionsList");
     const btnAdd    = container.querySelector("#btnAddInstrument");
@@ -592,21 +567,25 @@ function extractPartsFromScore(xmlText){
     const btnRemove = container.querySelector("#btnRemoveSelected");
     const btnSave   = container.querySelector("#btnSaveSelections");
     const note      = document.getElementById("instStatus");
-    if (!treeHost || !listRight || !btnAdd || !btnBack || !btnRemove || !btnSave) return;
 
-    // Read instruments & categories
     const getInstruments = () => {
       const s = getState();
       return Array.isArray(s.instrumentData) ? s.instrumentData : [];
     };
 
     // Local state
-    const stateSel = { selections: [], openCats: new Set(), everBuilt: false };
+    const stateSel = { selections: [], openCats: new Set() }; // collapsed by default
     const baseOf = (name) => String(name).replace(/\s+\d+$/, "");
 
     // Build the collapsible category tree
     function buildTree(){
       const instruments = getInstruments();
+      if (!instruments.length) {
+        treeHost.innerHTML = `<div class="note">No instruments found. Check instrumentData.json.</div>`;
+        if (note) note.textContent = "No instruments found in instrumentData.json.";
+        return;
+      }
+
       const byCat = new Map();
       instruments.forEach(m => {
         const cat = m.category || "Other";
@@ -614,14 +593,13 @@ function extractPartsFromScore(xmlText){
         byCat.get(cat).push(m.name);
       });
 
-      // sort cats and items
+      // sort cats/items
       const cats = Array.from(byCat.keys()).sort((a,b)=> a.localeCompare(b));
       cats.forEach(c => byCat.get(c).sort((a,b)=> a.localeCompare(b)));
 
-      // Render
       const frag = document.createDocumentFragment();
       cats.forEach(cat => {
-        const open = stateSel.openCats.has(cat);
+        const open = stateSel.openCats.has(cat); // default: false (collapsed)
         const catEl = document.createElement("div");
         catEl.className = "aa-cat";
         catEl.innerHTML = `
@@ -643,19 +621,18 @@ function extractPartsFromScore(xmlText){
         catEl.querySelector(".hdr").addEventListener("click", () => {
           if (stateSel.openCats.has(cat)) stateSel.openCats.delete(cat);
           else stateSel.openCats.add(cat);
-          buildTree(); // re-render to reflect toggle
+          buildTree(); // re-render
         });
         frag.appendChild(catEl);
       });
 
       treeHost.innerHTML = "";
       treeHost.appendChild(frag);
-      stateSel.everBuilt = true;
+      if (note) note.textContent = "";
     }
 
     // Right list helpers
     function refreshRight(){
-      // sort alphabetically
       const sorted = [...stateSel.selections].sort((a,b)=> a.localeCompare(b));
       listRight.innerHTML = sorted.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
     }
@@ -663,9 +640,7 @@ function extractPartsFromScore(xmlText){
       const siblings = stateSel.selections.filter(n => baseOf(n) === baseName).length;
       const label = siblings === 0 ? baseName : `${baseName} ${siblings+1}`;
       stateSel.selections.push(label);
-
-      // If this was the second copy, rename the bare one to "… 1"
-      if (siblings === 1) {
+      if (siblings === 1) { // second copy → rename bare to "… 1"
         const i = stateSel.selections.findIndex(n => n === baseName);
         if (i >= 0) stateSel.selections[i] = `${baseName} 1`;
       }
@@ -690,28 +665,24 @@ function extractPartsFromScore(xmlText){
       refreshRight();
     }
 
-    // Wire once
-    if (container.dataset.wired === "1") {
-      buildTree(); // rebuild to apply collapsed start & data changes
-      return;
-    }
-    container.dataset.wired = "1";
-
+    // Initial build + live updates when instrumentData arrives/changes
     buildTree();
     AA.on("data:instrumentData", buildTree);
 
-    btnAdd.addEventListener("click", () => {
-      const highlighted = treeHost.querySelector(".item.highlight");
-      const fallback = treeHost.querySelector(".item");
-      const pick = highlighted?.dataset.name || fallback?.dataset.name || "";
-      if (pick) addSelection(pick);
-    });
-    // highlight clicked item for keyboard-less add
+    // Highlight last clicked item (lets Add button work without re-click)
     treeHost.addEventListener("click", (e) => {
       const it = e.target.closest(".item");
       if (!it) return;
       treeHost.querySelectorAll(".item").forEach(n => n.classList.remove("highlight"));
       it.classList.add("highlight");
+    });
+
+    // Buttons
+    btnAdd.addEventListener("click", () => {
+      const highlighted = treeHost.querySelector(".item.highlight");
+      const fallback = treeHost.querySelector(".item");
+      const pick = highlighted?.dataset.name || fallback?.dataset.name || "";
+      if (pick) addSelection(pick);
     });
 
     btnBack.addEventListener("click", () => {
@@ -740,29 +711,36 @@ function extractPartsFromScore(xmlText){
     btnSave.addEventListener("click", () => {
       const s = getState();
       const metaIndex = Object.fromEntries((s.instrumentData||[]).map(m => [m.name, m]));
-      const instrumentSelections = [...stateSel.selections].sort((a,b)=> a.localeCompare(b)).map(label => {
-        const base = label.replace(/\s+\d+$/,"");
-        const meta = metaIndex[base] || {};
-        return {
-          name: base,
-          instanceLabel: label,
-          instrumentPart: meta.instrumentPart || "",
-          sortingOctave: Number(meta.sortingOctave)||0,
-          clef: meta.clef ?? null,
-          transpose: meta.transpose ?? null,
-          scoreOrder: Number(meta.scoreOrder)||999,
-          assignedPart: ""
-        };
-      });
+      const instrumentSelections = [...stateSel.selections]
+        .sort((a,b)=> a.localeCompare(b))
+        .map(label => {
+          const base = label.replace(/\s+\d+$/,"");
+          const meta = metaIndex[base] || {};
+          return {
+            name: base,
+            instanceLabel: label,
+            instrumentPart: meta.instrumentPart || "",
+            sortingOctave: Number(meta.sortingOctave)||0,
+            clef: meta.clef ?? null,
+            transpose: meta.transpose ?? null,
+            scoreOrder: Number(meta.scoreOrder)||999,
+            assignedPart: ""
+          };
+        });
       mergeState({ instrumentSelections });
       AA.emit("instruments:saved");
     });
   }
 
-  document.addEventListener("DOMContentLoaded", setupInstrumentPicker);
+  // Build on DOM ready + whenever we enter Step 3
+  document.addEventListener("DOMContentLoaded", () => {
+    // only build if Step 3 becomes visible later; harmless to prebuild
+    // (we still rebuild on stage change)
+  });
   AA.on("wizard:stage", (stage) => { if (stage === "instruments") setupInstrumentPicker(); });
 
 })(); // end Step 3
+
 
 
 
