@@ -973,6 +973,52 @@ ul.appendChild(li);
   }
 })();
 
+
+/* ========================================================================
+   GLOBAL XML HELPERS (idempotent) — needed by M3/M6
+   ------------------------------------------------------------------------ */
+window.ensureXmlHeader = window.ensureXmlHeader || function ensureXmlHeader(xmlString){
+  const s = String(xmlString || "");
+  if (/^\s*<\?xml\b/i.test(s)) return s;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n` + s;
+};
+
+window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombinedTitle(xmlString, title){
+  const t = String(title || "Auto Arranger Score");
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xmlString, "application/xml");
+    const root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
+
+    // movement-title (OSMD also reads this)
+    let mt = root.querySelector("movement-title");
+    if (!mt) {
+      mt = doc.createElement("movement-title");
+      root.insertBefore(mt, root.firstChild);
+    }
+    mt.textContent = t;
+
+    // work/work-title (standard)
+    let work = root.querySelector("work");
+    if (!work) {
+      work = doc.createElement("work");
+      // put before part-list if present, else as first child
+      const pl = root.querySelector("part-list");
+      if (pl) root.insertBefore(work, pl); else root.insertBefore(work, root.firstChild);
+    }
+    let wt = work.querySelector("work-title");
+    if (!wt) { wt = doc.createElement("work-title"); work.appendChild(wt); }
+    wt.textContent = t;
+
+    return new XMLSerializer().serializeToString(doc);
+  } catch {
+    // If parsing fails, just prepend a title-ish credit is overkill; return original
+    return xmlString;
+  }
+};
+
+
+
 /* =========================================================================
    M3) arrangeGroupedParts — set clef/transpose; force all visible name fields
    ------------------------------------------------------------------------- */
