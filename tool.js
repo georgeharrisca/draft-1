@@ -854,7 +854,7 @@ ul.appendChild(li);
 
 
 /* ============================================================================
-   M1) assignParts — compute assignedPart buckets (1..6 pattern, 7..15 passthrough)
+   M1) assignParts — compute assignedPart buckets (accepts category names)
    ---------------------------------------------------------------------------- */
 (function(){
   AA.on("instruments:saved", () => AA.safe("assignParts", run));
@@ -877,6 +877,54 @@ ul.appendChild(li);
     "15 Triangle"
   ];
 
+  // Allow either numbered labels or category-only labels
+  const CATEGORY_TO_INDEX = {
+    "melody": 1,
+    "harmony i": 2, "harmony 1": 2,
+    "harmony ii": 3, "harmony 2": 3,
+    "counter melody": 4, "counter-melody": 4,
+    "counter melody harmony": 5, "counter-melody harmony": 5,
+    "bass": 6,
+    "groove": 7,
+    "chords": 8,
+    "drum kit": 9, "drumkit": 9,
+    "melody & bass": 10, "melody and bass": 10,
+    "melody & chords": 11, "melody and chords": 11,
+    "chords & bass": 12, "chords and bass": 12,
+    "melody & chords & bass": 13, "melody and chords and bass": 13,
+    "timpani": 14,
+    "triangle": 15
+  };
+
+  function indexOfPartFlexible(label){
+    if (!label) return -1;
+    const norm = String(label).toLowerCase().replace(/\s+/g, " ").trim();
+
+    // 1) If it already looks like "1 melody", "3 harmony ii", etc.
+    const fullIdx = PART_LABELS.findIndex(p => p.toLowerCase() === norm);
+    if (fullIdx >= 0) return fullIdx + 1;
+
+    // 2) If it starts with a number, trust it
+    const m = /^(\d{1,2})\b/.exec(norm);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (n >= 1 && n <= 15) return n;
+    }
+
+    // 3) Category-only string → index
+    const stripped = norm.replace(/^\d+\s*/, ""); // drop any accidental leading number + space
+    if (CATEGORY_TO_INDEX.hasOwnProperty(stripped)) return CATEGORY_TO_INDEX[stripped];
+
+    // 4) Last attempt: compare category-only against each PART_LABEL without the number
+    for (let i = 0; i < PART_LABELS.length; i++){
+      const cat = PART_LABELS[i].toLowerCase().replace(/^\d+\s*/, "");
+      if (cat === stripped) return i + 1;
+    }
+    return -1;
+  }
+
+  function formatPart(n){ return PART_LABELS[n-1] || String(n); }
+
   function run(){
     const state = getState();
     const sel = Array.isArray(state.instrumentSelections) ? state.instrumentSelections : [];
@@ -884,9 +932,9 @@ ul.appendChild(li);
     if (!sel.length) { console.warn("[M1] No selections — aborting."); return; }
 
     const rows = sel.map(item => {
-      const ipIdx = indexOfPart(item.instrumentPart);
+      const ipIdx = indexOfPartFlexible(item.instrumentPart);
       let sortNum = null;
-      if (ipIdx >=1 && ipIdx<=6) {
+      if (ipIdx >= 1 && ipIdx <= 6) {
         sortNum = ipIdx;
         const oct = Number(item.sortingOctave)||0;
         if (oct > 0) sortNum -= oct;
@@ -901,18 +949,18 @@ ul.appendChild(li);
         transpose: item.transpose,
         scoreOrder: item.scoreOrder,
         sortNumber: sortNum,
+        idx: ipIdx,
         assignedPart: ""
       };
     });
 
-    // Lock 7..15 directly
+    // Pass-through 7..15 directly
     for (const r of rows) {
-      const idx = indexOfPart(r.instrumentPart);
-      if (idx >=7 && idx<=15) r.assignedPart = formatPart(idx);
+      if (r.idx >= 7 && r.idx <= 15) r.assignedPart = formatPart(r.idx);
     }
 
     // Pool 1..6 only (and not already assigned)
-    const pool = rows.filter(r => r.sortNumber != null && !r.assignedPart);
+    const pool = rows.filter(r => r.idx >= 1 && r.idx <= 6 && r.sortNumber != null && !r.assignedPart);
 
     // Tie-break within equal integers by alpha, injecting .1/.2 decimals
     pool.sort((a,b) => (a.sortNumber - b.sortNumber) || String(a.label).localeCompare(b.label));
@@ -954,16 +1002,8 @@ ul.appendChild(li);
     mergeState({ assignedResults });
     AA.emit("assign:done");
   }
-
-  function indexOfPart(label){
-    const norm = String(label||"").replace(/\s+/g," ").trim().toLowerCase();
-    for (let i=0;i<PART_LABELS.length;i++){
-      if (PART_LABELS[i].toLowerCase() === norm) return i+1;
-    }
-    return -1;
-  }
-  function formatPart(n){ return PART_LABELS[n-1] || String(n); }
 })();
+
 
 
 /* ============================================================================
