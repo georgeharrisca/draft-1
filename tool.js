@@ -1511,10 +1511,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
   // 🔎 Debug tap: logs the <part-list> block so you can verify names quickly
   function debugLogPartList(xml){
-    try {
-      const m = String(xml||"").match(/<part-list[\s\S]*?<\/part-list>/i);
-      console.log("[M6][DEBUG] Combined <part-list> →\n", m ? m[0] : "(none)");
-    } catch {}
+    function debugLogPartList(/* xml */) { /* disabled */ }
   }
 })();
 
@@ -1549,6 +1546,33 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   }
   function lookupGlobal(name) { return name.split(".").reduce((o,k)=> (o && o[k]!=null ? o[k] : null), window); }
 
+function ensureOsmdHostWidth(host){
+  // If OSMD sees width 0 it logs “width not > 0 …”
+  if (!host) return;
+  // Force a width if clientWidth is 0 for any reason (rare, but can happen right after attach)
+  if (host.clientWidth <= 0) {
+    host.style.width = "100%";
+    host.style.minWidth = "800px"; // fallback safety
+  }
+}
+
+async function renderWithMutedOsmdWarning(osmd, xml, host){
+  ensureOsmdHostWidth(host);
+  const origWarn = console.warn;
+  console.warn = (...args) => {
+    const msg = args && args[0] ? String(args[0]) : "";
+    if (msg.includes("SkyBottomLineBatchCalculatorBackend: width not > 0")) return; // swallow only this one
+    origWarn.apply(console, args);
+  };
+  try {
+    await osmd.load(xml);
+    await osmd.render();
+  } finally {
+    console.warn = origWarn;
+  }
+}
+
+   
   function buildViewerUI() {
     document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
 
@@ -1627,8 +1651,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         const processed = transformXmlForSlashes(lastXml);
         const osmdReady = withXmlProlog(processed);
         if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
-        await osmd.load(osmdReady);
-        await osmd.render();
+        await renderWithMutedOsmdWarning(osmd, osmdReady, osmdBox);
+
         await new Promise(r => requestAnimationFrame(r));
         fitScoreToHeight(osmd, osmdBox);
         btnPDF.disabled = false; btnXML.disabled = false;
@@ -1659,8 +1683,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         try {
           const processed = transformXmlForSlashes(ensureTitle(p.xml, p.instrumentName));
           const osmdReady = withXmlProlog(processed);
-          await osmd.load(osmdReady);
-          await osmd.render();
+         await renderWithMutedOsmdWarning(osmd, osmdReady, osmdBox);
+
           const { canvas, w, h } = await snapshotCanvas(osmdBox);
           if (!doc) doc = new (jspdfNS.jsPDF)({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
           else doc.addPage([w,h], w>=h?"landscape":"portrait");
