@@ -470,13 +470,54 @@ function extractPartsFromScore(xmlText){
 
 
 /* ============================================================================
-   I) STEP 3: INSTRUMENT PICKER UI — Folder Tree (Categories) → Instruments
-   - Fixed-height scrollable list; buttons at the bottom
-   - Collapsible folders (no re-open glitch)
-   - Right pane sorted alphabetically; smart numbering
+   I) STEP 3: INSTRUMENT PICKER UI (folders in a fixed-height pane)
+   - Constant-height scroll area
+   - Back / Add to Score buttons at the bottom
+   - Left tree fonts match right list
    ========================================================================== */
 (function(){
 
+  // Inject minimal CSS for the fixed-height pane + typography (once)
+  (function ensureStep3CSS(){
+    if (document.getElementById("aa-step3-css")) return;
+    const st = document.createElement("style");
+    st.id = "aa-step3-css";
+    st.textContent = `
+      #aa-pickers{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+      #aa-pickers .aa-pane{background:#0d1016;border:1px solid var(--line);border-radius:10px;padding:12px}
+      #aa-pickers .aa-pane h4{margin:0 0 10px 0;font-size:14px;color:var(--metal-3)}
+
+      /* left pane layout */
+      #aa-pickers .aa-pane-left{display:flex;flex-direction:column}
+      #instrumentTree{
+        /* constant height; tweak if you want a bit taller/shorter */
+        height: 360px;
+        overflow: auto;
+        border:1px solid var(--line);
+        border-radius:8px;
+        padding:6px 8px;
+        background:#0b0f16;
+      }
+      #aa-left-controls{display:flex;gap:10px;margin-top:10px}
+
+      /* typography – match right pane select size */
+      #instrumentTree, #instrumentTree .hdr, #instrumentTree .item,
+      #aa-pickers select{
+        font-size:14px;
+      }
+
+      /* tree visuals */
+      .aa-cat{margin:6px 0}
+      .aa-cat .hdr{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;color:#cfd6e3}
+      .aa-cat .hdr .tw{width:12px;display:inline-block;text-align:center;color:#9AA3B2}
+      .aa-cat .list{margin:4px 0 0 20px;padding:0;list-style:none}
+      .aa-cat .item{padding:6px 4px;border-bottom:1px dashed rgba(255,255,255,.05);cursor:pointer;color:#e8edf6}
+      .aa-cat .item:hover{background:#11171f}
+    `;
+    document.head.appendChild(st);
+  })();
+
+  // Ensure we have a Step 3 host; create if missing
   function ensureStep3Host(){
     let host = document.getElementById("step3");
     if (!host) {
@@ -490,35 +531,32 @@ function extractPartsFromScore(xmlText){
     return host;
   }
 
+  // Build UI once; Back/Add live at the bottom; tree gets a fixed-height box
   function ensureInstrumentPickerMarkup(){
     const host = ensureStep3Host();
 
-    // De-dupe containers
+    // De-dupe: keep a single container
     const containers = Array.from(document.querySelectorAll("#aa-pickers"));
     let container = containers[0];
     if (containers.length > 1) containers.slice(1).forEach(n => n.remove());
 
     if (!container) {
       host.insertAdjacentHTML("beforeend", `
-        <div id="aa-pickers" class="aa-grid" style="margin-top:12px;">
-          <div class="aa-pane" style="display:flex; flex-direction:column;">
+        <div id="aa-pickers">
+          <!-- LEFT: instruments with folders -->
+          <div class="aa-pane aa-pane-left">
             <h4>Instruments</h4>
-
-            <!-- Fixed-height scroll area -->
-            <div id="aa-tree-wrap" style="flex:1 1 auto; min-height:260px; max-height:340px; overflow:auto; border-top:1px solid var(--line);">
-              <ul id="instrumentTree" class="list" style="margin:0;"></ul>
-            </div>
-
-            <!-- Controls anchored at bottom -->
-            <div id="leftControls" style="display:flex; gap:10px; margin-top:10px;">
+            <div id="instrumentTree" aria-label="Instrument categories"></div>
+            <div id="aa-left-controls">
               <button id="btnBackToSong" class="aa-btn" style="background:#1a1f2a;border:1px solid var(--line);color:var(--text);">Back</button>
               <button id="btnAddInstrument" class="aa-btn">Add to Score</button>
             </div>
           </div>
 
-          <div class="aa-pane" style="display:flex; flex-direction:column;">
+          <!-- RIGHT: selections -->
+          <div class="aa-pane">
             <h4>Selections</h4>
-            <select id="selectionsList" size="10" style="flex:1 1 auto; min-height:260px; max-height:340px;"></select>
+            <select id="selectionsList" size="14" style="width:100%;height:360px;"></select>
             <div style="display:flex; gap:10px; margin-top:10px;">
               <button id="btnRemoveSelected" class="aa-btn">Remove</button>
               <button id="btnSaveSelections" class="aa-btn aa-accent">Save Selections</button>
@@ -527,55 +565,19 @@ function extractPartsFromScore(xmlText){
         </div>
       `);
       container = document.getElementById("aa-pickers");
-      console.log("[AA] Built Step 3 instrument picker UI (folder tree, fixed height).");
     } else {
-      // Ensure tree wrap / tree exist
-      if (!document.getElementById("aa-tree-wrap")) {
-        const leftPane = container.querySelector(".aa-pane");
-        const wrap = document.createElement("div");
-        wrap.id = "aa-tree-wrap";
-        wrap.style.cssText = "flex:1 1 auto; min-height:260px; max-height:340px; overflow:auto; border-top:1px solid var(--line);";
-        const tree = document.createElement("ul");
-        tree.id = "instrumentTree";
-        tree.className = "list";
-        tree.style.margin = "0";
-        wrap.appendChild(tree);
-        leftPane.insertBefore(wrap, leftPane.querySelector("#leftControls"));
+      // If container exists, make sure our controls are at the bottom
+      if (!document.getElementById("aa-left-controls")) {
+        const leftPane = container.querySelector(".aa-pane-left");
+        const controls = document.createElement("div");
+        controls.id = "aa-left-controls";
+        controls.innerHTML = `
+          <button id="btnBackToSong" class="aa-btn" style="background:#1a1f2a;border:1px solid var(--line);color:var(--text);">Back</button>
+          <button id="btnAddInstrument" class="aa-btn">Add to Score</button>
+        `;
+        leftPane.appendChild(controls);
       }
-      // Ensure Back button exists
-      if (!document.getElementById("btnBackToSong")) {
-        const controls = container.querySelector("#leftControls") ||
-                         container.querySelector("#btnAddInstrument")?.parentElement;
-        if (controls) {
-          const back = document.createElement("button");
-          back.id = "btnBackToSong";
-          back.className = "aa-btn";
-          back.textContent = "Back";
-          back.style.cssText = "background:#1a1f2a;border:1px solid var(--line);color:var(--text);";
-          controls.insertBefore(back, controls.querySelector("#btnAddInstrument"));
-        }
-      }
-      // Remove any legacy select
-      const legacySelect = container.querySelector("#instrumentList");
-      if (legacySelect) legacySelect.remove();
     }
-
-    // Minimal tree CSS (no bullets, tidy folders)
-    let st = document.getElementById("aa-tree-css");
-    if (!st) { st = document.createElement("style"); st.id = "aa-tree-css"; document.head.appendChild(st); }
-    st.textContent = `
-      #instrumentTree, #instrumentTree ul { list-style:none; padding:0; margin:0; }
-      .aa-folder { display:flex; align-items:center; gap:8px; padding:10px 12px;
-                   border-bottom:1px solid var(--line); cursor:pointer; }
-      .aa-folder .aa-caret { width:14px; text-align:center; font-size:12px; opacity:0.9; }
-      .aa-folder .aa-name   { font-weight:600; color:var(--text); }
-      .aa-children { margin:0; padding:0 0 0 22px; }
-      .aa-ins { padding:8px 12px; border-bottom:1px dashed var(--line); cursor:pointer; }
-      .aa-ins:hover { background:#0f131b; }
-      .aa-ins.active { outline:2px solid var(--brand-600); background:#11171f; }
-      .aa-hide { display:none !important; }
-    `;
-
     return container;
   }
 
@@ -583,143 +585,133 @@ function extractPartsFromScore(xmlText){
     const container = ensureInstrumentPickerMarkup();
     if (!container) return;
 
-    const tree      = container.querySelector("#instrumentTree");
+    const treeHost  = container.querySelector("#instrumentTree");
+    const listRight = container.querySelector("#selectionsList");
     const btnAdd    = container.querySelector("#btnAddInstrument");
     const btnBack   = container.querySelector("#btnBackToSong");
-    const listRight = container.querySelector("#selectionsList");
     const btnRemove = container.querySelector("#btnRemoveSelected");
     const btnSave   = container.querySelector("#btnSaveSelections");
     const note      = document.getElementById("instStatus");
+    if (!treeHost || !listRight || !btnAdd || !btnBack || !btnRemove || !btnSave) return;
 
-    if (!tree || !btnAdd || !btnBack || !listRight || !btnRemove || !btnSave) {
-      console.warn("[AA] Step 3 UI elements missing; picker not wired.");
-      return;
-    }
+    // Read instruments & categories
+    const getInstruments = () => {
+      const s = getState();
+      return Array.isArray(s.instrumentData) ? s.instrumentData : [];
+    };
 
     // Local state
-    const stateSel = { selections: [], openCats: new Set(), selectedBase: "", everBuilt:false };
+    const stateSel = { selections: [], openCats: new Set(), everBuilt: false };
+    const baseOf = (name) => String(name).replace(/\s+\d+$/, "");
 
+    // Build the collapsible category tree
     function buildTree(){
-      const s = getState();
-      const data = Array.isArray(s.instrumentData) ? s.instrumentData : [];
-      if (!data.length) {
-        tree.innerHTML = `<li class="aa-ins" style="opacity:.7; pointer-events:none;">No instruments found</li>`;
-        if (note) note.textContent = "No instruments found in instrumentData.json.";
-        return;
-      }
-      if (note) note.textContent = "";
+      const instruments = getInstruments();
+      const byCat = new Map();
+      instruments.forEach(m => {
+        const cat = m.category || "Other";
+        if (!byCat.has(cat)) byCat.set(cat, []);
+        byCat.get(cat).push(m.name);
+      });
 
-      // Group by category
-      const catMap = new Map();
-      for (const ins of data) {
-        const cat = (ins.category || "Other").trim();
-        if (!catMap.has(cat)) catMap.set(cat, []);
-        catMap.get(cat).push(ins.name);
-      }
-      const cats = Array.from(catMap.keys()).sort((a,b)=> a.localeCompare(b, undefined, { sensitivity:"base" }));
-      cats.forEach(c => catMap.get(c).sort((a,b)=> a.localeCompare(b, undefined, { sensitivity:"base" })));
+      // sort cats and items
+      const cats = Array.from(byCat.keys()).sort((a,b)=> a.localeCompare(b));
+      cats.forEach(c => byCat.get(c).sort((a,b)=> a.localeCompare(b)));
 
-    // Start fully collapsed on first render (no auto-open)
-if (!stateSel.everBuilt && stateSel.openCats.size === 0) {
-  // leave all categories collapsed
-}
-
-
-      const parts = [];
-      for (const cat of cats) {
+      // Render
+      const frag = document.createDocumentFragment();
+      cats.forEach(cat => {
         const open = stateSel.openCats.has(cat);
-        parts.push(`
-          <li class="aa-folder" data-cat="${escapeHtml(cat)}" data-role="folder" aria-expanded="${open}">
-            <span class="aa-caret">${open ? "▾" : "▸"}</span>
-            <span class="aa-name">${escapeHtml(cat)}</span>
-          </li>
-        `);
-        parts.push(`<ul class="aa-children ${open ? "" : "aa-hide"}" data-cat="${escapeHtml(cat)}">`);
-        for (const nm of catMap.get(cat)) {
-          const active = (stateSel.selectedBase === nm) ? " active" : "";
-          parts.push(`<li class="aa-ins${active}" data-ins="${escapeHtml(nm)}" data-role="instrument">${escapeHtml(nm)}</li>`);
-        }
-        parts.push(`</ul>`);
-      }
-      tree.innerHTML = parts.join("");
+        const catEl = document.createElement("div");
+        catEl.className = "aa-cat";
+        catEl.innerHTML = `
+          <div class="hdr" data-cat="${escapeHtml(cat)}">
+            <span class="tw">${open ? "▾" : "▸"}</span>
+            <strong>${escapeHtml(cat)}</strong>
+          </div>
+          <ul class="list" style="${open ? "" : "display:none"}"></ul>
+        `;
+        const ul = catEl.querySelector("ul");
+        byCat.get(cat).forEach(name => {
+          const li = document.createElement("li");
+          li.className = "item";
+          li.textContent = name;
+          li.dataset.name = name;
+          li.addEventListener("click", () => addSelection(name));
+          ul.appendChild(li);
+        });
+        catEl.querySelector(".hdr").addEventListener("click", () => {
+          if (stateSel.openCats.has(cat)) stateSel.openCats.delete(cat);
+          else stateSel.openCats.add(cat);
+          buildTree(); // re-render to reflect toggle
+        });
+        frag.appendChild(catEl);
+      });
+
+      treeHost.innerHTML = "";
+      treeHost.appendChild(frag);
       stateSel.everBuilt = true;
     }
 
-    function onTreeClick(e){
-      const target = e.target;
-      const liFolder = target.closest('[data-role="folder"]');
-      const liIns    = target.closest('[data-role="instrument"]');
-
-      if (liFolder) {
-        const cat = liFolder.getAttribute("data-cat") || "";
-        if (stateSel.openCats.has(cat)) stateSel.openCats.delete(cat);
-        else stateSel.openCats.add(cat);
-        buildTree();
-        return;
-      }
-      if (liIns) {
-        stateSel.selectedBase = liIns.getAttribute("data-ins") || "";
-        buildTree();
-        return;
-      }
-    }
-
-    const baseOf = (name) => String(name).replace(/\s+\d+$/, "");
-
+    // Right list helpers
     function refreshRight(){
-      const groups = new Map(); // base -> [idx...]
-      stateSel.selections.forEach((base, idx) => {
-        if (!groups.has(base)) groups.set(base, []);
-        groups.get(base).push(idx);
-      });
-
-      const records = [];
-      for (const [base, indices] of groups.entries()) {
-        if (indices.length === 1) {
-          const i = indices[0];
-          records.push({ base, idx: i, num: 0, label: base });
-        } else {
-          indices.forEach((i, k) => {
-            const num = k + 1;
-            records.push({ base, idx: i, num, label: `${base} ${num}` });
-          });
-        }
-      }
-      records.sort((a, b) => {
-        const byName = a.base.localeCompare(b.base, undefined, { sensitivity: "base" });
-        if (byName !== 0) return byName;
-        return a.num - b.num;
-      });
-
-      listRight.innerHTML = records
-        .map(rec => `<option value="${rec.idx}">${escapeHtml(rec.label)}</option>`)
-        .join("");
+      // sort alphabetically
+      const sorted = [...stateSel.selections].sort((a,b)=> a.localeCompare(b));
+      listRight.innerHTML = sorted.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
     }
-
     function addSelection(baseName){
-      stateSel.selections.push(baseName);
+      const siblings = stateSel.selections.filter(n => baseOf(n) === baseName).length;
+      const label = siblings === 0 ? baseName : `${baseName} ${siblings+1}`;
+      stateSel.selections.push(label);
+
+      // If this was the second copy, rename the bare one to "… 1"
+      if (siblings === 1) {
+        const i = stateSel.selections.findIndex(n => n === baseName);
+        if (i >= 0) stateSel.selections[i] = `${baseName} 1`;
+      }
       refreshRight();
     }
-    function removeSelectionByIndex(idx){
-      if (idx < 0 || idx >= stateSel.selections.length) return;
-      stateSel.selections.splice(idx, 1);
+    function removeSelection(label){
+      const i = stateSel.selections.indexOf(label);
+      if (i>=0) stateSel.selections.splice(i,1);
+      const b = baseOf(label);
+      const same = stateSel.selections.filter(n => baseOf(n) === b);
+      if (same.length === 1) {
+        const j = stateSel.selections.findIndex(n => baseOf(n) === b);
+        stateSel.selections[j] = b; // drop trailing " 1"
+      } else if (same.length > 1) {
+        let k = 1;
+        for (let idx=0; idx<stateSel.selections.length; idx++) {
+          if (baseOf(stateSel.selections[idx]) === b) {
+            stateSel.selections[idx] = `${b} ${k++}`;
+          }
+        }
+      }
       refreshRight();
     }
 
     // Wire once
-    if (container.dataset.wired === "1") { buildTree(); refreshRight(); return; }
+    if (container.dataset.wired === "1") {
+      buildTree(); // rebuild to apply collapsed start & data changes
+      return;
+    }
     container.dataset.wired = "1";
 
     buildTree();
-    refreshRight();
-    AA.on("data:instrumentData", () => { buildTree(); });
-
-    tree.addEventListener("click", onTreeClick);
+    AA.on("data:instrumentData", buildTree);
 
     btnAdd.addEventListener("click", () => {
-      const sel = stateSel.selectedBase;
-      if (!sel) return alert("Select an instrument from the list first.");
-      addSelection(sel);
+      const highlighted = treeHost.querySelector(".item.highlight");
+      const fallback = treeHost.querySelector(".item");
+      const pick = highlighted?.dataset.name || fallback?.dataset.name || "";
+      if (pick) addSelection(pick);
+    });
+    // highlight clicked item for keyboard-less add
+    treeHost.addEventListener("click", (e) => {
+      const it = e.target.closest(".item");
+      if (!it) return;
+      treeHost.querySelectorAll(".item").forEach(n => n.classList.remove("highlight"));
+      it.classList.add("highlight");
     });
 
     btnBack.addEventListener("click", () => {
@@ -732,40 +724,25 @@ if (!stateSel.everBuilt && stateSel.openCats.size === 0) {
         instrumentSelections: []
       });
       stateSel.selections = [];
-      stateSel.selectedBase = "";
       refreshRight();
-
       if (Number.isInteger(s.packIndex)) populateSongsForPack(s.packIndex);
-      const sSel = (typeof songSelectEl === "function" ? songSelectEl() : document.getElementById("songSelect"));
+      const sSel = (typeof songSelectEl === "function" ? songSelectEl() : null);
       if (sSel) sSel.value = "";
       setWizardStage("song");
     });
 
     btnRemove.addEventListener("click", () => {
-      const opt = listRight.options[listRight.selectedIndex];
-      if (!opt) return;
-      removeSelectionByIndex(parseInt(opt.value, 10));
+      const sel = listRight.value;
+      if (!sel) return;
+      removeSelection(sel);
     });
 
     btnSave.addEventListener("click", () => {
       const s = getState();
       const metaIndex = Object.fromEntries((s.instrumentData||[]).map(m => [m.name, m]));
-
-      const groups = new Map();
-      stateSel.selections.forEach((base, idx) => {
-        if (!groups.has(base)) groups.set(base, []);
-        groups.get(base).push(idx);
-      });
-      const instanceNumberByIndex = {};
-      for (const [base, indices] of groups.entries()) {
-        if (indices.length === 1) instanceNumberByIndex[indices[0]] = 0;
-        else indices.forEach((i, k) => instanceNumberByIndex[i] = k + 1);
-      }
-
-      const instrumentSelections = stateSel.selections.map((base, i) => {
+      const instrumentSelections = [...stateSel.selections].sort((a,b)=> a.localeCompare(b)).map(label => {
+        const base = label.replace(/\s+\d+$/,"");
         const meta = metaIndex[base] || {};
-        const num = instanceNumberByIndex[i] || 0;
-        const label = num === 0 ? base : `${base} ${num}`;
         return {
           name: base,
           instanceLabel: label,
@@ -774,11 +751,9 @@ if (!stateSel.everBuilt && stateSel.openCats.size === 0) {
           clef: meta.clef ?? null,
           transpose: meta.transpose ?? null,
           scoreOrder: Number(meta.scoreOrder)||999,
-          assignedPart: "",
-          category: meta.category || "Other"
+          assignedPart: ""
         };
       });
-
       mergeState({ instrumentSelections });
       AA.emit("instruments:saved");
     });
@@ -788,6 +763,7 @@ if (!stateSel.everBuilt && stateSel.openCats.size === 0) {
   AA.on("wizard:stage", (stage) => { if (stage === "instruments") setupInstrumentPicker(); });
 
 })(); // end Step 3
+
 
 
 
