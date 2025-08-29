@@ -501,92 +501,293 @@ function extractPartsFromScore(xmlText){
 }
 
 
-/* =========================================================================
-   I) Step 3 — Choose Instruments & Save (robust bindings + delegated Save)
-   ------------------------------------------------------------------------- */
-;(function(){
-  // Call this after Step 3 markup exists (same place you previously called it)
-  window.setupInstrumentPicker = function setupInstrumentPicker(){
-    const container = document.getElementById("step3");
-    if (!container) { console.warn("[Step3] container #step3 not found"); return; }
+/* ============================================================================
+   I) STEP 3: INSTRUMENT PICKER UI (folders, fixed-height, robust rebuild)
+   ========================================================================== */
+(function(){
 
-    // --- Resolve elements (support both legacy and current IDs)
-    const listLeft  = container.querySelector("#listAvailable, #instAvailable");
-    const listRight = container.querySelector("#listSelected, #instSelected");
+  // Inject minimal CSS once
+  (function ensureStep3CSS(){
+    if (document.getElementById("aa-step3-css")) return;
+    const st = document.createElement("style");
+    st.id = "aa-step3-css";
+    st.textContent = `
+      #aa-pickers{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+      #aa-pickers .aa-pane{background:#0d1016;border:1px solid var(--line);border-radius:10px;padding:12px}
+      #aa-pickers .aa-pane h4{margin:0 0 10px 0;font-size:14px;color:var(--metal-3)}
+      #aa-pickers .aa-pane-left{display:flex;flex-direction:column}
 
-    const btnAdd    = container.querySelector("#btnAddToScore, #btnAdd");
-    const btnRemove = container.querySelector("#btnRemoveFromScore, #btnRemove");
-    const btnUp     = container.querySelector("#btnUp");
-    const btnDown   = container.querySelector("#btnDown");
+      /* constant-height scroll area */
+      #instrumentTree{
+        height: 360px;
+        overflow: auto;
+        border:1px solid var(--line);
+        border-radius:8px;
+        padding:6px 8px;
+        background:#0b0f16;
+      }
+      #aa-left-controls{display:flex;gap:10px;margin-top:10px}
 
-    if (!listLeft || !listRight) {
-      console.warn("[Step3] missing list elements in DOM"); 
-      return;
+      /* match font sizes */
+      #instrumentTree, #instrumentTree .hdr, #instrumentTree .item,
+      #aa-pickers select{ font-size:14px; }
+
+      /* tree visuals */
+      .aa-cat{margin:6px 0}
+      .aa-cat .hdr{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;color:#cfd6e3}
+      .aa-cat .hdr .tw{width:12px;display:inline-block;text-align:center;color:#9AA3B2}
+      .aa-cat .list{margin:4px 0 0 20px;padding:0;list-style:none}
+      .aa-cat .item{padding:6px 4px;border-bottom:1px dashed rgba(255,255,255,.05);cursor:pointer;color:#e8edf6}
+      .aa-cat .item:hover{background:#11171f}
+      .aa-cat .item.highlight{outline:1px dashed #3c4a5f;outline-offset:2px}
+    `;
+    document.head.appendChild(st);
+  })();
+
+  // Ensure a Step 3 host exists
+  function ensureStep3Host(){
+    let host = document.getElementById("step3");
+    if (!host) {
+      const cardBody = document.querySelector(".card-body") || document.body;
+      host = document.createElement("div");
+      host.id = "step3";
+      host.className = "hidden";
+      host.innerHTML = `<div class="field"><label>Select Instruments</label></div>`;
+      cardBody.appendChild(host);
+    }
+    return host;
+  }
+
+  // Always (re)build the Step-3 container to avoid stale legacy markup
+  function buildStep3Container(){
+    const host = ensureStep3Host();
+    // remove any previous container entirely — we’ll rebuild cleanly
+    host.querySelectorAll("#aa-pickers").forEach(n => n.remove());
+
+    host.insertAdjacentHTML("beforeend", `
+      <div id="aa-pickers">
+        <!-- LEFT: instruments with folders -->
+        <div class="aa-pane aa-pane-left">
+          <h4>Instruments</h4>
+          <div id="instrumentTree" aria-label="Instrument categories"></div>
+          <div id="aa-left-controls">
+            <button id="btnBackToSong" class="aa-btn" style="background:#1a1f2a;border:1px solid var(--line);color:var(--text);">Back</button>
+            <button id="btnAddInstrument" class="aa-btn">Add to Score</button>
+          </div>
+        </div>
+
+        <!-- RIGHT: selections -->
+        <div class="aa-pane">
+          <h4>Selections</h4>
+          <select id="selectionsList" size="14" style="width:100%;height:360px;"></select>
+          <div style="display:flex; gap:10px; margin-top:10px;">
+            <button id="btnRemoveSelected" class="aa-btn">Remove</button>
+            <button id="btnSaveSelections" class="aa-btn aa-accent">Save Selections</button>
+          </div>
+        </div>
+      </div>
+    `);
+    return document.getElementById("aa-pickers");
+  }
+
+  function setupInstrumentPicker(){
+    const container = buildStep3Container();
+    const treeHost  = container.querySelector("#instrumentTree");
+    const listRight = container.querySelector("#selectionsList");
+    const btnAdd    = container.querySelector("#btnAddInstrument");
+    const btnBack   = container.querySelector("#btnBackToSong");
+    const btnRemove = container.querySelector("#btnRemoveSelected");
+    const note      = document.getElementById("instStatus");
+
+    const getInstruments = () => {
+      const s = getState();
+      return Array.isArray(s.instrumentData) ? s.instrumentData : [];
+    };
+
+    // Local state
+    const stateSel = { selections: [], openCats: new Set() }; // collapsed by default
+    const baseOf = (name) => String(name).replace(/\s+\d+$/, "");
+
+    // Build the collapsible category tree
+    function buildTree(){
+      const instruments = getInstruments();
+      if (!instruments.length) {
+        treeHost.innerHTML = `<div class="note">No instruments found. Check instrumentData.json.</div>`;
+        if (note) note.textContent = "No instruments found in instrumentData.json.";
+        return;
+      }
+
+      const byCat = new Map();
+      instruments.forEach(m => {
+        const cat = m.category || "Other";
+        if (!byCat.has(cat)) byCat.set(cat, []);
+        byCat.get(cat).push(m.name);
+      });
+
+      // sort cats/items
+      const cats = Array.from(byCat.keys()).sort((a,b)=> a.localeCompare(b));
+      cats.forEach(c => byCat.get(c).sort((a,b)=> a.localeCompare(b)));
+
+      const frag = document.createDocumentFragment();
+      cats.forEach(cat => {
+        const open = stateSel.openCats.has(cat); // default: false (collapsed)
+        const catEl = document.createElement("div");
+        catEl.className = "aa-cat";
+        catEl.innerHTML = `
+          <div class="hdr" data-cat="${escapeHtml(cat)}">
+            <span class="tw">${open ? "▾" : "▸"}</span>
+            <strong>${escapeHtml(cat)}</strong>
+          </div>
+          <ul class="list" style="${open ? "" : "display:none"}"></ul>
+        `;
+        const ul = catEl.querySelector("ul");
+        byCat.get(cat).forEach(name => {
+          const li = document.createElement("li");
+          li.className = "item";
+          li.textContent = name;
+          li.dataset.name = name;
+          // no addSelection here — click just highlights (handled below)
+          ul.appendChild(li);
+        });
+        catEl.querySelector(".hdr").addEventListener("click", () => {
+          if (stateSel.openCats.has(cat)) stateSel.openCats.delete(cat);
+          else stateSel.openCats.add(cat);
+          buildTree(); // re-render
+        });
+        frag.appendChild(catEl);
+      });
+
+      treeHost.innerHTML = "";
+      treeHost.appendChild(frag);
+      if (note) note.textContent = "";
     }
 
-    // --- Helpers -----------------------------------------------------------
-    function parseVal(v){
-      try { return JSON.parse(v); } catch { return null; }
+    // Right list helpers
+    function refreshRight(){
+      const sorted = [...stateSel.selections].sort((a,b)=> a.localeCompare(b));
+      listRight.innerHTML = sorted.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
     }
-    function selectedOptions(sel){
-      return Array.from(sel.options).filter(o => o.selected);
+    function addSelection(baseName){
+      const siblings = stateSel.selections.filter(n => baseOf(n) === baseName).length;
+      const label = siblings === 0 ? baseName : `${baseName} ${siblings+1}`;
+      stateSel.selections.push(label);
+      if (siblings === 1) { // second copy → rename bare to "… 1"
+        const i = stateSel.selections.findIndex(n => n === baseName);
+        if (i >= 0) stateSel.selections[i] = `${baseName} 1`;
+      }
+      refreshRight();
     }
-    function moveOptions(src, dst){
-      const picks = selectedOptions(src);
-      picks.forEach(o => dst.add(o)); // moving keeps the <option> nodes intact
-      normalizeRight();
+    function removeSelection(label){
+      const i = stateSel.selections.indexOf(label);
+      if (i>=0) stateSel.selections.splice(i,1);
+      const b = baseOf(label);
+      const same = stateSel.selections.filter(n => baseOf(n) === b);
+      if (same.length === 1) {
+        const j = stateSel.selections.findIndex(n => baseOf(n) === b);
+        stateSel.selections[j] = b; // drop trailing " 1"
+      } else if (same.length > 1) {
+        let k = 1;
+        for (let idx=0; idx<stateSel.selections.length; idx++) {
+          if (baseOf(stateSel.selections[idx]) === b) {
+            stateSel.selections[idx] = `${b} ${k++}`;
+          }
+        }
+      }
+      refreshRight();
     }
-    function normalizeRight(){
-      // Optional: sort right list by text (keep this if you already sorted elsewhere)
-      // const opts = Array.from(listRight.options);
-      // opts.sort((a,b) => a.text.localeCompare(b.text, undefined, {numeric:true, sensitivity:"base"}));
-      // listRight.innerHTML = ""; opts.forEach(o => listRight.add(o));
-    }
-    function moveOptionUp(sel){
-      const opts = selectedOptions(sel);
-      opts.forEach(o => {
-        const prev = o.previousElementSibling;
-        if (prev) sel.insertBefore(o, prev);
+
+    // Initial build + live updates when instrumentData arrives/changes
+    buildTree();
+    AA.on("data:instrumentData", buildTree);
+
+    // Highlight last clicked item (lets Add button work without re-click)
+    treeHost.addEventListener("click", (e) => {
+      const it = e.target.closest(".item");
+      if (!it) return;
+      treeHost.querySelectorAll(".item").forEach(n => n.classList.remove("highlight"));
+      it.classList.add("highlight");
+    });
+
+    // Buttons (direct bindings for add/back/remove)
+    if (btnAdd) {
+      btnAdd.addEventListener("click", () => {
+        const highlighted = treeHost.querySelector(".item.highlight");
+        if (!highlighted) {
+          if (note) {
+            note.textContent = "Select an instrument on the left, then click Add to Score.";
+            setTimeout(() => { if (note.textContent.includes("Add to Score")) note.textContent = ""; }, 2000);
+          }
+          return;
+        }
+        addSelection(highlighted.dataset.name);
       });
     }
-    function moveOptionDown(sel){
-      const opts = selectedOptions(sel).reverse(); // bottom-up to keep relative order
-      opts.forEach(o => {
-        const next = o.nextElementSibling;
-        if (next) sel.insertBefore(next, o);
+
+    if (btnBack) {
+      btnBack.addEventListener("click", () => {
+        const s = getState();
+        mergeState({
+          songIndex: null,
+          song: null,
+          selectedSong: null,
+          parts: [],
+          instrumentSelections: []
+        });
+        stateSel.selections = [];
+        refreshRight();
+        if (Number.isInteger(s.packIndex)) populateSongsForPack(s.packIndex);
+        const sSel = (typeof songSelectEl === "function" ? songSelectEl() : null);
+        if (sSel) sSel.value = "";
+        setWizardStage("song");
       });
     }
-    function readRightAsSelections(){
-      return Array.from(listRight.options).map(o => parseVal(o.value)).filter(Boolean);
+
+    if (btnRemove) {
+      btnRemove.addEventListener("click", () => {
+        const sel = listRight.value;
+        if (!sel) return;
+        removeSelection(sel);
+      });
     }
 
-    // --- Direct bindings for Add/Remove/Up/Down ---------------------------
-    if (btnAdd)    btnAdd.addEventListener("click",   () => moveOptions(listLeft,  listRight));
-    if (btnRemove) btnRemove.addEventListener("click",() => moveOptions(listRight, listLeft));
-    if (btnUp)     btnUp.addEventListener("click",    () => moveOptionUp(listRight));
-    if (btnDown)   btnDown.addEventListener("click",  () => moveOptionDown(listRight));
-
-    // Double-click convenience
-    listLeft && listLeft.addEventListener("dblclick",  () => moveOptions(listLeft,  listRight));
-    listRight && listRight.addEventListener("dblclick",() => moveOptions(listRight, listLeft));
-
-    // --- Delegated SAVE handler (survives rebuilds) -----------------------
+    // ---- Delegated SAVE handler (survives rebuilds) ----
     container.addEventListener("click", (ev) => {
-      const btn = ev.target.closest("#btnSaveSelections");
-      if (!btn) return;
+      const saveBtn = ev.target.closest("#btnSaveSelections");
+      if (!saveBtn) return;
 
-      const instrumentSelections = readRightAsSelections();
-      mergeState({ instrumentSelections }); // keep your existing state shape
+      const s = getState();
+      const metaIndex = Object.fromEntries((s.instrumentData||[]).map(m => [m.name, m]));
+      const instrumentSelections = [...stateSel.selections]
+        .sort((a,b)=> a.localeCompare(b))
+        .map(label => {
+          const base = label.replace(/\s+\d+$/,"");
+          const meta = metaIndex[base] || {};
+          return {
+            name: base,
+            instanceLabel: label,
+            instrumentPart: meta.instrumentPart || "",
+            sortingOctave: Number(meta.sortingOctave)||0,
+            clef: meta.clef ?? null,
+            transpose: meta.transpose ?? null,
+            scoreOrder: Number(meta.scoreOrder)||999,
+            assignedPart: ""
+          };
+        });
+
+      mergeState({ instrumentSelections });
       console.log(`[Step3] Saved ${instrumentSelections.length} selections`, instrumentSelections);
-
-      // Kick off the arranging pipeline as before
       AA.emit("instruments:saved");
     });
 
-    console.log("[Step3] picker initialized");
-  };
-})();
+  } // end setupInstrumentPicker
 
+  // Build on DOM ready + whenever we enter Step 3
+  document.addEventListener("DOMContentLoaded", () => {
+    // (we rebuild on stage change)
+  });
+  AA.on("wizard:stage", (stage) => { if (stage === "instruments") setupInstrumentPicker(); });
+
+})(); // end Step 3
 
 
 
