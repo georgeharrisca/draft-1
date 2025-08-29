@@ -1517,8 +1517,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
    (template-literal-free version to avoid stray backtick copy/paste issues)
    ------------------------------------------------------------------------- */
 ;(function () {
-AA.on("credits:done", () => AA.safe("finalViewer", bootWhenReady));
-   
+  AA.on("credits:done", () => AA.safe("finalViewer", bootWhenReady));
+
   async function bootWhenReady() {
     if (document.getElementById('aa-viewer')) return;
     await ensureLib("opensheetmusicdisplay", "./opensheetmusicdisplay.min.js");
@@ -1795,7 +1795,7 @@ AA.on("credits:done", () => AA.safe("finalViewer", bootWhenReady));
     return s;
   }
 
-  // --- file helpers (previously missing in some builds) ---
+  // --- file helpers ---
   function safe(name){
     return String(name || "")
       .replace(/[\\\/:*?"<>|]+/g, "_")
@@ -1822,10 +1822,9 @@ AA.on("credits:done", () => AA.safe("finalViewer", bootWhenReady));
 })();
 
 
-
 /* =========================================================================
-   M8) applyCredits — clone credit blocks from source and set OSMD's header:
-                      movement-title = Title, work-title = Subtitle
+   M8) applyCredits — clone/normalize credits (title, subtitle, composer,
+                      arranger, part name) and set OSMD header lines
    - Listens:  combine:done
    - Emits:    credits:done
    ------------------------------------------------------------------------- */
@@ -1845,7 +1844,7 @@ AA.on("credits:done", () => AA.safe("finalViewer", bootWhenReady));
 
     // Take credits from first extracted source part
     var baseXml = (partsSrc[0] && partsSrc[0].xml) || combined;
-    var pack = collectCredits(baseXml);
+    var pack = collectCredits(baseXml); // {titleEl, subtitleEl, composerEl, arrangerEl, partNameEl, titleText, subtitleText}
 
     // Apply to combined (part name = Score)
     combined = applyCreditsToDoc(combined, pack, "Score");
@@ -1864,7 +1863,7 @@ AA.on("credits:done", () => AA.safe("finalViewer", bootWhenReady));
   function collectCredits(xmlString){
     var out = {
       titleEl:null, subtitleEl:null, composerEl:null, arrangerEl:null, partNameEl:null,
-      titleText:"", subtitleText:""
+      titleText:"", subtitleText:"", idComposer:"", idArranger:""
     };
     try{
       var p = new DOMParser();
@@ -1878,8 +1877,19 @@ AA.on("credits:done", () => AA.safe("finalViewer", bootWhenReady));
         var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
         if (map[t] && !out[map[t]]) out[map[t]] = c;
       }
-      out.titleText    = textOf(out.titleEl) || (doc.querySelector("movement-title") && doc.querySelector("movement-title").textContent.trim()) || "";
+
+      out.titleText =
+        textOf(out.titleEl) ||
+        (doc.querySelector("movement-title") && doc.querySelector("movement-title").textContent.trim()) ||
+        (doc.querySelector("work > work-title") && doc.querySelector("work > work-title").textContent.trim()) ||
+        "";
+
       out.subtitleText = textOf(out.subtitleEl) || "";
+      if (out.subtitleText && out.subtitleText === out.titleText) out.subtitleText = ""; // avoid title duplication
+
+      // Identification fallbacks (used only if credit blocks missing)
+      out.idComposer = ((doc.querySelector('identification > creator[type="composer"]') || {}).textContent || "").trim();
+      out.idArranger = ((doc.querySelector('identification > creator[type="arranger"]') || {}).textContent || "").trim();
     }catch(e){ console.warn("[M8] collectCredits failed", e); }
     return out;
   }
@@ -1889,6 +1899,74 @@ AA.on("credits:done", () => AA.safe("finalViewer", bootWhenReady));
       var w = creditEl && creditEl.querySelector("credit-words");
       return (w && w.textContent || "").trim();
     }catch(e){ return ""; }
+  }
+
+  // Utilities for header threshold (so left credit prints above first system)
+  function topHeaderThresholdY(doc){
+    var ph  = parseFloat((doc.querySelector("defaults > page-layout > page-height") || {}).textContent || "0") || 0;
+    var tsd = parseFloat((doc.querySelector("defaults > system-layout > top-system-distance") || {}).textContent || "0") || 0;
+    if (!tsd) {
+      var measTsd = doc.querySelector("part > measure print top-system-distance");
+      if (measTsd) tsd = parseFloat(measTsd.textContent || "0") || 0;
+    }
+    return (ph && tsd) ? (ph - tsd) : 2440; // safe fallback
+  }
+
+  // Normalize justify/halign etc. so OSMD recognizes positions
+  function normalizeCreditAttributes(node, type, doc){
+    if (!node) return node;
+    try{
+      var words = node.querySelector("credit-words");
+      if (!words){
+        words = doc.createElement("credit-words");
+        node.appendChild(words);
+      }
+      var setIfMissing = function(attr, val){ if (!words.hasAttribute(attr)) words.setAttribute(attr, val); };
+
+      if (type === "title" || type === "subtitle"){
+        setIfMissing("justify","center");
+        setIfMissing("halign","center");
+        if (!words.hasAttribute("default-x")) words.setAttribute("default-x","1018");
+        // keep existing default-y if present; otherwise provide a sensible default
+        if (!words.hasAttribute("default-y")) words.setAttribute("default-y", type === "title" ? "2375" : "2282");
+      } else if (type === "composer" || type === "arranger"){
+        setIfMissing("justify","right");
+        setIfMissing("halign","right");
+        if (!words.hasAttribute("default-x")) words.setAttribute("default-x","1807");
+        if (!words.hasAttribute("default-y")) words.setAttribute("default-y", type === "composer" ? "2298" : "2247");
+      } else if (type === "part name"){
+        setIfMissing("justify","left");
+        setIfMissing("halign","left");
+        if (!words.hasAttribute("default-x")) words.setAttribute("default-x","226");
+        var threshold = topHeaderThresholdY(doc);
+        var y = parseFloat(words.getAttribute("default-y") || "0") || 0;
+        if (!y || y <= threshold) words.setAttribute("default-y", String(threshold + 5));
+      }
+      if (!words.hasAttribute("valign")) words.setAttribute("valign","top");
+      return node;
+    }catch(e){ return node; }
+  }
+
+  // Fallback synthesizer for a credit (when the source didn’t have one)
+  function makeCredit(doc, type, text, pos){
+    var credit = doc.createElement("credit");
+    credit.setAttribute("page","1");
+    var ct = doc.createElement("credit-type"); ct.textContent = type; credit.appendChild(ct);
+    var words = doc.createElement("credit-words");
+    // pos: { center?, right?, left?, x?, y?, size? }
+    if (pos && pos.center){
+      words.setAttribute("justify","center"); words.setAttribute("halign","center"); words.setAttribute("default-x", String(pos.x || 1018));
+    } else if (pos && pos.right){
+      words.setAttribute("justify","right"); words.setAttribute("halign","right"); words.setAttribute("default-x", String(pos.x || 1807));
+    } else {
+      words.setAttribute("justify","left"); words.setAttribute("halign","left"); words.setAttribute("default-x", String(pos.x || 226));
+    }
+    words.setAttribute("default-y", String(pos && pos.y != null ? pos.y : 2300));
+    if (pos && pos.size != null) words.setAttribute("font-size", String(pos.size));
+    words.setAttribute("valign","top");
+    words.textContent = text || "";
+    credit.appendChild(words);
+    return credit;
   }
 
   // ----- write credits + header into a target MusicXML -----
@@ -1907,50 +1985,78 @@ AA.on("credits:done", () => AA.safe("finalViewer", bootWhenReady));
       });
       toRemove.forEach(function(n){ n.remove(); });
 
-      // Insert before <part-list> to mimic your originals
       function beforePartList(node){
         var pl = root.querySelector("part-list");
         if (pl) root.insertBefore(node, pl); else root.appendChild(node);
       }
-      function insertCreditFrom(src, type){
-        if (!src) return;
-        var node = doc.importNode(src, true);
-        var ct = node.querySelector("credit-type");
-        if (ct) ct.textContent = type; // normalize casing
-        beforePartList(node);
+
+      // Title
+      if (pack.titleEl){
+        var t = doc.importNode(pack.titleEl, true);
+        normalizeCreditAttributes(t, "title", doc);
+        // normalize tag text casing to "title"
+        var ct = t.querySelector("credit-type"); if (ct) ct.textContent = "title";
+        beforePartList(t);
+      } else if (pack.titleText){
+        beforePartList(makeCredit(doc, "title", pack.titleText, { center:true, y:2375, size:21.6 }));
       }
 
-      // title, subtitle, composer, arranger (cloned)
-      insertCreditFrom(pack.titleEl,    "title");
-      insertCreditFrom(pack.subtitleEl, "subtitle");
-      insertCreditFrom(pack.composerEl, "composer");
-      insertCreditFrom(pack.arrangerEl, "arranger");
+      // Subtitle
+      if (pack.subtitleEl && pack.subtitleText){
+        var sub = doc.importNode(pack.subtitleEl, true);
+        normalizeCreditAttributes(sub, "subtitle", doc);
+        var cts = sub.querySelector("credit-type"); if (cts) cts.textContent = "subtitle";
+        beforePartList(sub);
+      } else if (pack.subtitleText){
+        beforePartList(makeCredit(doc, "subtitle", pack.subtitleText, { center:true, y:2282, size:16.2 }));
+      }
 
-      // part name credit: clone if present, but replace words with override
+      // Composer
+      var composerNode = null;
+      if (pack.composerEl){
+        composerNode = doc.importNode(pack.composerEl, true);
+      } else if (pack.idComposer){
+        composerNode = makeCredit(doc, "composer", pack.idComposer, { right:true, y:2298, size:10.8 });
+      }
+      if (composerNode){
+        normalizeCreditAttributes(composerNode, "composer", doc);
+        var ctc = composerNode.querySelector("credit-type"); if (ctc) ctc.textContent = "composer";
+        beforePartList(composerNode);
+      }
+
+      // Arranger
+      var arrangerNode = null;
+      if (pack.arrangerEl){
+        arrangerNode = doc.importNode(pack.arrangerEl, true);
+      } else if (pack.idArranger){
+        arrangerNode = makeCredit(doc, "arranger", pack.idArranger, { right:true, y:2247, size:10.8 });
+      }
+      if (arrangerNode){
+        normalizeCreditAttributes(arrangerNode, "arranger", doc);
+        var cta = arrangerNode.querySelector("credit-type"); if (cta) cta.textContent = "arranger";
+        beforePartList(arrangerNode);
+      }
+
+      // Part name
+      var partNameText = partNameOverride || "Part";
+      var partNode = null;
       if (pack.partNameEl){
-        var pn = doc.importNode(pack.partNameEl, true);
-        var words = pn.querySelector("credit-words");
-        if (words) words.textContent = partNameOverride || "Part";
-        var ct2 = pn.querySelector("credit-type"); if (ct2) ct2.textContent = "part name";
-        beforePartList(pn);
+        partNode = doc.importNode(pack.partNameEl, true);
+        // overwrite words with the actual part/score label
+        var w = partNode.querySelector("credit-words");
+        if (!w){
+          w = doc.createElement("credit-words");
+          partNode.appendChild(w);
+        }
+        w.textContent = partNameText;
       } else {
-        // synthesis fallback
-        var synth = doc.createElement("credit");
-        synth.setAttribute("page","1");
-        var ctt = doc.createElement("credit-type"); ctt.textContent = "part name"; synth.appendChild(ctt);
-        var cw = doc.createElement("credit-words");
-        cw.setAttribute("default-x","226");
-        cw.setAttribute("default-y","2380");
-        cw.setAttribute("font-size","10.8");
-        cw.setAttribute("valign","top");
-        cw.textContent = partNameOverride || "Part";
-        synth.appendChild(cw);
-        beforePartList(synth);
+        partNode = makeCredit(doc, "part name", partNameText, { left:true });
       }
+      normalizeCreditAttributes(partNode, "part name", doc);
+      var ctp = partNode.querySelector("credit-type"); if (ctp) ctp.textContent = "part name";
+      beforePartList(partNode);
 
-      // OSMD header lines:
-      //   movement-title  = Title
-      //   work/work-title = Subtitle (if any)  — otherwise remove to avoid duplicate Title line
+      // OSMD header lines (metadata): movement-title = Title, work-title = Subtitle
       ensureHeaderTitles(doc, root, pack.titleText, pack.subtitleText);
 
       return new XMLSerializer().serializeToString(doc);
