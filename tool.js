@@ -1555,6 +1555,430 @@ const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scale;
 const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scale;
 
 
+/* =========================================================================
+   M7) Final Viewer
+   ------------------------------------------------------------------------- */
+;(function () {
+  // Start viewer only after combine is done (won’t interfere with Step 1 boot)
+  AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
+
+  async function bootWhenReady() {
+    if (document.getElementById('aa-viewer')) return;
+    await ensureLib("opensheetmusicdisplay", "./opensheetmusicdisplay.min.js");
+    await ensureLib("html2canvas", "./html2canvas.min.js");
+    await ensureLib("jspdf", "./jspdf.umd.min.js");
+    buildViewerUI();
+  }
+
+  function ensureLib(globalName, src) {
+    return new Promise((resolve) => {
+      if (lookupGlobal(globalName)) return resolve(true);
+      const s = document.createElement("script");
+      s.src = src;
+      s.onload = () => resolve(true);
+      s.onerror = () => { console.warn("[finalViewer] Failed to load", src); resolve(false); };
+      document.head.appendChild(s);
+    });
+  }
+  function lookupGlobal(name){
+    return name.split(".").reduce((o,k)=> (o && o[k]!=null) ? o[k] : null, window);
+  }
+
+  function buildViewerUI(){
+    // Remove any existing viewer
+    document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
+
+    const state    = getState();
+    const songName = (state && state.selectedSong && state.selectedSong.name) || state.song || "Auto Arranger Result";
+    const partsRaw = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
+    const hasScore = typeof state.combinedScoreXml === "string" && state.combinedScoreXml.length > 0;
+    const parts    = sortPartsEvenIfNoPid(partsRaw);
+
+    const wrap = ce("div");
+    wrap.id = "aa-viewer";
+    wrap.style.cssText = "position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;height:100vh;background:rgba(0,0,0,0.08);padding:28px;box-sizing:border-box;overflow:hidden;";
+
+    const backBtn = ce("button");
+    backBtn.textContent = "← Back";
+    backBtn.title = "Back to instrument selection";
+    backBtn.style.cssText = "position:absolute;top:16px;left:16px;padding:8px 12px;border-radius:8px;border:none;background:#e5e7eb;color:#111;font:600 13px system-ui;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)";
+    backBtn.addEventListener("click", () => backToInstrumentSelection(state));
+    wrap.appendChild(backBtn);
+
+    const card = ce("div");
+    card.style.cssText = "margin:auto;width:min(1200px,100%);height:calc(100vh - 56px);background:#fff;border-radius:14px;box-shadow:0 12px 36px rgba(0,0,0,.18);padding:20px 20px 18px;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;overflow:hidden;";
+    wrap.appendChild(card);
+
+    const title = ce("h2", { textContent: songName });
+    title.style.cssText = "margin:0;text-align:center;color:#000;font:700 20px/1.2 system-ui,Arial";
+    card.appendChild(title);
+
+    const controls = ce("div");
+    controls.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:2px;";
+    card.appendChild(controls);
+
+    const label = ce("div", { textContent: "Select Score or Part" });
+    label.style.cssText = "color:#000;font:600 13px/1 system-ui;";
+    controls.appendChild(label);
+
+    const select = ce("select");
+    select.id = "aa-viewer-select";
+    select.style.cssText = "padding:8px 10px;font:14px system-ui;";
+    if (hasScore) select.appendChild(new Option("Score","__SCORE__"));
+    for (const p of parts) {
+      const name = p.instrumentName || p.baseName || "Part";
+      select.appendChild(new Option(name, name));
+    }
+    controls.appendChild(select);
+
+    const btnRow = ce("div");
+    btnRow.style.cssText = "display:flex;gap:8px;flex-wrap:nowrap;justify-content:center;align-items:center;";
+    btnRow.innerHTML = [
+      '<button id="aa-btn-visualize" class="aa-btn">Visualize</button>',
+      '<button id="aa-btn-pdf" class="aa-btn" disabled>Download PDF</button>',
+      '<button id="aa-btn-xml" class="aa-btn" disabled>Download XML</button>',
+      '<button id="aa-btn-pdf-all" class="aa-btn">Download PDF All Parts</button>',
+      '<button id="aa-btn-xml-all" class="aa-btn">Download XML ALL Parts</button>'
+    ].join("");
+    controls.appendChild(btnRow);
+
+    const styleBtn = ce("style");
+    styleBtn.textContent = ".aa-btn{padding:8px 12px;border-radius:8px;background:#0f62fe;color:#fff;border:none;cursor:pointer;font:600 13px system-ui}.aa-btn[disabled]{opacity:.5;cursor:not-allowed}.aa-btn:hover:not([disabled]){filter:brightness(0.92)}";
+    card.appendChild(styleBtn);
+
+    const osmdBox = ce("div");
+    osmdBox.id = "aa-osmd-box";
+    osmdBox.style.cssText = "margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;position:relative;";
+    card.appendChild(osmdBox);
+    document.body.appendChild(wrap);
+
+    const OSMD = lookupGlobal("opensheetmusicdisplay");
+    const osmd = new OSMD.OpenSheetMusicDisplay(osmdBox, { autoResize:true, backend:"svg", drawingParameters:"default" });
+
+    window.addEventListener("resize", () => { fitScoreToHeight(osmd, osmdBox); refreshOverlay(); });
+
+    const btnVis    = btnRow.querySelector("#aa-btn-visualize");
+    const btnPDF    = btnRow.querySelector("#aa-btn-pdf");
+    const btnXML    = btnRow.querySelector("#aa-btn-xml");
+    const btnPDFAll = btnRow.querySelector("#aa-btn-pdf-all");
+    const btnXMLAll = btnRow.querySelector("#aa-btn-xml-all");
+
+    let lastXml = "";
+
+    function refreshOverlay(){
+      if (!lastXml) return;
+      const pickedLabel = (select.value === "__SCORE__" ? "Score" : select.value) || "";
+      const arranger    = getArrangerFromXml(lastXml);
+      overlayCredits(osmd, osmdBox, pickedLabel, arranger);
+    }
+
+    btnVis.addEventListener("click", async () => {
+      const { xml } = pickXml(select.value);
+      if (!xml) { alert("No XML found to visualize."); return; }
+      try {
+        lastXml = ensureTitle(xml, songName);
+        const processed = transformXmlForSlashes(lastXml);
+        const xmlToLoad = withXmlProlog(processed);
+        if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
+        await osmd.load(xmlToLoad);
+        await osmd.render();
+        await new Promise(r => requestAnimationFrame(r));
+        fitScoreToHeight(osmd, osmdBox);
+        btnPDF.disabled = false;
+        btnXML.disabled = false;
+        refreshOverlay();
+      } catch(e){
+        console.error("[finalViewer] render failed", e);
+        alert("Failed to render this selection.");
+      }
+    });
+
+    btnPDF.addEventListener("click", async () => {
+      if (!lastXml) { alert("Load a score/part first."); return; }
+      const base = (select.value === "__SCORE__" ? "Score" : select.value);
+      await exportCurrentViewToPdf(osmdBox, base);
+    });
+
+    btnXML.addEventListener("click", () => {
+      if (!lastXml) { alert("Load a score/part first."); return; }
+      const name = (select.value === "__SCORE__" ? "Score" : select.value) || "part";
+      downloadText(lastXml, safe(name) + ".musicxml", "application/xml");
+    });
+
+    btnPDFAll.addEventListener("click", async () => {
+      const partsNow = sortPartsEvenIfNoPid(Array.isArray(getState().arrangedFiles)?getState().arrangedFiles:[]);
+      if (!partsNow.length) { alert("No parts found."); return; }
+      const jspdfNS = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
+      const JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
+      if (!JsPDFCtor) { alert("jsPDF not available."); return; }
+      const docName = safe(songName) + " - All Parts.pdf";
+      let doc = null;
+      for (const p of partsNow){
+        try{
+          const processed = transformXmlForSlashes(ensureTitle(p.xml, p.instrumentName));
+          const osmdReady = withXmlProlog(processed);
+          await osmd.load(osmdReady);
+          await osmd.render();
+          const snap = await snapshotCanvas(osmdBox);
+          const { w, h, canvas } = snap;
+          if (!doc) doc = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
+          else doc.addPage([w,h], w>=h?"landscape":"portrait");
+          doc.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
+        }catch(e){ console.error("[finalViewer] PDF all parts failed on", p.instrumentName, e); }
+      }
+      if (doc) doc.save(docName);
+    });
+
+    btnXMLAll.addEventListener("click", async () => {
+      const partsNow = sortPartsEvenIfNoPid(Array.isArray(getState().arrangedFiles)?getState().arrangedFiles:[]);
+      if (!partsNow.length) { alert("No parts found."); return; }
+      for (const p of partsNow){
+        downloadText(ensureTitle(p.xml, p.instrumentName), safe(p.instrumentName || "Part") + ".musicxml", "application/xml");
+        await new Promise(r => setTimeout(r,60));
+      }
+    });
+
+    function pickXml(choice){
+      const s = getState();
+      if (choice === "__SCORE__") return { xml: s.combinedScoreXml || "" };
+      const list = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
+      const hit = list.find(f => (f.instrumentName || f.baseName) === choice);
+      return { xml: (hit && hit.xml) || "" };
+    }
+  }
+
+  /* viewer helpers */
+  function sortPartsEvenIfNoPid(files){
+    const out = [];
+    for (const f of files){
+      const pid = f.newPartId || extractPidFromXml(f.xml) || "";
+      const n = parseInt(String(pid).replace(/^P/i,""), 10);
+      out.push(Object.assign({}, f, { _pnum: (isFinite(n)?n:999) }));
+    }
+    out.sort((a,b) => (a._pnum !== b._pnum) ? a._pnum - b._pnum : String(a.instrumentName||"").localeCompare(String(b.instrumentName||"")));
+    return out;
+  }
+  function extractPidFromXml(xml){
+    const m = String(xml||"").match(/<score-part\s+id="([^"]+)"/i);
+    return m ? m[1] : null;
+  }
+  function snapshotCanvas(container){
+    return html2canvas(container, { scale:2, backgroundColor:"#fff" })
+           .then(canvas => ({canvas, w:canvas.width, h:canvas.height}));
+  }
+  async function exportCurrentViewToPdf(container, baseName){
+    const snap = await snapshotCanvas(container);
+    const { w, h, canvas } = snap;
+    const jspdfNS = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
+    const JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
+    if (!JsPDFCtor) { alert("jsPDF not loaded."); return; }
+    const pdf = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
+    pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
+    pdf.save(safe(baseName || "score") + ".pdf");
+  }
+  function backToInstrumentSelection(prevState){
+    const packName = (prevState && (prevState.pack || (prevState.selectedPack && prevState.selectedPack.name))) || "";
+    const songName = (prevState && (prevState.song || (prevState.selectedSong && prevState.selectedSong.name))) || "";
+    setState({ pack: packName, song: songName, packIndex: getState().packIndex, songIndex: getState().songIndex, timestamp: Date.now() });
+    document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
+    hideArrangingLoading();
+    qs("step1") && qs("step1").classList.add("hidden");
+    qs("step2") && qs("step2").classList.add("hidden");
+    qs("step3") && qs("step3").classList.remove("hidden");
+  }
+  function fitScoreToHeight(osmd, host){
+    const svg = host.querySelector("svg"); if (!svg) return;
+    const maxH = host.clientHeight; if (!maxH) return;
+    let svgH = 0; try { svgH = svg.getBBox().height; } catch(e){}
+    if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
+    if (!svgH) return;
+    const current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
+    let target = Math.min(current, maxH / svgH);
+    if (!isFinite(target) || target <= 0) target = 1;
+    target = Math.max(0.3, Math.min(1.5, target));
+    if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
+  }
+
+  // --- XML utilities for OSMD ---
+  function ensureTitle(xmlString, title){
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(xmlString, "application/xml");
+      const hasMovement = !!doc.querySelector("movement-title");
+      const hasWork     = !!doc.querySelector("work > work-title");
+      if (!hasMovement && !hasWork) {
+        const root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
+        const mv = doc.createElement("movement-title"); mv.textContent = title || "Auto Arranger Score";
+        root.insertBefore(mv, root.firstChild);
+      }
+      return new XMLSerializer().serializeToString(doc);
+    } catch (e) { return xmlString; }
+  }
+  function transformXmlForSlashes(xmlString) {
+    try {
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(xmlString, "application/xml");
+      xmlDoc.querySelectorAll("lyric").forEach(n => n.remove());
+      return new XMLSerializer().serializeToString(xmlDoc);
+    } catch (e) { return xmlString; }
+  }
+  function withXmlProlog(str){
+    if (!str) return str;
+    let s = String(str).replace(/^\uFEFF/, "").replace(/^\s+/, "");
+    if (!/^\<\?xml/i.test(s)) s = '<?xml version="1.0" encoding="UTF-8"?>\n' + s;
+    return s;
+  }
+
+  // --- file helpers ---
+  function safe(name){
+    return String(name || "").replace(/[\\\/:*?"<>|]+/g, "_").replace(/\s+/g, " ").trim();
+  }
+  function downloadText(text, filename, mimetype){
+    try{
+      const blob = new Blob([text], { type: mimetype || "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename || "download.txt";
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 50);
+    } catch(e){ console.warn("downloadText failed", e); }
+  }
+
+  // --- overlay (viewer-only) ------------------------------------------------
+  function getArrangerFromXml(xmlString){
+    try{
+      const p = new DOMParser();
+      const doc = p.parseFromString(xmlString || "", "application/xml");
+      let arr = "";
+      doc.querySelectorAll("credit").forEach(c => {
+        const t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
+        if (!arr && t === "arranger") {
+          const w = c.querySelector("credit-words");
+          arr = (w && w.textContent || "").trim();
+        }
+      });
+      if (!arr) {
+        const fallback = doc.querySelector('identification > creator[type="arranger"]');
+        if (fallback) arr = (fallback.textContent || "").trim();
+      }
+      return arr || "Arranged by Auto Arranger";
+    } catch(e){ return "Arranged by Auto Arranger"; }
+  }
+
+  function overlayCredits(osmd, host, pickedLabel, arrangerText){
+    // --- Tunable baselines (SVG logical units -> we scale to pixels)
+    const PART_TOP_PAD_DEFAULT   = 10;  // closer to top
+    const PART_LEFT_PAD_DEFAULT  = 18;
+    const ARR_TOP_PAD_DEFAULT    = 6;   // near absolute top
+    const ARR_RIGHT_PAD_DEFAULT  = 20;
+
+    // Fine-tune (extra offset after baseline)
+    const ARR_TOP_TWEAK          = 8;   // push a bit lower from very top
+    const ARR_RIGHT_INSET        = 40;  // bring in from right edge
+
+    // Defaults for font sizes if we can't measure the composer text
+    const PART_FONT_PX_DEFAULT   = 11;
+    const ARR_FONT_PX_DEFAULT    = 11;
+
+    // Container
+    let overlay = host.querySelector(".aa-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "aa-overlay";
+      overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
+      host.appendChild(overlay);
+    } else {
+      overlay.innerHTML = "";
+    }
+
+    const svg = host.querySelector("svg");
+    if (!svg) return;
+
+    const svgRect  = svg.getBoundingClientRect();
+    const hostRect = host.getBoundingClientRect();
+
+    const absLeft  = (px) => (px - hostRect.left) + "px";
+    const absTop   = (px) => (px - hostRect.top)  + "px";
+    const absRight = (px) => (hostRect.right - px) + "px";
+
+    // 1) Try to match OSMD font from visible composer <text> element
+    let composerTextNode = null;
+    for (const t of svg.querySelectorAll("text")) {
+      const txt = (t.textContent || "");
+      if (/compos/i.test(txt)) { composerTextNode = t; break; }
+    }
+    const cs = composerTextNode ? getComputedStyle(composerTextNode) : null;
+    const measuredPx = (cs && cs.fontSize && cs.fontSize.endsWith("px"))
+      ? parseFloat(cs.fontSize) : NaN;
+
+    // 2) Position scale: prefer viewBox ratio; else OSMD zoom; else 1
+    let scalePos = NaN;
+    const vb = svg.viewBox && svg.viewBox.baseVal;
+    if (vb && vb.height) {
+      scalePos = svgRect.height / vb.height;
+    }
+    if (!scalePos || !isFinite(scalePos)) {
+      const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
+      scalePos = zoom;
+    }
+
+    // 3) Font settings
+    const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
+    const weight = (cs && cs.fontWeight) ? cs.fontWeight : "normal";
+    const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
+
+    // If we can measure the composer font-size, use it directly for both labels.
+    // Otherwise, scale default points with the same position scale.
+    const partPx = (measuredPx && isFinite(measuredPx) && measuredPx > 0)
+      ? Math.round(measuredPx)
+      : Math.round(PART_FONT_PX_DEFAULT * (scalePos || 1));
+
+    const arrPx  = (measuredPx && isFinite(measuredPx) && measuredPx > 0)
+      ? Math.round(measuredPx)
+      : Math.round(ARR_FONT_PX_DEFAULT * (scalePos || 1));
+
+    // 4) Compute pinned positions (top-left for part; top-right for arranger)
+    const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scalePos;
+    const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scalePos;
+    const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scalePos;
+    const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scalePos;
+
+    // Score/Part (top-left)
+    if (pickedLabel) {
+      const el = document.createElement("div");
+      el.textContent = pickedLabel;
+      el.style.cssText =
+        "position:absolute;" +
+        "left:" + absLeft(partLeft) + ";" +
+        "top:" + absTop(partTop) + ";" +
+        "font-size:" + partPx + "px;" +
+        "font-weight:" + weight + ";" +
+        "font-style:" + fstyle + ";" +
+        "font-family:" + family + ";" +
+        "color:#111;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
+      overlay.appendChild(el);
+    }
+
+    // Arranger (top-right, pinned near top with inset)
+    if (arrangerText) {
+      const el = document.createElement("div");
+      el.textContent = arrangerText;
+      el.style.cssText =
+        "position:absolute;" +
+        "right:" + absRight(arrRightX) + ";" +
+        "top:" + absTop(arrTop) + ";" +
+        "font-size:" + arrPx + "px;" +
+        "font-weight:" + weight + ";" +
+        "font-style:" + fstyle + ";" +
+        "font-family:" + family + ";" +
+        "color:#111;text-align:right;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
+      overlay.appendChild(el);
+    }
+  }
+
+  // tiny DOM helper
+  function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
+})();
 
 
 
