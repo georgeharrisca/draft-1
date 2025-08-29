@@ -1542,7 +1542,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   }
 
   function buildViewerUI() {
-    // remove any existing viewer
     Array.prototype.forEach.call(document.querySelectorAll('#aa-viewer'), function(n){ n.remove(); });
 
     var state = getState();
@@ -1684,7 +1683,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
             if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
             await osmd.load(osmdReady);
             await osmd.render();
-            // overlay viewer-only credits for each part before snapshot
             overlayCredits(osmdBox, osmdReady, p.instrumentName);
             var snap = await snapshotCanvas(osmdBox);
             var w = snap.w, h = snap.h, canvas = snap.canvas;
@@ -1780,63 +1778,107 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     var old = host.querySelector('#aa-overlay');
     if (old) old.remove();
 
-    // parse the MusicXML to find arranger text
-    var arranger = "";
+    var svg = host.querySelector("svg");
+    if (!svg) return;
+
+    // parse texts from XML
+    var arranger = "", composer = "";
     var partLabel = (selectionValue === "__SCORE__" ? "Score" : selectionValue) || "";
 
     try{
       var p = new DOMParser();
       var doc = p.parseFromString(xmlString, "application/xml");
 
-      // prefer <credit-type>arranger</credit-type>, else identification/creator[type="arranger"]
       doc.querySelectorAll("credit").forEach(function(c){
-        if (arranger) return;
         var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
-        if (t === "arranger"){
-          var w = (c.querySelector("credit-words") && c.querySelector("credit-words").textContent || "").trim();
-          if (w) arranger = w;
-        }
+        var w = (c.querySelector("credit-words") && c.querySelector("credit-words").textContent || "").trim();
+        if (!arranger && t === "arranger" && w) arranger = w;
+        if (!composer && t === "composer" && w) composer = w;
       });
       if (!arranger){
         var idArr = doc.querySelector('identification > creator[type="arranger"]');
         if (idArr) arranger = (idArr.textContent || "").trim();
       }
-    }catch(e){ /* ignore parse issues */ }
+      if (!composer){
+        var idComp = doc.querySelector('identification > creator[type="composer"]');
+        if (idComp) composer = (idComp.textContent || "").trim();
+      }
+    }catch(e){}
 
-    // if OSMD already drew the text, don't overlay to avoid duplicates
-    var svg = host.querySelector("svg");
-    var svgText = svg ? svg.textContent || "" : "";
+    // helper to check if OSMD already drew a string
     function contains(hay, needle){
       hay = String(hay || "").toLowerCase();
       needle = String(needle || "").toLowerCase();
       return needle && hay.indexOf(needle) !== -1;
     }
+
+    var svgText = svg.textContent || "";
     var needPart     = partLabel && !contains(svgText, partLabel);
     var needArranger = arranger  && !contains(svgText, arranger);
 
+    // if nothing to add, bail
     if (!needPart && !needArranger) return;
+
+    // try to find the <text> element for the composer to position under it
+    var textNodes = Array.prototype.slice.call(svg.querySelectorAll("text"));
+    var compNode = null;
+    for (var i=0;i<textNodes.length;i++){
+      var tx = (textNodes[i].textContent || "").trim().toLowerCase();
+      if (composer && tx.indexOf(composer.trim().toLowerCase()) !== -1) { compNode = textNodes[i]; break; }
+    }
+
+    var hostRect = host.getBoundingClientRect();
+    var refTop = 24; // fallback top
+    var refRight = 18; // fallback right inset
+
+    if (compNode && compNode.getBoundingClientRect){
+      var cr = compNode.getBoundingClientRect();
+      refTop = Math.max(8, Math.round(cr.top - hostRect.top));                 // y of composer baseline
+      refRight = Math.max(8, Math.round(hostRect.right - cr.right));           // distance from right edge
+    }
 
     // build overlay container
     var ov = document.createElement("div");
     ov.id = "aa-overlay";
     ov.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
-    // make sure the host is positioning context
     if (getComputedStyle(host).position === "static") host.style.position = "relative";
 
-    function tag(text, side){
+    // style constants (easy to tweak)
+    var SCORE_LEFT_INSET = 32;               // a bit to the right vs before
+    var SCORE_TOP_OFFSET = refTop + 2;       // slightly lower than the composer line
+    var SCORE_FONT_PX    = 15;               // larger than before
+
+    var ARR_TOP_OFFSET   = refTop + 22;      // place just below composer
+    var ARR_RIGHT_INSET  = refRight;         // line up with composer's right edge
+    var ARR_FONT_PX      = 17;               // close to composer size/weight
+
+    function leftTag(text){
       var d = document.createElement("div");
       d.textContent = text;
       d.style.cssText =
-        "position:absolute;top:8px;" +
-        (side === "right" ? "right:12px;" : "left:12px;") +
-        "font:600 12px/1.2 'Times New Roman', serif;" +
+        "position:absolute;" +
+        "left:" + SCORE_LEFT_INSET + "px;" +
+        "top:" + SCORE_TOP_OFFSET + "px;" +
+        "font:600 " + SCORE_FONT_PX + "px/1.2 'Times New Roman', serif;" +
         "letter-spacing:.2px;color:#111;" +
         "text-shadow:0 1px 0 rgba(255,255,255,.9), 0 0 3px rgba(255,255,255,.6);";
       return d;
     }
+    function rightTag(text, topPx){
+      var d = document.createElement("div");
+      d.textContent = text;
+      d.style.cssText =
+        "position:absolute;" +
+        "right:" + ARR_RIGHT_INSET + "px;" +
+        "top:" + topPx + "px;" +
+        "font:600 " + ARR_FONT_PX + "px/1.2 'Times New Roman', serif;" +
+        "letter-spacing:.2px;color:#111;text-align:right;" +
+        "text-shadow:0 1px 0 rgba(255,255,255,.9), 0 0 3px rgba(255,255,255,.6);";
+      return d;
+    }
 
-    if (needPart)     ov.appendChild(tag(partLabel, "left"));
-    if (needArranger) ov.appendChild(tag(arranger,  "right"));
+    if (needPart)     ov.appendChild(leftTag(partLabel));
+    if (needArranger) ov.appendChild(rightTag(arranger, ARR_TOP_OFFSET));
 
     host.appendChild(ov);
   }
@@ -1871,7 +1913,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     return s;
   }
 
-  // --- file helpers ---
   function safe(name){
     return String(name || "")
       .replace(/[\\\/:*?"<>|]+/g, "_")
@@ -1889,13 +1930,13 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     } catch(e){ console.warn("downloadText failed", e); }
   }
 
-  // tiny DOM helper used above
   function ce(tag, props){
     var el = document.createElement(tag);
     if (props) Object.assign(el, props);
     return el;
   }
 })();
+
 
 
 /* =========================================================================
