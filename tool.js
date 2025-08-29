@@ -1874,7 +1874,9 @@ const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * sc
     } catch(e){ return "Arranged by Auto Arranger"; }
   }
 
-  function overlayCredits(osmd, host, pickedLabel, arrangerText){
+ // --- overlay (viewer-only) ------------------------------------------------
+function overlayCredits(osmd, host, pickedLabel, arrangerText){
+  try {
     // --- Tunable baselines (SVG logical units -> we scale to pixels)
     const PART_TOP_PAD_DEFAULT   = 10;  // closer to top
     const PART_LEFT_PAD_DEFAULT  = 18;
@@ -1931,18 +1933,18 @@ const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * sc
       scalePos = zoom;
     }
 
-    // 3) Font settings
+    // 3) Font settings (match OSMD where possible)
     const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
     const weight = (cs && cs.fontWeight) ? cs.fontWeight : "normal";
     const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
 
     // If we can measure the composer font-size, use it directly for both labels.
     // Otherwise, scale default points with the same position scale.
-    const partPx = (measuredPx && isFinite(measuredPx) && measuredPx > 0)
+    const partPx = (isFinite(measuredPx) && measuredPx > 0)
       ? Math.round(measuredPx)
       : Math.round(PART_FONT_PX_DEFAULT * (scalePos || 1));
 
-    const arrPx  = (measuredPx && isFinite(measuredPx) && measuredPx > 0)
+    const arrPx  = (isFinite(measuredPx) && measuredPx > 0)
       ? Math.round(measuredPx)
       : Math.round(ARR_FONT_PX_DEFAULT * (scalePos || 1));
 
@@ -1983,7 +1985,10 @@ const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * sc
         "color:#111;text-align:right;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
       overlay.appendChild(el);
     }
+  } catch (e) {
+    console.warn("[M7 overlay] skipped due to error:", e);
   }
+}
 
   // tiny DOM helper
   function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
