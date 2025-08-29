@@ -1513,8 +1513,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 /* =========================================================================
-   M7) Final Viewer — dropdown lists all parts; ensure title; ensure XML prolog
-   + viewer-only overlay for Part/Score (left) and Arranger (right)
+   M7) Final Viewer — list parts, render with OSMD, downloads,
+       ensure XML prolog, and a viewer-only credits overlay (Score/Part + Arranger)
    ------------------------------------------------------------------------- */
 ;(function () {
   AA.on("credits:done", () => AA.safe("finalViewer", bootWhenReady));
@@ -1542,6 +1542,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   }
 
   function buildViewerUI() {
+    // remove any existing viewer
     Array.prototype.forEach.call(document.querySelectorAll('#aa-viewer'), function(n){ n.remove(); });
 
     var state = getState();
@@ -1610,7 +1611,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     osmdBox.id = "aa-osmd-box";
     osmdBox.style.cssText =
       "margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;" +
-      "flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;";
+      "flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;position:relative;";
     card.appendChild(osmdBox);
     document.body.appendChild(wrap);
 
@@ -1624,11 +1625,15 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     var btnXMLAll = btnRow.querySelector("#aa-btn-xml-all");
 
     var lastXml = "";
+    var lastSelection = "";
 
-    // keep overlays aligned after window resizes
+    function refreshOverlay() {
+      if (!lastXml) return;
+      overlayCredits(osmdBox, lastXml, lastSelection);
+    }
     window.addEventListener("resize", function(){
       fitScoreToHeight(osmd, osmdBox);
-      if (lastXml) overlayCredits(osmdBox, lastXml, select.value);
+      refreshOverlay();
     });
 
     btnVis.addEventListener("click", function(){
@@ -1637,15 +1642,14 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       if (!xml) { alert("No XML found to visualize."); return; }
       (async function(){
         try{
-          lastXml = ensureTitle(xml, songName);
-          var processed = transformXmlForSlashes(lastXml);
-          var osmdReady = withXmlProlog(processed);
+          lastSelection = select.value;
+          lastXml = withXmlProlog(transformXmlForSlashes(ensureTitle(xml, songName)));
           if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
-          await osmd.load(osmdReady);
+          await osmd.load(lastXml);
           await osmd.render();
           await new Promise(function(r){ requestAnimationFrame(r); });
           fitScoreToHeight(osmd, osmdBox);
-          overlayCredits(osmdBox, lastXml, select.value);
+          refreshOverlay();
           btnPDF.disabled = false; btnXML.disabled = false;
         } catch(e){
           console.error("[finalViewer] render failed", e);
@@ -1654,10 +1658,20 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       })();
     });
 
-    btnPDF.addEventListener("click", function(){
+    btnPDF.addEventListener("click", async function(){
       if (!lastXml) { alert("Load a score/part first."); return; }
       var base = (select.value === "__SCORE__" ? "Score" : select.value);
-      exportCurrentViewToPdf(osmdBox, base);
+
+      // Hide viewer-only overlay during PDF capture
+      var overlay = osmdBox.querySelector("#aa-overlay");
+      var prevVis = overlay ? overlay.style.visibility : null;
+      if (overlay) overlay.style.visibility = "hidden";
+
+      try {
+        await exportCurrentViewToPdf(osmdBox, base);
+      } finally {
+        if (overlay && prevVis !== null) overlay.style.visibility = prevVis;
+      }
     });
 
     btnXML.addEventListener("click", function(){
@@ -1678,15 +1692,23 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         for (var i=0;i<partsNow.length;i++){
           var p = partsNow[i];
           try{
-            var processed = transformXmlForSlashes(ensureTitle(p.xml, p.instrumentName));
-            var osmdReady = withXmlProlog(processed);
-            if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
-            await osmd.load(osmdReady);
+            var processed = withXmlProlog(transformXmlForSlashes(ensureTitle(p.xml, p.instrumentName)));
+            await osmd.load(processed);
             await osmd.render();
-            overlayCredits(osmdBox, osmdReady, p.instrumentName);
+
+            // ensure overlay hidden for export
+            var overlay = osmdBox.querySelector("#aa-overlay");
+            var prevVis = overlay ? overlay.style.visibility : null;
+            if (overlay) overlay.style.visibility = "hidden";
+
             var snap = await snapshotCanvas(osmdBox);
+
+            if (overlay && prevVis !== null) overlay.style.visibility = prevVis;
+
             var w = snap.w, h = snap.h, canvas = snap.canvas;
-            if (!doc) doc = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
+            var jspdfNS2 = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
+            var JsPDFCtor2 = jspdfNS2.jsPDF || jspdfNS2.JSPDF || jspdfNS2.jsPDFConstructor;
+            if (!doc) doc = new JsPDFCtor2({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
             else doc.addPage([w,h], w>=h?"landscape":"portrait");
             doc.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
           }catch(e){ console.error("[finalViewer] PDF all parts failed on", p.instrumentName, e); }
@@ -1772,117 +1794,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
   }
 
-  // --- viewer-only overlays for credits OSMD may hide ---
-  function overlayCredits(host, xmlString, selectionValue){
-    // remove old overlays
-    var old = host.querySelector('#aa-overlay');
-    if (old) old.remove();
-
-    var svg = host.querySelector("svg");
-    if (!svg) return;
-
-    // parse texts from XML
-    var arranger = "", composer = "";
-    var partLabel = (selectionValue === "__SCORE__" ? "Score" : selectionValue) || "";
-
-    try{
-      var p = new DOMParser();
-      var doc = p.parseFromString(xmlString, "application/xml");
-
-      doc.querySelectorAll("credit").forEach(function(c){
-        var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
-        var w = (c.querySelector("credit-words") && c.querySelector("credit-words").textContent || "").trim();
-        if (!arranger && t === "arranger" && w) arranger = w;
-        if (!composer && t === "composer" && w) composer = w;
-      });
-      if (!arranger){
-        var idArr = doc.querySelector('identification > creator[type="arranger"]');
-        if (idArr) arranger = (idArr.textContent || "").trim();
-      }
-      if (!composer){
-        var idComp = doc.querySelector('identification > creator[type="composer"]');
-        if (idComp) composer = (idComp.textContent || "").trim();
-      }
-    }catch(e){}
-
-    // helper to check if OSMD already drew a string
-    function contains(hay, needle){
-      hay = String(hay || "").toLowerCase();
-      needle = String(needle || "").toLowerCase();
-      return needle && hay.indexOf(needle) !== -1;
-    }
-
-    var svgText = svg.textContent || "";
-    var needPart     = partLabel && !contains(svgText, partLabel);
-    var needArranger = arranger  && !contains(svgText, arranger);
-
-    // if nothing to add, bail
-    if (!needPart && !needArranger) return;
-
-    // try to find the <text> element for the composer to position under it
-    var textNodes = Array.prototype.slice.call(svg.querySelectorAll("text"));
-    var compNode = null;
-    for (var i=0;i<textNodes.length;i++){
-      var tx = (textNodes[i].textContent || "").trim().toLowerCase();
-      if (composer && tx.indexOf(composer.trim().toLowerCase()) !== -1) { compNode = textNodes[i]; break; }
-    }
-
-    var hostRect = host.getBoundingClientRect();
-    var refTop = 24; // fallback top
-    var refRight = 18; // fallback right inset
-
-    if (compNode && compNode.getBoundingClientRect){
-      var cr = compNode.getBoundingClientRect();
-      refTop = Math.max(8, Math.round(cr.top - hostRect.top));                 // y of composer baseline
-      refRight = Math.max(8, Math.round(hostRect.right - cr.right));           // distance from right edge
-    }
-
-    // build overlay container
-    var ov = document.createElement("div");
-    ov.id = "aa-overlay";
-    ov.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
-    if (getComputedStyle(host).position === "static") host.style.position = "relative";
-
-    // style constants (easy to tweak)
-    var SCORE_LEFT_INSET = 32;               // a bit to the right vs before
-    var SCORE_TOP_OFFSET = refTop + 2;       // slightly lower than the composer line
-    var SCORE_FONT_PX    = 15;               // larger than before
-
-    var ARR_TOP_OFFSET   = refTop + 22;      // place just below composer
-    var ARR_RIGHT_INSET  = refRight;         // line up with composer's right edge
-    var ARR_FONT_PX      = 17;               // close to composer size/weight
-
-    function leftTag(text){
-      var d = document.createElement("div");
-      d.textContent = text;
-      d.style.cssText =
-        "position:absolute;" +
-        "left:" + SCORE_LEFT_INSET + "px;" +
-        "top:" + SCORE_TOP_OFFSET + "px;" +
-        "font:600 " + SCORE_FONT_PX + "px/1.2 'Times New Roman', serif;" +
-        "letter-spacing:.2px;color:#111;" +
-        "text-shadow:0 1px 0 rgba(255,255,255,.9), 0 0 3px rgba(255,255,255,.6);";
-      return d;
-    }
-    function rightTag(text, topPx){
-      var d = document.createElement("div");
-      d.textContent = text;
-      d.style.cssText =
-        "position:absolute;" +
-        "right:" + ARR_RIGHT_INSET + "px;" +
-        "top:" + topPx + "px;" +
-        "font:600 " + ARR_FONT_PX + "px/1.2 'Times New Roman', serif;" +
-        "letter-spacing:.2px;color:#111;text-align:right;" +
-        "text-shadow:0 1px 0 rgba(255,255,255,.9), 0 0 3px rgba(255,255,255,.6);";
-      return d;
-    }
-
-    if (needPart)     ov.appendChild(leftTag(partLabel));
-    if (needArranger) ov.appendChild(rightTag(arranger, ARR_TOP_OFFSET));
-
-    host.appendChild(ov);
-  }
-
   // --- XML utilities for OSMD ---
   function ensureTitle(xmlString, title){
     try {
@@ -1913,6 +1824,127 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     return s;
   }
 
+  // --- viewer-only overlays (Score/Part left; Arranger under right composer) ---
+  function overlayCredits(host, xmlString, selectionValue){
+    // remove old overlays
+    var old = host.querySelector('#aa-overlay');
+    if (old) old.remove();
+
+    var svg = host.querySelector("svg");
+    if (!svg) return;
+
+    // parse relevant texts from XML
+    var arranger = "", composer = "";
+    var partLabel = (selectionValue === "__SCORE__" ? "Score" : selectionValue) || "";
+
+    try{
+      var p = new DOMParser();
+      var doc = p.parseFromString(xmlString, "application/xml");
+
+      doc.querySelectorAll("credit").forEach(function(c){
+        var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
+        var w = (c.querySelector("credit-words") && c.querySelector("credit-words").textContent || "").trim();
+        if (!arranger && t === "arranger" && w) arranger = w;
+        if (!composer && t === "composer" && w) composer = w;
+      });
+      if (!arranger){
+        var idArr = doc.querySelector('identification > creator[type="arranger"]');
+        if (idArr) arranger = (idArr.textContent || "").trim();
+      }
+      if (!composer){
+        var idComp = doc.querySelector('identification > creator[type="composer"]');
+        if (idComp) composer = (idComp.textContent || "").trim();
+      }
+    }catch(e){}
+
+    // check if OSMD already drew them
+    function contains(hay, needle){
+      hay = String(hay || "").toLowerCase();
+      needle = String(needle || "").toLowerCase();
+      return needle && hay.indexOf(needle) !== -1;
+    }
+    var svgText = svg.textContent || "";
+    var needPart     = partLabel && !contains(svgText, partLabel);
+    var needArranger = arranger  && !contains(svgText, arranger);
+    if (!needPart && !needArranger) return;
+
+    // detect composer text node to copy its font and baseline
+    var textNodes = Array.prototype.slice.call(svg.querySelectorAll("text"));
+    var compNode = null;
+    for (var i=0;i<textNodes.length;i++){
+      var tx = (textNodes[i].textContent || "").trim().toLowerCase();
+      if (composer && tx.indexOf(composer.trim().toLowerCase()) !== -1) { compNode = textNodes[i]; break; }
+    }
+
+    // defaults if we can't read composer node
+    var baseFamily = "'Times New Roman', serif";
+    var baseSizePx = 16;
+    var baseWeight = "600";
+
+    var hostRect = host.getBoundingClientRect();
+    var refTop = 24;          // y baseline ref (from host top)
+    var refRight = 18;        // right inset (from host right)
+
+    if (compNode && compNode.getBoundingClientRect){
+      var cs = getComputedStyle(compNode);
+      if (cs.fontFamily) baseFamily = cs.fontFamily;
+      var fs = parseFloat(cs.fontSize); if (fs) baseSizePx = fs;
+      baseWeight = cs.fontWeight || baseWeight;
+
+      var cr = compNode.getBoundingClientRect();
+      refTop   = Math.max(8, Math.round(cr.top - hostRect.top));
+      refRight = Math.max(8, Math.round(hostRect.right - cr.right));
+    }
+
+    // ==== tweak positions/sizes here ====
+    var PART_NUDGE_X = 10;            // + right
+    var PART_NUDGE_Y = -8;            // - up / + down (relative to composer baseline)
+    var PART_SIZE_MULT = 1.00;
+
+    var ARR_UNDERLINE_GAP = 0.90;     // distance below composer in ems
+    var ARR_NUDGE_Y = -6;             // - up
+    var ARR_SIZE_MULT = 1.00;
+    // ===================================
+
+    function styleStr(side, topPx, sizeMult){
+      var sizePx = Math.round(baseSizePx * (sizeMult || 1));
+      var common = "position:absolute;top:"+topPx+"px;" +
+                   "font-weight:"+baseWeight+";font-family:"+baseFamily+";font-size:"+sizePx+"px;" +
+                   "line-height:1.15;letter-spacing:.2px;color:#111;" +
+                   "text-shadow:0 1px 0 rgba(255,255,255,.9), 0 0 3px rgba(255,255,255,.6);" +
+                   "pointer-events:none;";
+      if (side === "left"){
+        return "left:" + (32 + PART_NUDGE_X) + "px;" + common;
+      } else {
+        return "right:" + refRight + "px;text-align:right;" + common;
+      }
+    }
+
+    var ov = document.createElement("div");
+    ov.id = "aa-overlay";
+    ov.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
+    if (getComputedStyle(host).position === "static") host.style.position = "relative";
+
+    if (needPart){
+      var partTop = refTop + PART_NUDGE_Y;
+      var leftEl = document.createElement("div");
+      leftEl.textContent = partLabel;
+      leftEl.style.cssText = styleStr("left", partTop, PART_SIZE_MULT);
+      ov.appendChild(leftEl);
+    }
+
+    if (needArranger){
+      var arrangerTop = Math.round(refTop + baseSizePx * ARR_UNDERLINE_GAP) + ARR_NUDGE_Y;
+      var rightEl = document.createElement("div");
+      rightEl.textContent = arranger;
+      rightEl.style.cssText = styleStr("right", arrangerTop, ARR_SIZE_MULT);
+      ov.appendChild(rightEl);
+    }
+
+    host.appendChild(ov);
+  }
+
+  // --- file helpers ---
   function safe(name){
     return String(name || "")
       .replace(/[\\\/:*?"<>|]+/g, "_")
@@ -1930,12 +1962,14 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     } catch(e){ console.warn("downloadText failed", e); }
   }
 
+  // tiny DOM helper used above
   function ce(tag, props){
     var el = document.createElement(tag);
     if (props) Object.assign(el, props);
     return el;
   }
 })();
+
 
 
 
