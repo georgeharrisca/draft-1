@@ -1517,8 +1517,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
    (template-literal-free version to avoid stray backtick copy/paste issues)
    ------------------------------------------------------------------------- */
 ;(function () {
-  AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
-
+AA.on("credits:done", () => AA.safe("finalViewer", bootWhenReady));
+   
   async function bootWhenReady() {
     if (document.getElementById('aa-viewer')) return;
     await ensureLib("opensheetmusicdisplay", "./opensheetmusicdisplay.min.js");
@@ -1823,6 +1823,162 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 
+/* =========================================================================
+   M8) applyCredits — mirror credits (title, subtitle, composer, arranger,
+                      "part name") from the source file into:
+                      - the combined score (with "Score" at top-left)
+                      - each arranged part (with its instrument name)
+   - Listens:  combine:done
+   - Emits:    credits:done
+   ------------------------------------------------------------------------- */
+(function(){
+  AA.on("combine:done", () => AA.safe("applyCredits", run));
+
+  function run(){
+    const s = getState();
+    const partsSrc = Array.isArray(s.parts) ? s.parts : [];
+    const arranged = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
+    let combined = s.combinedScoreXml || "";
+
+    if (!combined || !arranged.length) {
+      console.warn("[M8] nothing to do (no combined or no arranged files).");
+      AA.emit("credits:done");
+      return;
+    }
+
+    // 1) Pull credits from the first original part as canonical source
+    const baseXml = partsSrc[0]?.xml || combined;
+    const snap = snapshotCredits(baseXml);
+
+    // 2) Apply to combined score (with "Score" at top-left)
+    combined = applyCreditsToDoc(combined, {
+      title: snap.title, subtitle: snap.subtitle,
+      composer: snap.composer, arranger: snap.arranger,
+      partName: "Score"
+    });
+
+    // 3) Apply to each arranged single-part (partName = instrument label)
+    const updatedArranged = arranged.map(f => {
+      const label = f.instrumentName || f.baseName || "Part";
+      return {
+        ...f,
+        xml: applyCreditsToDoc(f.xml, {
+          title: snap.title, subtitle: snap.subtitle,
+          composer: snap.composer, arranger: snap.arranger,
+          partName: label
+        })
+      };
+    });
+
+    mergeState({ combinedScoreXml: combined, arrangedFiles: updatedArranged, creditsDone: true });
+    AA.emit("credits:done");
+  }
+
+  /* ---------- helpers ---------- */
+
+  function snapshotCredits(xmlString){
+    const out = { title:"", subtitle:"", composer:"", arranger:"" };
+    try{
+      const p = new DOMParser();
+      const doc = p.parseFromString(xmlString, "application/xml");
+
+      // Title: prefer <movement-title>, else credit-type="title", else work-title
+      out.title =
+        (doc.querySelector("movement-title")?.textContent || "").trim() ||
+        selCredit(doc, "title") || 
+        (doc.querySelector("work > work-title")?.textContent || "").trim();
+
+      out.subtitle = selCredit(doc, "subtitle");
+      // Composer/Arranger: credit first, else identification/creator
+      out.composer = selCredit(doc, "composer") ||
+                     (doc.querySelector('identification > creator[type="composer"]')?.textContent || "").trim();
+      out.arranger = selCredit(doc, "arranger") ||
+                     (doc.querySelector('identification > creator[type="arranger"]')?.textContent || "").trim();
+    }catch(e){ console.warn("[M8] snapshotCredits failed; defaults used.", e); }
+    return out;
+
+    function selCredit(doc, type){
+      let text = "";
+      doc.querySelectorAll("credit").forEach(c=>{
+        const t = (c.querySelector("credit-type")?.textContent||"").toLowerCase().trim();
+        if (!text && t === type) {
+          text = (c.querySelector("credit-words")?.textContent || "").trim();
+        }
+      });
+      return text;
+    }
+  }
+
+  function applyCreditsToDoc(xmlString, payload){
+    const { title, subtitle, composer, arranger, partName } = payload;
+    try{
+      const p   = new DOMParser();
+      const doc = p.parseFromString(xmlString, "application/xml");
+      const root= doc.documentElement;
+
+      // Title in headers (not the big printed credit) to keep metadata consistent
+      ensureText(doc, root, "movement-title", title || ""); // center title line OSMD shows if present
+      ensureWorkTitle(doc, root, title || "");
+
+      // Nuke existing target credits to avoid duplicates
+      removeCredits(doc, ["title","subtitle","composer","arranger","part name"]);
+
+      // Recreate credits using safe, neutral defaults if the source didn’t have positions.
+      // You can tweak these default positions if you want different layout.
+      if (title)    doc.documentElement.insertBefore(makeCredit(doc, "title",     title,    { center:true, y:2375, size:21.6 }), root.firstChild);
+      if (subtitle) doc.documentElement.insertBefore(makeCredit(doc, "subtitle",  subtitle, { center:true, y:2282, size:16.2 }), root.firstChild);
+      if (composer) doc.documentElement.insertBefore(makeCredit(doc, "composer",  composer, { right:true,  y:2298, size:10.8 }), root.firstChild);
+      if (arranger) doc.documentElement.insertBefore(makeCredit(doc, "arranger",  arranger, { right:true,  y:2247, size:10.8 }), root.firstChild);
+      if (partName) doc.documentElement.insertBefore(makeCredit(doc, "part name", partName, { left:true,   y:2380, size:10.8 }), root.firstChild);
+
+      return new XMLSerializer().serializeToString(doc);
+    }catch(e){
+      console.warn("[M8] applyCreditsToDoc failed; returning original.", e);
+      return xmlString;
+    }
+  }
+
+  function removeCredits(doc, types){
+    const wanted = new Set(types.map(t=>String(t).toLowerCase()));
+    doc.querySelectorAll("credit").forEach(c=>{
+      const t = (c.querySelector("credit-type")?.textContent || "").toLowerCase().trim();
+      if (wanted.has(t)) c.remove();
+    });
+  }
+
+  function makeCredit(doc, type, text, pos){
+    // pos: { left?, right?, center?, y:number, size:number }
+    const credit = doc.createElement("credit");
+    credit.setAttribute("page","1");
+    const ct = doc.createElement("credit-type"); ct.textContent = type; credit.appendChild(ct);
+
+    const words = doc.createElement("credit-words");
+    if (pos?.center){ words.setAttribute("halign","center"); words.setAttribute("justify","center"); words.setAttribute("default-x","1018"); }
+    else if (pos?.right){ words.setAttribute("justify","right"); words.setAttribute("halign","right"); words.setAttribute("default-x","1807"); }
+    else { /* left */ words.setAttribute("default-x","226"); }
+    if (pos?.y != null) words.setAttribute("default-y", String(pos.y));
+    if (pos?.size != null) words.setAttribute("font-size", String(pos.size));
+    words.setAttribute("valign","top");
+    words.textContent = text;
+    credit.appendChild(words);
+    return credit;
+  }
+
+  function ensureText(doc, parent, tag, value){
+    if (value == null) return;
+    let el = parent.querySelector(tag);
+    if (!el){ el = doc.createElement(tag); parent.insertBefore(el, parent.firstChild); }
+    el.textContent = value;
+  }
+  function ensureWorkTitle(doc, root, title){
+    if (!title) return;
+    let work = root.querySelector("work");
+    if (!work){ work = doc.createElement("work"); root.insertBefore(work, root.firstChild); }
+    let wt = work.querySelector("work-title");
+    if (!wt){ wt = doc.createElement("work-title"); work.appendChild(wt); }
+    wt.textContent = title;
+  }
+})();
 
 
 /* ============================================================================
