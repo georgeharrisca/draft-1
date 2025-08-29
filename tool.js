@@ -1681,6 +1681,9 @@ const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * sc
       overlayCredits(osmd, osmdBox, pickedLabel, arranger);
     }
 
+    // keep overlay label in sync if user toggles selection after render
+    select.addEventListener("change", refreshOverlay);
+
     btnVis.addEventListener("click", async () => {
       const { xml } = pickXml(select.value);
       if (!xml) { alert("No XML found to visualize."); return; }
@@ -1705,7 +1708,12 @@ const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * sc
     btnPDF.addEventListener("click", async () => {
       if (!lastXml) { alert("Load a score/part first."); return; }
       const base = (select.value === "__SCORE__" ? "Score" : select.value);
+      // Hide overlay so it doesn't appear in exported PDF
+      const overlay = osmdBox.querySelector(".aa-overlay");
+      const prev = overlay ? overlay.style.visibility : null;
+      if (overlay) overlay.style.visibility = "hidden";
       await exportCurrentViewToPdf(osmdBox, base);
+      if (overlay) overlay.style.visibility = prev;
     });
 
     btnXML.addEventListener("click", () => {
@@ -1722,6 +1730,12 @@ const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * sc
       if (!JsPDFCtor) { alert("jsPDF not available."); return; }
       const docName = safe(songName) + " - All Parts.pdf";
       let doc = null;
+
+      // Hide overlay for the whole batch export
+      const overlay = osmdBox.querySelector(".aa-overlay");
+      const prev = overlay ? overlay.style.visibility : null;
+      if (overlay) overlay.style.visibility = "hidden";
+
       for (const p of partsNow){
         try{
           const processed = transformXmlForSlashes(ensureTitle(p.xml, p.instrumentName));
@@ -1735,6 +1749,8 @@ const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * sc
           doc.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
         }catch(e){ console.error("[finalViewer] PDF all parts failed on", p.instrumentName, e); }
       }
+
+      if (overlay) overlay.style.visibility = prev;
       if (doc) doc.save(docName);
     });
 
@@ -1874,125 +1890,123 @@ const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * sc
     } catch(e){ return "Arranged by Auto Arranger"; }
   }
 
- // --- overlay (viewer-only) ------------------------------------------------
-function overlayCredits(osmd, host, pickedLabel, arrangerText){
-  try {
-    // --- Tunable baselines (SVG logical units -> we scale to pixels)
-    const PART_TOP_PAD_DEFAULT   = 10;  // closer to top
-    const PART_LEFT_PAD_DEFAULT  = 18;
-    const ARR_TOP_PAD_DEFAULT    = 6;   // near absolute top
-    const ARR_RIGHT_PAD_DEFAULT  = 20;
+  // --- overlay (viewer-only) ------------------------------------------------
+  function overlayCredits(osmd, host, pickedLabel, arrangerText){
+    try {
+      // Tunable baselines
+      const PART_TOP_PAD_DEFAULT   = 10;  // closer to top
+      const PART_LEFT_PAD_DEFAULT  = 18;
+      const ARR_TOP_PAD_DEFAULT    = 6;   // near absolute top
+      const ARR_RIGHT_PAD_DEFAULT  = 20;
 
-    // Fine-tune (extra offset after baseline)
-    const ARR_TOP_TWEAK          = 8;   // push a bit lower from very top
-    const ARR_RIGHT_INSET        = 40;  // bring in from right edge
+      // Fine-tune
+      const ARR_TOP_TWEAK          = 8;   // push a bit lower from very top
+      const ARR_RIGHT_INSET        = 40;  // bring in from right edge
 
-    // Defaults for font sizes if we can't measure the composer text
-    const PART_FONT_PX_DEFAULT   = 11;
-    const ARR_FONT_PX_DEFAULT    = 11;
+      // Default font sizes if composer size can't be measured
+      const PART_FONT_Px_DEFAULT   = 11;
+      const ARR_FONT_PX_DEFAULT    = 11;
 
-    // Container
-    let overlay = host.querySelector(".aa-overlay");
-    if (!overlay) {
-      overlay = document.createElement("div");
-      overlay.className = "aa-overlay";
-      overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
-      host.appendChild(overlay);
-    } else {
-      overlay.innerHTML = "";
+      // Container
+      let overlay = host.querySelector(".aa-overlay");
+      if (!overlay) {
+        overlay = document.createElement("div");
+        overlay.className = "aa-overlay";
+        overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
+        host.appendChild(overlay);
+      } else {
+        overlay.innerHTML = "";
+      }
+
+      const svg = host.querySelector("svg");
+      if (!svg) return;
+
+      const svgRect  = svg.getBoundingClientRect();
+      const hostRect = host.getBoundingClientRect();
+
+      const absLeft  = (px) => (px - hostRect.left) + "px";
+      const absTop   = (px) => (px - hostRect.top)  + "px";
+      const absRight = (px) => (hostRect.right - px) + "px";
+
+      // Try to match OSMD font via a visible composer <text>
+      let composerTextNode = null;
+      for (const t of svg.querySelectorAll("text")) {
+        const txt = (t.textContent || "");
+        if (/compos/i.test(txt)) { composerTextNode = t; break; }
+      }
+      const cs = composerTextNode ? getComputedStyle(composerTextNode) : null;
+      const measuredPx = (cs && cs.fontSize && cs.fontSize.endsWith("px"))
+        ? parseFloat(cs.fontSize) : NaN;
+
+      // Position scale: prefer viewBox ratio; else OSMD zoom; else 1
+      let scalePos = NaN;
+      const vb = svg.viewBox && svg.viewBox.baseVal;
+      if (vb && vb.height) scalePos = svgRect.height / vb.height;
+      if (!scalePos || !isFinite(scalePos)) {
+        const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
+        scalePos = zoom;
+      }
+
+      // Font style/family
+      const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
+      const weight = (cs && cs.fontWeight) ? cs.fontWeight : "normal";
+      const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
+
+      // Font size selection
+      const partPx = (isFinite(measuredPx) && measuredPx > 0)
+        ? Math.round(measuredPx)
+        : Math.round(PART_FONT_Px_DEFAULT * (scalePos || 1));
+
+      const arrPx  = (isFinite(measuredPx) && measuredPx > 0)
+        ? Math.round(measuredPx)
+        : Math.round(ARR_FONT_PX_DEFAULT * (scalePos || 1));
+
+      // Pinned positions
+      const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scalePos;
+      const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scalePos;
+      const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scalePos;
+      const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scalePos;
+
+      // Score/Part (top-left)
+      if (pickedLabel) {
+        const el = document.createElement("div");
+        el.textContent = pickedLabel;
+        el.style.cssText =
+          "position:absolute;" +
+          "left:" + absLeft(partLeft) + ";" +
+          "top:" + absTop(partTop) + ";" +
+          "font-size:" + partPx + "px;" +
+          "font-weight:" + weight + ";" +
+          "font-style:" + fstyle + ";" +
+          "font-family:" + family + ";" +
+          "color:#111;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
+        overlay.appendChild(el);
+      }
+
+      // Arranger (top-right)
+      if (arrangerText) {
+        const el = document.createElement("div");
+        el.textContent = arrangerText;
+        el.style.cssText =
+          "position:absolute;" +
+          "right:" + absRight(arrRightX) + ";" +
+          "top:" + absTop(arrTop) + ";" +
+          "font-size:" + arrPx + "px;" +
+          "font-weight:" + weight + ";" +
+          "font-style:" + fstyle + ";" +
+          "font-family:" + family + ";" +
+          "color:#111;text-align:right;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
+        overlay.appendChild(el);
+      }
+    } catch (e) {
+      console.warn("[M7 overlay] skipped due to error:", e);
     }
-
-    const svg = host.querySelector("svg");
-    if (!svg) return;
-
-    const svgRect  = svg.getBoundingClientRect();
-    const hostRect = host.getBoundingClientRect();
-
-    const absLeft  = (px) => (px - hostRect.left) + "px";
-    const absTop   = (px) => (px - hostRect.top)  + "px";
-    const absRight = (px) => (hostRect.right - px) + "px";
-
-    // 1) Try to match OSMD font from visible composer <text> element
-    let composerTextNode = null;
-    for (const t of svg.querySelectorAll("text")) {
-      const txt = (t.textContent || "");
-      if (/compos/i.test(txt)) { composerTextNode = t; break; }
-    }
-    const cs = composerTextNode ? getComputedStyle(composerTextNode) : null;
-    const measuredPx = (cs && cs.fontSize && cs.fontSize.endsWith("px"))
-      ? parseFloat(cs.fontSize) : NaN;
-
-    // 2) Position scale: prefer viewBox ratio; else OSMD zoom; else 1
-    let scalePos = NaN;
-    const vb = svg.viewBox && svg.viewBox.baseVal;
-    if (vb && vb.height) {
-      scalePos = svgRect.height / vb.height;
-    }
-    if (!scalePos || !isFinite(scalePos)) {
-      const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
-      scalePos = zoom;
-    }
-
-    // 3) Font settings (match OSMD where possible)
-    const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
-    const weight = (cs && cs.fontWeight) ? cs.fontWeight : "normal";
-    const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
-
-    // If we can measure the composer font-size, use it directly for both labels.
-    // Otherwise, scale default points with the same position scale.
-    const partPx = (isFinite(measuredPx) && measuredPx > 0)
-      ? Math.round(measuredPx)
-      : Math.round(PART_FONT_PX_DEFAULT * (scalePos || 1));
-
-    const arrPx  = (isFinite(measuredPx) && measuredPx > 0)
-      ? Math.round(measuredPx)
-      : Math.round(ARR_FONT_PX_DEFAULT * (scalePos || 1));
-
-    // 4) Compute pinned positions (top-left for part; top-right for arranger)
-    const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scalePos;
-    const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scalePos;
-    const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scalePos;
-    const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scalePos;
-
-    // Score/Part (top-left)
-    if (pickedLabel) {
-      const el = document.createElement("div");
-      el.textContent = pickedLabel;
-      el.style.cssText =
-        "position:absolute;" +
-        "left:" + absLeft(partLeft) + ";" +
-        "top:" + absTop(partTop) + ";" +
-        "font-size:" + partPx + "px;" +
-        "font-weight:" + weight + ";" +
-        "font-style:" + fstyle + ";" +
-        "font-family:" + family + ";" +
-        "color:#111;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
-      overlay.appendChild(el);
-    }
-
-    // Arranger (top-right, pinned near top with inset)
-    if (arrangerText) {
-      const el = document.createElement("div");
-      el.textContent = arrangerText;
-      el.style.cssText =
-        "position:absolute;" +
-        "right:" + absRight(arrRightX) + ";" +
-        "top:" + absTop(arrTop) + ";" +
-        "font-size:" + arrPx + "px;" +
-        "font-weight:" + weight + ";" +
-        "font-style:" + fstyle + ";" +
-        "font-family:" + family + ";" +
-        "color:#111;text-align:right;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
-      overlay.appendChild(el);
-    }
-  } catch (e) {
-    console.warn("[M7 overlay] skipped due to error:", e);
   }
-}
 
   // tiny DOM helper
   function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
 })();
+
 
 
 
