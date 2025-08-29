@@ -1821,89 +1821,108 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     } catch(e){ return "Arranged by Auto Arranger"; }
   }
 
-  function overlayCredits(osmd, host, pickedLabel, arrangerText){
-    // Baselines at zoom=1 (we’ll scale from here)
-    const PART_TOP_PAD  = 14;   // px from top
-    const PART_LEFT_PAD = 18;   // px from left
-    const PART_FONT_PX  = 11;
+function overlayCredits(osmd, host, pickedLabel, arrangerText){
+  // Baselines when we don't have metrics to copy from the SVG
+  const PART_TOP_PAD_DEFAULT  = 14;   // px from top
+  const PART_LEFT_PAD_DEFAULT = 18;   // px from left
+  const PART_FONT_PX_DEFAULT  = 11;
 
-    const ARR_TOP_PAD   = 28;   // px from top (under composer)
-    const ARR_RIGHT_PAD = 20;   // px from right
-    const ARR_FONT_PX   = 11;
+  const ARR_TOP_PAD_DEFAULT   = 28;   // px from top (under composer)
+  const ARR_RIGHT_PAD_DEFAULT = 20;   // px from right
+  const ARR_FONT_PX_DEFAULT   = 11;
 
-    const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
+  const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
 
-    // Container
-    let overlay = host.querySelector(".aa-overlay");
-    if (!overlay) {
-      overlay = document.createElement("div");
-      overlay.className = "aa-overlay";
-      overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;";
-      host.appendChild(overlay);
-    } else {
-      overlay.innerHTML = "";
-    }
-
-    const svg = host.querySelector("svg");
-    if (!svg) return;
-
-    const svgRect  = svg.getBoundingClientRect();
-    const hostRect = host.getBoundingClientRect();
-
-    const absLeft  = (px) => (px - hostRect.left) + "px";
-    const absTop   = (px) => (px - hostRect.top)  + "px";
-    const absRight = (px) => (hostRect.right - px) + "px";
-
-    // Try to match OSMD font from composer text
-    let composerFontPx = null;
-    let composerFontFamily = null;
-    const composerTextNode = Array.from(svg.querySelectorAll("text"))
-      .find(t => /composed/i.test((t.textContent||"")));
-    if (composerTextNode) {
-      const cs = getComputedStyle(composerTextNode);
-      if (cs && cs.fontSize && cs.fontSize.endsWith("px")) composerFontPx = parseFloat(cs.fontSize);
-      if (cs && cs.fontFamily) composerFontFamily = cs.fontFamily;
-    }
-
-    const partFontPx = Math.round((composerFontPx || PART_FONT_PX) * zoom);
-    const arrFontPx  = Math.round((composerFontPx || ARR_FONT_PX)  * zoom);
-    const family     = composerFontFamily || getComputedStyle(host).fontFamily || "serif";
-
-    const partTop   = svgRect.top  + PART_TOP_PAD  * zoom;
-    const partLeft  = svgRect.left + PART_LEFT_PAD * zoom;
-    const arrTop    = svgRect.top  + ARR_TOP_PAD   * zoom;
-    const arrRightX = svgRect.right - ARR_RIGHT_PAD * zoom;
-
-    // Score/Part (top-left)
-    if (pickedLabel) {
-      const el = document.createElement("div");
-      el.textContent = pickedLabel;
-      el.style.cssText =
-        "position:absolute;" +
-        "left:" + absLeft(partLeft) + ";" +
-        "top:" + absTop(partTop) + ";" +
-        "font-size:" + partFontPx + "px;" +
-        "font-weight:600;" +
-        "font-family:" + family + ";" +
-        "color:#111;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
-      overlay.appendChild(el);
-    }
-
-    // Arranger (under composer, right side)
-    if (arrangerText) {
-      const el = document.createElement("div");
-      el.textContent = arrangerText;
-      el.style.cssText =
-        "position:absolute;" +
-        "right:" + absRight(arrRightX) + ";" +
-        "top:" + absTop(arrTop) + ";" +
-        "font-size:" + arrFontPx + "px;" +
-        "font-weight:600;" +
-        "font-family:" + family + ";" +
-        "color:#111;text-align:right;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
-      overlay.appendChild(el);
-    }
+  // Container
+  let overlay = host.querySelector(".aa-overlay");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.className = "aa-overlay";
+    overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;";
+    host.appendChild(overlay);
+  } else {
+    overlay.innerHTML = "";
   }
+
+  const svg = host.querySelector("svg");
+  if (!svg) return;
+
+  const svgRect  = svg.getBoundingClientRect();
+  const hostRect = host.getBoundingClientRect();
+
+  const absLeft  = (px) => (px - hostRect.left) + "px";
+  const absTop   = (px) => (px - hostRect.top)  + "px";
+  const absRight = (px) => (hostRect.right - px) + "px";
+
+  // Try to match OSMD font from the composer credit
+  const composerTextNode = Array.from(svg.querySelectorAll("text"))
+    .find(t => /compos/i.test((t.textContent||""))); // e.g. "Composed by ..."
+  let cs = null;
+  if (composerTextNode) {
+    try { cs = getComputedStyle(composerTextNode); } catch(_) {}
+  }
+
+  // Use measured metrics if available; otherwise fallback + scale
+  const measuredPx = cs && cs.fontSize && cs.fontSize.endsWith("px") ? parseFloat(cs.fontSize) : null;
+  const useMeasured = !!measuredPx && isFinite(measuredPx) && measuredPx > 0;
+
+  const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
+  const weight = (cs && cs.fontWeight) ? cs.fontWeight : "normal";
+  const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
+
+  const partFontPx = Math.round(useMeasured ? measuredPx : PART_FONT_PX_DEFAULT * zoom);
+  const arrFontPx  = Math.round(useMeasured ? measuredPx : ARR_FONT_PX_DEFAULT  * zoom);
+
+  // Positioning — if we can read the composer’s bounding box, stack arranger under it;
+  // otherwise use default top paddings scaled by zoom.
+  let partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * zoom;
+  let partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * zoom;
+  let arrTop    = svgRect.top  + ARR_TOP_PAD_DEFAULT   * zoom;
+  let arrRightX = svgRect.right - ARR_RIGHT_PAD_DEFAULT * zoom;
+
+  if (composerTextNode) {
+    try {
+      const cr = composerTextNode.getBoundingClientRect();
+      // Place arranger 6px (scaled) under the composer line for nice spacing
+      arrTop = cr.bottom + 6 * zoom;
+      // Right edge aligns with SVG’s right, same as before
+      arrRightX = svgRect.right - ARR_RIGHT_PAD_DEFAULT * zoom;
+    } catch(_) {}
+  }
+
+  // Score/Part (top-left)
+  if (pickedLabel) {
+    const el = document.createElement("div");
+    el.textContent = pickedLabel;
+    el.style.cssText =
+      "position:absolute;" +
+      "left:" + absLeft(partLeft) + ";" +
+      "top:" + absTop(partTop) + ";" +
+      "font-size:" + partFontPx + "px;" +
+      "font-weight:" + weight + ";" +
+      "font-style:" + fstyle + ";" +
+      "font-family:" + family + ";" +
+      "color:#111;pointer-events:none;user-select:none;white-space:nowrap;";
+    overlay.appendChild(el);
+  }
+
+  // Arranger (right side, under composer)
+  if (arrangerText) {
+    const el = document.createElement("div");
+    el.textContent = arrangerText;
+    el.style.cssText =
+      "position:absolute;" +
+      "right:" + absRight(arrRightX) + ";" +
+      "top:" + absTop(arrTop) + ";" +
+      "font-size:" + arrFontPx + "px;" +
+      "font-weight:" + weight + ";" +
+      "font-style:" + fstyle + ";" +
+      "font-family:" + family + ";" +
+      "color:#111;text-align:right;pointer-events:none;user-select:none;white-space:nowrap;";
+    overlay.appendChild(el);
+  }
+}
+
 
   // tiny DOM helper
   function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
