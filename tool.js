@@ -1517,578 +1517,483 @@ M7) Final Viewer — dropdown lists all parts; ensure title; ensure XML prolog
 (template-literal-free version to avoid stray backtick copy/paste issues)
 ------------------------------------------------------------------------- */
 ;(function () {
-AA.on("credits:done", () => AA.safe("finalViewer", bootWhenReady));
+  AA.on("credits:done", () => AA.safe("finalViewer", bootWhenReady));
 
-async function bootWhenReady() {
-if (document.getElementById('aa-viewer')) return;
-await ensureLib("opensheetmusicdisplay", "./opensheetmusicdisplay.min.js");
-await ensureLib("html2canvas", "./html2canvas.min.js");
-await ensureLib("jspdf", "./jspdf.umd.min.js");
-buildViewerUI();
-}
+  async function bootWhenReady() {
+    if (document.getElementById('aa-viewer')) return;
+    await ensureLib("opensheetmusicdisplay", "./opensheetmusicdisplay.min.js");
+    await ensureLib("html2canvas", "./html2canvas.min.js");
+    await ensureLib("jspdf", "./jspdf.umd.min.js");
+    buildViewerUI();
+  }
 
-function ensureLib(globalName, src) {
-return new Promise(function(resolve){
-if (lookupGlobal(globalName)) return resolve(true);
-var script = document.createElement("script");
-script.src = src;
-script.onload = function(){ resolve(true); };
-script.onerror = function(){ console.warn("[finalViewer] Failed to load " + src); resolve(false); };
-document.head.appendChild(script);
-});
-}
-function lookupGlobal(name) {
-return name.split(".").reduce(function(o,k){ return (o && o[k]!=null ? o[k] : null); }, window);
-}
+  function ensureLib(globalName, src) {
+    return new Promise(function(resolve){
+      if (lookupGlobal(globalName)) return resolve(true);
+      var script = document.createElement("script");
+      script.src = src;
+      script.onload = function(){ resolve(true); };
+      script.onerror = function(){ console.warn("[finalViewer] Failed to load " + src); resolve(false); };
+      document.head.appendChild(script);
+    });
+  }
+  function lookupGlobal(name) {
+    return name.split(".").reduce(function(o,k){ return (o && o[k]!=null ? o[k] : null); }, window);
+  }
 
-function buildViewerUI() {
-// remove any existing viewer
-Array.prototype.forEach.call(document.querySelectorAll('#aa-viewer'), function(n){ n.remove(); });
-   var state = getState();
-var songName = (state && state.selectedSong && state.selectedSong.name) || state.song || "Auto Arranger Result";
-var partsRaw = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
-var hasScore = (typeof state.combinedScoreXml === "string" && state.combinedScoreXml.length > 0);
-var parts = sortPartsEvenIfNoPid(partsRaw);
+  function buildViewerUI() {
+    // remove any existing viewer
+    Array.prototype.forEach.call(document.querySelectorAll('#aa-viewer'), function(n){ n.remove(); });
 
-var wrap = ce("div");
-wrap.id = "aa-viewer";
-wrap.style.cssText =
-  "position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;height:100vh;" +
-  "background:rgba(0,0,0,0.08);padding:28px;box-sizing:border-box;overflow:hidden;";
+    var state = getState();
+    var songName = (state && state.selectedSong && state.selectedSong.name) || state.song || "Auto Arranger Result";
+    var partsRaw = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
+    var hasScore = (typeof state.combinedScoreXml === "string" && state.combinedScoreXml.length > 0);
+    var parts = sortPartsEvenIfNoPid(partsRaw);
 
-var backBtn = ce("button");
-backBtn.textContent = "← Back";
-backBtn.title = "Back to instrument selection";
-backBtn.style.cssText = "position:absolute;top:16px;left:16px;padding:8px 12px;border-radius:8px;border:none;" +
-                        "background:#e5e7eb;color:#111;font:600 13px system-ui;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)";
-backBtn.addEventListener("click", function(){ backToInstrumentSelection(state); });
-wrap.appendChild(backBtn);
+    var wrap = ce("div");
+    wrap.id = "aa-viewer";
+    wrap.style.cssText =
+      "position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;height:100vh;" +
+      "background:rgba(0,0,0,0.08);padding:28px;box-sizing:border-box;overflow:hidden;";
 
-var card = ce("div");
-card.style.cssText =
-  "margin:auto;width:min(1200px,100%);height:calc(100vh - 56px);background:#fff;border-radius:14px;" +
-  "box-shadow:0 12px 36px rgba(0,0,0,.18);padding:20px 20px 18px;box-sizing:border-box;display:flex;" +
-  "flex-direction:column;gap:10px;overflow:hidden;";
-wrap.appendChild(card);
+    var backBtn = ce("button");
+    backBtn.textContent = "← Back";
+    backBtn.title = "Back to instrument selection";
+    backBtn.style.cssText = "position:absolute;top:16px;left:16px;padding:8px 12px;border-radius:8px;border:none;" +
+                            "background:#e5e7eb;color:#111;font:600 13px system-ui;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)";
+    backBtn.addEventListener("click", function(){ backToInstrumentSelection(state); });
+    wrap.appendChild(backBtn);
 
-var controls = ce("div");
-controls.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:2px;";
-card.appendChild(controls);
+    var card = ce("div");
+    card.style.cssText =
+      "margin:auto;width:min(1200px,100%);height:calc(100vh - 56px);background:#fff;border-radius:14px;" +
+      "box-shadow:0 12px 36px rgba(0,0,0,.18);padding:20px 20px 18px;box-sizing:border-box;display:flex;" +
+      "flex-direction:column;gap:10px;overflow:hidden;";
+    wrap.appendChild(card);
 
-var label = ce("div", { textContent: "Select Score or Part" });
-label.style.cssText = "color:#000;font:600 13px/1 system-ui;";
-controls.appendChild(label);
+    var controls = ce("div");
+    controls.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:2px;";
+    card.appendChild(controls);
 
-var select = ce("select");
-select.id = "aa-viewer-select";
-select.style.cssText = "padding:8px 10px;font:14px system-ui;";
-if (hasScore) select.appendChild(new Option("Score","__SCORE__"));
-for (var i=0;i<parts.length;i++){
-  var p = parts[i];
-  var optLabel = p.instrumentName || p.baseName || "Part";
-  select.appendChild(new Option(optLabel, optLabel));
-}
-controls.appendChild(select);
+    var label = ce("div", { textContent: "Select Score or Part" });
+    label.style.cssText = "color:#000;font:600 13px/1 system-ui;";
+    controls.appendChild(label);
 
-var btnRow = ce("div");
-btnRow.style.cssText = "display:flex;gap:8px;flex-wrap:nowrap;justify-content:center;align-items:center;";
-btnRow.innerHTML =
-  '<button id="aa-btn-visualize" class="aa-btn">Visualize</button>' +
-  '<button id="aa-btn-pdf" class="aa-btn" disabled>Download PDF</button>' +
-  '<button id="aa-btn-xml" class="aa-btn" disabled>Download XML</button>' +
-  '<button id="aa-btn-pdf-all" class="aa-btn">Download PDF All Parts</button>' +
-  '<button id="aa-btn-xml-all" class="aa-btn">Download XML ALL Parts</button>';
-controls.appendChild(btnRow);
-
-var styleBtn = ce("style");
-styleBtn.textContent =
-  ".aa-btn{padding:8px 12px;border-radius:8px;background:#0f62fe;color:#fff;border:none;cursor:pointer;font:600 13px system-ui}" +
-  ".aa-btn[disabled]{opacity:.5;cursor:not-allowed}.aa-btn:hover:not([disabled]){filter:brightness(0.92)}";
-card.appendChild(styleBtn);
-
-var osmdBox = ce("div");
-osmdBox.id = "aa-osmd-box";
-osmdBox.style.cssText =
-  "margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;" +
-  "flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;";
-card.appendChild(osmdBox);
-document.body.appendChild(wrap);
-
-var OSMD = lookupGlobal("opensheetmusicdisplay");
-var osmd = new OSMD.OpenSheetMusicDisplay(osmdBox, { autoResize:true, backend:"svg", drawingParameters:"default" });
-window.addEventListener("resize", function(){ fitScoreToHeight(osmd, osmdBox); });
-
-var btnVis    = btnRow.querySelector("#aa-btn-visualize");
-var btnPDF    = btnRow.querySelector("#aa-btn-pdf");
-var btnXML    = btnRow.querySelector("#aa-btn-xml");
-var btnPDFAll = btnRow.querySelector("#aa-btn-pdf-all");
-var btnXMLAll = btnRow.querySelector("#aa-btn-xml-all");
-
-var lastXml = "";
-
-btnVis.addEventListener("click", function(){
-  var picked = pickXml(select.value);
-  var xml = picked.xml;
-  if (!xml) { alert("No XML found to visualize."); return; }
-  (async function(){
-    try{
-      lastXml = ensureTitle(xml, songName);
-      var processed = transformXmlForSlashes(lastXml);
-      var osmdReady = withXmlProlog(processed);
-      if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
-      await osmd.load(osmdReady);
-      await osmd.render();
-      await new Promise(function(r){ requestAnimationFrame(r); });
-      fitScoreToHeight(osmd, osmdBox);
-      btnPDF.disabled = false; btnXML.disabled = false;
-    } catch(e){
-      console.error("[finalViewer] render failed", e);
-      alert("Failed to render this selection.");
+    var select = ce("select");
+    select.id = "aa-viewer-select";
+    select.style.cssText = "padding:8px 10px;font:14px system-ui;";
+    if (hasScore) select.appendChild(new Option("Score","__SCORE__"));
+    for (var i=0;i<parts.length;i++){
+      var p = parts[i];
+      var optLabel = p.instrumentName || p.baseName || "Part";
+      select.appendChild(new Option(optLabel, optLabel));
     }
-  })();
-});
+    controls.appendChild(select);
 
-btnPDF.addEventListener("click", function(){
-  if (!lastXml) { alert("Load a score/part first."); return; }
-  var base = (select.value === "__SCORE__" ? "Score" : select.value);
-  exportCurrentViewToPdf(osmdBox, base);
-});
+    var btnRow = ce("div");
+    btnRow.style.cssText = "display:flex;gap:8px;flex-wrap:nowrap;justify-content:center;align-items:center;";
+    btnRow.innerHTML =
+      '<button id="aa-btn-visualize" class="aa-btn">Visualize</button>' +
+      '<button id="aa-btn-pdf" class="aa-btn" disabled>Download PDF</button>' +
+      '<button id="aa-btn-xml" class="aa-btn" disabled>Download XML</button>' +
+      '<button id="aa-btn-pdf-all" class="aa-btn">Download PDF All Parts</button>' +
+      '<button id="aa-btn-xml-all" class="aa-btn">Download XML ALL Parts</button>';
+    controls.appendChild(btnRow);
 
-btnXML.addEventListener("click", function(){
-  if (!lastXml) { alert("Load a score/part first."); return; }
-  var name = (select.value === "__SCORE__" ? "Score" : select.value) || "part";
-  downloadText(lastXml, safe(name) + ".musicxml", "application/xml");
-});
+    var styleBtn = ce("style");
+    styleBtn.textContent =
+      ".aa-btn{padding:8px 12px;border-radius:8px;background:#0f62fe;color:#fff;border:none;cursor:pointer;font:600 13px system-ui}" +
+      ".aa-btn[disabled]{opacity:.5;cursor:not-allowed}.aa-btn:hover:not([disabled]){filter:brightness(0.92)}";
+    card.appendChild(styleBtn);
 
-btnPDFAll.addEventListener("click", function(){
-  var partsNow = sortPartsEvenIfNoPid(Array.isArray(getState().arrangedFiles)?getState().arrangedFiles:[]);
-  if (!partsNow.length) { alert("No parts found."); return; }
-  (async function(){
+    var osmdBox = ce("div");
+    osmdBox.id = "aa-osmd-box";
+    osmdBox.style.cssText =
+      "margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;" +
+      "flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;";
+    card.appendChild(osmdBox);
+    document.body.appendChild(wrap);
+
+    var OSMD = lookupGlobal("opensheetmusicdisplay");
+    var osmd = new OSMD.OpenSheetMusicDisplay(osmdBox, { autoResize:true, backend:"svg", drawingParameters:"default" });
+    window.addEventListener("resize", function(){ fitScoreToHeight(osmd, osmdBox); });
+
+    var btnVis    = btnRow.querySelector("#aa-btn-visualize");
+    var btnPDF    = btnRow.querySelector("#aa-btn-pdf");
+    var btnXML    = btnRow.querySelector("#aa-btn-xml");
+    var btnPDFAll = btnRow.querySelector("#aa-btn-pdf-all");
+    var btnXMLAll = btnRow.querySelector("#aa-btn-xml-all");
+
+    var lastXml = "";
+
+    btnVis.addEventListener("click", function(){
+      var picked = pickXml(select.value);
+      var xml = picked.xml;
+      if (!xml) { alert("No XML found to visualize."); return; }
+      (async function(){
+        try{
+          lastXml = ensureTitle(xml, songName);
+          var processed = transformXmlForSlashes(lastXml);
+          var osmdReady = withXmlProlog(processed);
+          if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
+          await osmd.load(osmdReady);
+          await osmd.render();
+          await new Promise(function(r){ requestAnimationFrame(r); });
+          fitScoreToHeight(osmd, osmdBox);
+          btnPDF.disabled = false; btnXML.disabled = false;
+        } catch(e){
+          console.error("[finalViewer] render failed", e);
+          alert("Failed to render this selection.");
+        }
+      })();
+    });
+
+    btnPDF.addEventListener("click", function(){
+      if (!lastXml) { alert("Load a score/part first."); return; }
+      var base = (select.value === "__SCORE__" ? "Score" : select.value);
+      exportCurrentViewToPdf(osmdBox, base);
+    });
+
+    btnXML.addEventListener("click", function(){
+      if (!lastXml) { alert("Load a score/part first."); return; }
+      var name = (select.value === "__SCORE__" ? "Score" : select.value) || "part";
+      downloadText(lastXml, safe(name) + ".musicxml", "application/xml");
+    });
+
+    btnPDFAll.addEventListener("click", function(){
+      var partsNow = sortPartsEvenIfNoPid(Array.isArray(getState().arrangedFiles)?getState().arrangedFiles:[]);
+      if (!partsNow.length) { alert("No parts found."); return; }
+      (async function(){
+        var jspdfNS = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
+        var JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
+        if (!JsPDFCtor) { alert("jsPDF not available."); return; }
+        var docName = safe(songName) + " - All Parts.pdf";
+        var doc = null;
+        for (var i=0;i<partsNow.length;i++){
+          var p = partsNow[i];
+          try{
+            var processed = transformXmlForSlashes(ensureTitle(p.xml, p.instrumentName));
+            var osmdReady = withXmlProlog(processed);
+            await osmd.load(osmdReady);
+            await osmd.render();
+            var snap = await snapshotCanvas(osmdBox);
+            var w = snap.w, h = snap.h, canvas = snap.canvas;
+            if (!doc) doc = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
+            else doc.addPage([w,h], w>=h?"landscape":"portrait");
+            doc.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
+          }catch(e){ console.error("[finalViewer] PDF all parts failed on", p.instrumentName, e); }
+        }
+        if (doc) doc.save(docName);
+      })();
+    });
+
+    btnXMLAll.addEventListener("click", function(){
+      var partsNow = sortPartsEvenIfNoPid(Array.isArray(getState().arrangedFiles)?getState().arrangedFiles:[]);
+      if (!partsNow.length) { alert("No parts found."); return; }
+      (async function(){
+        for (var i=0;i<partsNow.length;i++){
+          var p = partsNow[i];
+          downloadText(ensureTitle(p.xml, p.instrumentName), safe(p.instrumentName || "Part") + ".musicxml", "application/xml");
+          await new Promise(function(r){ setTimeout(r,60); });
+        }
+      })();
+    });
+
+    function pickXml(choice){
+      var s = getState();
+      if (choice === "__SCORE__") return { xml: s.combinedScoreXml || "" };
+      var list = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
+      var hit = list.find(function(f){ return (f.instrumentName || f.baseName) === choice; });
+      return { xml: (hit && hit.xml) || "" };
+    }
+  }
+
+  /* viewer helpers */
+  function sortPartsEvenIfNoPid(files){
+    var out = [];
+    for (var i=0;i<files.length;i++){
+      var f = files[i];
+      var pid = f.newPartId || extractPidFromXml(f.xml) || "";
+      var n = parseInt(String(pid).replace(/^P/i,""), 10);
+      out.push(Object.assign({}, f, { _pnum: (isFinite(n)?n:999) }));
+    }
+    out.sort(function(a,b){
+      if (a._pnum !== b._pnum) return a._pnum - b._pnum;
+      return String(a.instrumentName||"").localeCompare(String(b.instrumentName||""));
+    });
+    return out;
+  }
+  function extractPidFromXml(xml){
+    var m = String(xml||"").match(/<score-part\s+id="([^"]+)"/i);
+    return m ? m[1] : null;
+  }
+  function snapshotCanvas(container){
+    return html2canvas(container, { scale:2, backgroundColor:"#fff" })
+           .then(function(canvas){ return {canvas:canvas, w:canvas.width, h:canvas.height}; });
+  }
+  async function exportCurrentViewToPdf(container, baseName){
+    var snap = await snapshotCanvas(container);
+    var w = snap.w, h = snap.h, canvas = snap.canvas;
     var jspdfNS = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
     var JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
-    if (!JsPDFCtor) { alert("jsPDF not available."); return; }
-    var docName = safe(songName) + " - All Parts.pdf";
-    var doc = null;
-    for (var i=0;i<partsNow.length;i++){
-      var p = partsNow[i];
+    if (!JsPDFCtor) { alert("jsPDF not loaded."); return; }
+    var pdf = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
+    pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
+    pdf.save(safe(baseName || "score") + ".pdf");
+  }
+  function backToInstrumentSelection(prevState){
+    var packName = (prevState && (prevState.pack || (prevState.selectedPack && prevState.selectedPack.name))) || "";
+    var songName = (prevState && (prevState.song || (prevState.selectedSong && prevState.selectedSong.name))) || "";
+    setState({ pack: packName, song: songName, packIndex: getState().packIndex, songIndex: getState().songIndex, timestamp: Date.now() });
+    Array.prototype.forEach.call(document.querySelectorAll('#aa-viewer'), function(n){ n.remove(); });
+    hideArrangingLoading();
+    qs("step1") && qs("step1").classList.add("hidden");
+    qs("step2") && qs("step2").classList.add("hidden");
+    qs("step3") && qs("step3").classList.remove("hidden");
+  }
+  function fitScoreToHeight(osmd, host){
+    var svg = host.querySelector("svg"); if (!svg) return;
+    var maxH = host.clientHeight; if (!maxH) return;
+    var svgH = 0; try { svgH = svg.getBBox().height; } catch(e){}
+    if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
+    if (!svgH) return;
+    var current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
+    var target = Math.min(current, maxH / svgH);
+    if (!isFinite(target) || target <= 0) target = 1;
+    target = Math.max(0.3, Math.min(1.5, target));
+    if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
+  }
+
+  // --- XML utilities for OSMD ---
+  function ensureTitle(xmlString, title){
+    try {
+      var parser = new DOMParser();
+      var doc = parser.parseFromString(xmlString, "application/xml");
+      var hasMovement = !!doc.querySelector("movement-title");
+      var hasWork = !!doc.querySelector("work > work-title");
+      if (!hasMovement && !hasWork) {
+        var root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
+        var mv = doc.createElement("movement-title"); mv.textContent = title || "Auto Arranger Score";
+        root.insertBefore(mv, root.firstChild);
+      }
+      return new XMLSerializer().serializeToString(doc);
+    } catch (e) { return xmlString; }
+  }
+  function transformXmlForSlashes(xmlString) {
+    try {
+      var parser = new DOMParser();
+      var xmlDoc = parser.parseFromString(xmlString, "application/xml");
+      xmlDoc.querySelectorAll("lyric").forEach(function(n){ n.remove(); });
+      return new XMLSerializer().serializeToString(xmlDoc);
+    } catch (e) { return xmlString; }
+  }
+  function withXmlProlog(str){
+    if (!str) return str;
+    var s = String(str).replace(/^\uFEFF/, "").replace(/^\s+/, "");
+    if (!/^\<\?xml/i.test(s)) s = '<?xml version="1.0" encoding="UTF-8"?>\n' + s;
+    return s;
+  }
+
+  // --- file helpers ---
+  function safe(name){
+    return String(name || "")
+      .replace(/[\\\/:*?"<>|]+/g, "_")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  function downloadText(text, filename, mimetype){
+    try{
+      var blob = new Blob([text], { type: mimetype || "application/octet-stream" });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url; a.download = filename || "download.txt";
+      document.body.appendChild(a); a.click();
+      setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); }, 50);
+    } catch(e){ console.warn("downloadText failed", e); }
+  }
+
+  // tiny DOM helper used above
+  function ce(tag, props){
+    var el = document.createElement(tag);
+    if (props) Object.assign(el, props);
+    return el;
+  }
+})();
+
+/* =========================================================================
+M8) applyCredits — clone credit blocks from source and set OSMD header:
+movement-title = Title, work/work-title = Subtitle
+- Listens:  combine:done
+- Emits:    credits:done
+------------------------------------------------------------------------- */
+;(function(){
+  AA.on("combine:done", function(){ AA.safe("applyCredits", run); });
+
+  async function run(){
+    var s = getState();
+    var arranged = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
+    var combined = s.combinedScoreXml || "";
+    if (!combined || !arranged.length){
+      console.warn("[M8] nothing to do (no combined or no arranged files).");
+      AA.emit("credits:done");
+      return;
+    }
+
+    // Prefer the pristine source XML for credits
+    var baseXml =
+      (s.parts && s.parts[0] && s.parts[0].xml) ||
+      (s.selectedSong && s.selectedSong.rawXml) || "";
+
+    if (!baseXml && s.selectedSong && s.selectedSong.url){
       try{
-        var processed = transformXmlForSlashes(ensureTitle(p.xml, p.instrumentName));
-        var osmdReady = withXmlProlog(processed);
-        await osmd.load(osmdReady);
-        await osmd.render();
-        var snap = await snapshotCanvas(osmdBox);
-        var w = snap.w, h = snap.h, canvas = snap.canvas;
-        if (!doc) doc = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
-        else doc.addPage([w,h], w>=h?"landscape":"portrait");
-        doc.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
-      }catch(e){ console.error("[finalViewer] PDF all parts failed on", p.instrumentName, e); }
+        var resp = await fetch(s.selectedSong.url, { cache:"no-cache" });
+        if (resp.ok) baseXml = await resp.text();
+      }catch(e){ console.warn("[M8] fetch(selectedSong.url) failed", e); }
     }
-    if (doc) doc.save(docName);
-  })();
-});
+    if (!baseXml) baseXml = combined;
 
-btnXMLAll.addEventListener("click", function(){
-  var partsNow = sortPartsEvenIfNoPid(Array.isArray(getState().arrangedFiles)?getState().arrangedFiles:[]);
-  if (!partsNow.length) { alert("No parts found."); return; }
-  (async function(){
-    for (var i=0;i<partsNow.length;i++){
-      var p = partsNow[i];
-      downloadText(ensureTitle(p.xml, p.instrumentName), safe(p.instrumentName || "Part") + ".musicxml", "application/xml");
-      await new Promise(function(r){ setTimeout(r,60); });
+    var pack = collectCredits(baseXml);
+
+    // Apply to combined (part name = Score)
+    var updatedCombined = applyCreditsToDoc(combined, pack, "Score");
+
+    // Apply to each arranged part (part name = instrument label)
+    var updatedArranged = arranged.map(function(f){
+      var label = f.instrumentName || f.baseName || "Part";
+      return Object.assign({}, f, { xml: applyCreditsToDoc(f.xml, pack, label) });
+    });
+
+    mergeState({ combinedScoreXml: updatedCombined, arrangedFiles: updatedArranged, creditsDone:true });
+    AA.emit("credits:done");
+  }
+
+  // ----- grab first instances of each credit from the source -----
+  function collectCredits(xmlString){
+    var out = {
+      titleEl:null, subtitleEl:null, composerEl:null, arrangerEl:null, partNameEl:null,
+      titleText:"", subtitleText:""
+    };
+    try{
+      var p = new DOMParser();
+      var doc = p.parseFromString(xmlString, "application/xml");
+
+      var map = { "title":"titleEl", "subtitle":"subtitleEl", "composer":"composerEl", "arranger":"arrangerEl", "part name":"partNameEl" };
+      var credits = doc.querySelectorAll("credit");
+      for (var i=0;i<credits.length;i++){
+        var c = credits[i];
+        var ct = c.querySelector("credit-type");
+        var t  = (ct && ct.textContent || "").toLowerCase().trim();
+        if (map[t] && !out[map[t]]) out[map[t]] = c;
+      }
+
+      // Title text: prefer <credit type="title">, else <movement-title>, else <work-title>
+      out.titleText =
+        textOf(out.titleEl) ||
+        (doc.querySelector("movement-title") && doc.querySelector("movement-title").textContent.trim()) ||
+        (doc.querySelector("work > work-title") && doc.querySelector("work > work-title").textContent.trim()) ||
+        "";
+
+      // Subtitle text: prefer <credit type="subtitle"> (don't infer if absent)
+      out.subtitleText = textOf(out.subtitleEl) || "";
+    }catch(e){ console.warn("[M8] collectCredits failed", e); }
+    return out;
+  }
+
+  function textOf(creditEl){
+    try{
+      var w = creditEl && creditEl.querySelector("credit-words");
+      return (w && w.textContent || "").trim();
+    }catch(e){ return ""; }
+  }
+
+  // ----- write credits + header into a target MusicXML -----
+  function applyCreditsToDoc(xmlString, pack, partNameOverride){
+    try{
+      var p = new DOMParser();
+      var doc = p.parseFromString(xmlString, "application/xml");
+      var root = doc.documentElement;
+
+      // Remove any existing target credits of these types
+      var toRemove = [];
+      root.querySelectorAll("credit").forEach(function(c){
+        var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
+        if (t==="title" || t==="subtitle" || t==="composer" || t==="arranger" || t==="part name") toRemove.push(c);
+      });
+      toRemove.forEach(function(n){ n.remove(); });
+
+      // Insert before <part-list> to mimic originals
+      function beforePartList(node){
+        var pl = root.querySelector("part-list");
+        if (pl) root.insertBefore(node, pl); else root.appendChild(node);
+      }
+      function insertCreditFrom(src, type){
+        if (!src) return;
+        var node = doc.importNode(src, true);
+        var ct = node.querySelector("credit-type");
+        if (ct) ct.textContent = type; // normalize casing
+        beforePartList(node);
+      }
+
+      // Clone title / subtitle / composer / arranger
+      insertCreditFrom(pack.titleEl,    "title");
+      insertCreditFrom(pack.subtitleEl, "subtitle");
+      insertCreditFrom(pack.composerEl, "composer");
+      insertCreditFrom(pack.arrangerEl, "arranger");
+
+      // part name credit: clone if present; otherwise synthesize
+      if (pack.partNameEl){
+        var pn = doc.importNode(pack.partNameEl, true);
+        var words = pn.querySelector("credit-words");
+        if (words) words.textContent = partNameOverride || "Part";
+        var ct2 = pn.querySelector("credit-type"); if (ct2) ct2.textContent = "part name";
+        beforePartList(pn);
+      } else {
+        var synth = doc.createElement("credit");
+        synth.setAttribute("page","1");
+        var ctt = doc.createElement("credit-type"); ctt.textContent = "part name"; synth.appendChild(ctt);
+        var cw = doc.createElement("credit-words");
+        cw.setAttribute("default-x","226");
+        cw.setAttribute("default-y","2380");
+        cw.setAttribute("font-size","10.8");
+        cw.setAttribute("valign","top");
+        cw.textContent = partNameOverride || "Part";
+        synth.appendChild(cw);
+        beforePartList(synth);
+      }
+
+      // OSMD header lines:
+      //   movement-title  = Title  (big header)
+      //   work/work-title = Subtitle (small header under title)
+      ensureHeaderTitles(doc, root, pack.titleText, pack.subtitleText);
+
+      return new XMLSerializer().serializeToString(doc);
+    }catch(e){
+      console.warn("[M8] applyCreditsToDoc failed; returning original.", e);
+      return xmlString;
     }
-  })();
-});
-
-function pickXml(choice){
-  var s = getState();
-  if (choice === "__SCORE__") return { xml: s.combinedScoreXml || "" };
-  var list = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
-  var hit = list.find(function(f){ return (f.instrumentName || f.baseName) === choice; });
-  return { xml: (hit && hit.xml) || "" };
-}
-
-}
-
-/* viewer helpers */
-function sortPartsEvenIfNoPid(files){
-var out = [];
-for (var i=0;i<files.length;i++){
-var f = files[i];
-var pid = f.newPartId || extractPidFromXml(f.xml) || "";
-var n = parseInt(String(pid).replace(/^P/i,""), 10);
-out.push(Object.assign({}, f, { _pnum: (isFinite(n)?n:999) }));
-}
-out.sort(function(a,b){
-if (a._pnum !== b._pnum) return a._pnum - b._pnum;
-return String(a.instrumentName||"").localeCompare(String(b.instrumentName||""));
-});
-return out;
-}
-function extractPidFromXml(xml){
-var m = String(xml||"").match(/<score-part\s+id="([^"]+)"/i);
-return m ? m[1] : null;
-}
-function snapshotCanvas(container){
-return html2canvas(container, { scale:2, backgroundColor:"#fff" })
-.then(function(canvas){ return {canvas:canvas, w:canvas.width, h:canvas.height}; });
-}
-async function exportCurrentViewToPdf(container, baseName){
-var snap = await snapshotCanvas(container);
-var w = snap.w, h = snap.h, canvas = snap.canvas;
-var jspdfNS = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
-var JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
-if (!JsPDFCtor) { alert("jsPDF not loaded."); return; }
-var pdf = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
-pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
-pdf.save(safe(baseName || "score") + ".pdf");
-}
-function backToInstrumentSelection(prevState){
-var packName = (prevState && (prevState.pack || (prevState.selectedPack && prevState.selectedPack.name))) || "";
-var songName = (prevState && (prevState.song || (prevState.selectedSong && prevState.selectedSong.name))) || "";
-setState({ pack: packName, song: songName, packIndex: getState().packIndex, songIndex: getState().songIndex, timestamp: Date.now() });
-Array.prototype.forEach.call(document.querySelectorAll('#aa-viewer'), function(n){ n.remove(); });
-hideArrangingLoading();
-qs("step1") && qs("step1").classList.add("hidden");
-qs("step2") && qs("step2").classList.add("hidden");
-qs("step3") && qs("step3").classList.remove("hidden");
-}
-function fitScoreToHeight(osmd, host){
-var svg = host.querySelector("svg"); if (!svg) return;
-var maxH = host.clientHeight; if (!maxH) return;
-var svgH = 0; try { svgH = svg.getBBox().height; } catch(e){}
-if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
-if (!svgH) return;
-var current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
-var target = Math.min(current, maxH / svgH);
-if (!isFinite(target) || target <= 0) target = 1;
-target = Math.max(0.3, Math.min(1.5, target));
-if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
-}
-
-// --- XML utilities for OSMD ---
-function ensureTitle(xmlString, title){
-try {
-var parser = new DOMParser();
-var doc = parser.parseFromString(xmlString, "application/xml");
-var hasMovement = !!doc.querySelector("movement-title");
-var hasWork = !!doc.querySelector("work > work-title");
-if (!hasMovement && !hasWork) {
-var root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
-var mv = doc.createElement("movement-title"); mv.textContent = title || "Auto Arranger Score";
-root.insertBefore(mv, root.firstChild);
-}
-return new XMLSerializer().serializeToString(doc);
-} catch (e) { return xmlString; }
-}
-function transformXmlForSlashes(xmlString) {
-try {
-var parser = new DOMParser();
-var xmlDoc = parser.parseFromString(xmlString, "application/xml");
-xmlDoc.querySelectorAll("lyric").forEach(function(n){ n.remove(); });
-return new XMLSerializer().serializeToString(xmlDoc);
-} catch (e) { return xmlString; }
-}
-function withXmlProlog(str){
-if (!str) return str;
-var s = String(str).replace(/^\uFEFF/, "").replace(/^\s+/, "");
-if (!/^<?xml/i.test(s)) s = '<?xml version="1.0" encoding="UTF-8"?>\n' + s;
-return s;
-}
-
-// --- file helpers ---
-function safe(name){
-return String(name || "")
-.replace(/[\/:*?"<>|]+/g, "_")
-.replace(/\s+/g, " ")
-.trim();
-}
-function downloadText(text, filename, mimetype){
-try{
-var blob = new Blob([text], { type: mimetype || "application/octet-stream" });
-var url = URL.createObjectURL(blob);
-var a = document.createElement("a");
-a.href = url; a.download = filename || "download.txt";
-document.body.appendChild(a); a.click();
-setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); }, 50);
-} catch(e){ console.warn("downloadText failed", e); }
-}
-
-// tiny DOM helper used above
-function ce(tag, props){
-var el = document.createElement(tag);
-if (props) Object.assign(el, props);
-return el;
-}
-})();
-
-/* =========================================================================
-M8) applyCredits — clone credit blocks from source and set OSMD header:
-work/work-title = Title, movement-title = Subtitle
-
-Listens: combine:done
-
-Emits: credits:done
-------------------------------------------------------------------------- */
-;(function(){
-AA.on("combine:done", function(){ AA.safe("applyCredits", run); });
-
-async function run(){
-var s = getState();
-var arranged = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
-var combined = s.combinedScoreXml || "";
-if (!combined || !arranged.length){
-console.warn("[M8] nothing to do (no combined or no arranged files).");
-AA.emit("credits:done");
-return;
-}
-}
-
-/* viewer helpers */
-function sortPartsEvenIfNoPid(files){
-var out = [];
-for (var i=0;i<files.length;i++){
-var f = files[i];
-var pid = f.newPartId || extractPidFromXml(f.xml) || "";
-var n = parseInt(String(pid).replace(/^P/i,""), 10);
-out.push(Object.assign({}, f, { _pnum: (isFinite(n)?n:999) }));
-}
-out.sort(function(a,b){
-if (a._pnum !== b._pnum) return a._pnum - b._pnum;
-return String(a.instrumentName||"").localeCompare(String(b.instrumentName||""));
-});
-return out;
-}
-function extractPidFromXml(xml){
-var m = String(xml||"").match(/<score-part\s+id="([^"]+)"/i);
-return m ? m[1] : null;
-}
-function snapshotCanvas(container){
-return html2canvas(container, { scale:2, backgroundColor:"#fff" })
-.then(function(canvas){ return {canvas:canvas, w:canvas.width, h:canvas.height}; });
-}
-async function exportCurrentViewToPdf(container, baseName){
-var snap = await snapshotCanvas(container);
-var w = snap.w, h = snap.h, canvas = snap.canvas;
-var jspdfNS = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
-var JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
-if (!JsPDFCtor) { alert("jsPDF not loaded."); return; }
-var pdf = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
-pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
-pdf.save(safe(baseName || "score") + ".pdf");
-}
-function backToInstrumentSelection(prevState){
-var packName = (prevState && (prevState.pack || (prevState.selectedPack && prevState.selectedPack.name))) || "";
-var songName = (prevState && (prevState.song || (prevState.selectedSong && prevState.selectedSong.name))) || "";
-setState({ pack: packName, song: songName, packIndex: getState().packIndex, songIndex: getState().songIndex, timestamp: Date.now() });
-Array.prototype.forEach.call(document.querySelectorAll('#aa-viewer'), function(n){ n.remove(); });
-hideArrangingLoading();
-qs("step1") && qs("step1").classList.add("hidden");
-qs("step2") && qs("step2").classList.add("hidden");
-qs("step3") && qs("step3").classList.remove("hidden");
-}
-function fitScoreToHeight(osmd, host){
-var svg = host.querySelector("svg"); if (!svg) return;
-var maxH = host.clientHeight; if (!maxH) return;
-var svgH = 0; try { svgH = svg.getBBox().height; } catch(e){}
-if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
-if (!svgH) return;
-var current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
-var target = Math.min(current, maxH / svgH);
-if (!isFinite(target) || target <= 0) target = 1;
-target = Math.max(0.3, Math.min(1.5, target));
-if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
-}
-
-// --- XML utilities for OSMD ---
-function ensureTitle(xmlString, title){
-try {
-var parser = new DOMParser();
-var doc = parser.parseFromString(xmlString, "application/xml");
-var hasMovement = !!doc.querySelector("movement-title");
-var hasWork = !!doc.querySelector("work > work-title");
-if (!hasMovement && !hasWork) {
-var root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
-var mv = doc.createElement("movement-title"); mv.textContent = title || "Auto Arranger Score";
-root.insertBefore(mv, root.firstChild);
-}
-return new XMLSerializer().serializeToString(doc);
-} catch (e) { return xmlString; }
-}
-function transformXmlForSlashes(xmlString) {
-try {
-var parser = new DOMParser();
-var xmlDoc = parser.parseFromString(xmlString, "application/xml");
-xmlDoc.querySelectorAll("lyric").forEach(function(n){ n.remove(); });
-return new XMLSerializer().serializeToString(xmlDoc);
-} catch (e) { return xmlString; }
-}
-function withXmlProlog(str){
-if (!str) return str;
-var s = String(str).replace(/^\uFEFF/, "").replace(/^\s+/, "");
-if (!/^<?xml/i.test(s)) s = '<?xml version="1.0" encoding="UTF-8"?>\n' + s;
-return s;
-}
-
-// --- file helpers ---
-function safe(name){
-return String(name || "")
-.replace(/[\/:*?"<>|]+/g, "_")
-.replace(/\s+/g, " ")
-.trim();
-}
-function downloadText(text, filename, mimetype){
-try{
-var blob = new Blob([text], { type: mimetype || "application/octet-stream" });
-var url = URL.createObjectURL(blob);
-var a = document.createElement("a");
-a.href = url; a.download = filename || "download.txt";
-document.body.appendChild(a); a.click();
-setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); }, 50);
-} catch(e){ console.warn("downloadText failed", e); }
-}
-
-// tiny DOM helper used above
-function ce(tag, props){
-var el = document.createElement(tag);
-if (props) Object.assign(el, props);
-return el;
-}
-})();
-
-/* =========================================================================
-M8) applyCredits — clone credit blocks from source and set OSMD header:
-work/work-title = Title, movement-title = Subtitle
-
-Listens: combine:done
-
-Emits: credits:done
-------------------------------------------------------------------------- */
-;(function(){
-AA.on("combine:done", function(){ AA.safe("applyCredits", run); });
-
-async function run(){
-var s = getState();
-var arranged = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
-var combined = s.combinedScoreXml || "";
-if (!combined || !arranged.length){
-console.warn("[M8] nothing to do (no combined or no arranged files).");
-AA.emit("credits:done");
-return;
-}
-}
-
-// ----- grab first instances of each credit from the source -----
-function collectCredits(xmlString){
-var out = {
-titleEl:null, subtitleEl:null, composerEl:null, arrangerEl:null, partNameEl:null,
-titleText:"", subtitleText:""
-};
-try{
-var p = new DOMParser();
-var doc = p.parseFromString(xmlString, "application/xml");
-}
-
-// ----- grab first instances of each credit from the source -----
-function collectCredits(xmlString){
-var out = {
-titleEl:null, subtitleEl:null, composerEl:null, arrangerEl:null, partNameEl:null,
-titleText:"", subtitleText:""
-};
-try{
-var p = new DOMParser();
-var doc = p.parseFromString(xmlString, "application/xml");
-   }
-
-function textOf(creditEl){
-try{
-var w = creditEl && creditEl.querySelector("credit-words");
-return (w && w.textContent || "").trim();
-}catch(e){ return ""; }
-}
-
-// ----- write credits + header into a target MusicXML -----
-function applyCreditsToDoc(xmlString, pack, partNameOverride){
-try{
-var p = new DOMParser();
-var doc = p.parseFromString(xmlString, "application/xml");
-var root = doc.documentElement;
-     // Remove any existing target credits of these types
-  var toRemove = [];
-  root.querySelectorAll("credit").forEach(function(c){
-    var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
-    if (t==="title" || t==="subtitle" || t==="composer" || t==="arranger" || t==="part name") toRemove.push(c);
-  });
-  toRemove.forEach(function(n){ n.remove(); });
-
-  // Insert before <part-list> to mimic the originals
-  function beforePartList(node){
-    var pl = root.querySelector("part-list");
-    if (pl) root.insertBefore(node, pl); else root.appendChild(node);
-  }
-  function insertCreditFrom(src, type){
-    if (!src) return;
-    var node = doc.importNode(src, true);
-    var ct = node.querySelector("credit-type");
-    if (ct) ct.textContent = type; // normalize casing
-    beforePartList(node);
   }
 
-  // Clone title / subtitle / composer / arranger
-  insertCreditFrom(pack.titleEl,    "title");
-  insertCreditFrom(pack.subtitleEl, "subtitle");
-  insertCreditFrom(pack.composerEl, "composer");
-  insertCreditFrom(pack.arrangerEl, "arranger");
+  function ensureHeaderTitles(doc, root, titleText, subtitleText){
+    // movement-title → Title (big)
+    var mt = root.querySelector("movement-title");
+    if (!mt){ mt = doc.createElement("movement-title"); root.insertBefore(mt, root.firstChild); }
+    mt.textContent = titleText || "";
 
-  // part name credit: clone if present; otherwise synthesize
-  if (pack.partNameEl){
-    var pn = doc.importNode(pack.partNameEl, true);
-    var words = pn.querySelector("credit-words");
-    if (words) words.textContent = partNameOverride || "Part";
-    var ct2 = pn.querySelector("credit-type"); if (ct2) ct2.textContent = "part name";
-    beforePartList(pn);
-  } else {
-    var synth = doc.createElement("credit");
-    synth.setAttribute("page","1");
-    var ctt = doc.createElement("credit-type"); ctt.textContent = "part name"; synth.appendChild(ctt);
-    var cw = doc.createElement("credit-words");
-    cw.setAttribute("default-x","226");
-    cw.setAttribute("default-y","2380");
-    cw.setAttribute("font-size","10.8");
-    cw.setAttribute("valign","top");
-    cw.textContent = partNameOverride || "Part";
-    synth.appendChild(cw);
-    beforePartList(synth);
+    // work/work-title → Subtitle (remove if none)
+    var work = root.querySelector("work");
+    var wt   = root.querySelector("work > work-title");
+    if (subtitleText){
+      if (!work){ work = doc.createElement("work"); root.insertBefore(work, root.firstChild); }
+      if (!wt){ wt = doc.createElement("work-title"); work.appendChild(wt); }
+      wt.textContent = subtitleText;
+    } else {
+      if (wt) wt.remove();
+      if (work && !work.querySelector("*")) work.remove();
+    }
   }
-
-  // OSMD header lines:
-  //   work/work-title  = Title  (big title)
-  //   movement-title   = Subtitle (smaller line)
-  ensureHeaderTitles(doc, root, pack.titleText, pack.subtitleText);
-
-  return new XMLSerializer().serializeToString(doc);
-}catch(e){
-  console.warn("[M8] applyCreditsToDoc failed; returning original.", e);
-  return xmlString;
-}
-}
-
-function ensureHeaderTitles(doc, root, titleText, subtitleText){
-// work/work-title → Title
-var work = root.querySelector("work");
-if (!work){ work = doc.createElement("work"); root.insertBefore(work, root.firstChild); }
-var wt = work.querySelector("work-title");
-if (!wt){ wt = doc.createElement("work-title"); work.appendChild(wt); }
-wt.textContent = titleText || "";
-   // movement-title → Subtitle (remove if none)
-var mt = root.querySelector("movement-title");
-if (!subtitleText){
-  if (mt) mt.remove();
-} else {
-  if (!mt){ mt = doc.createElement("movement-title"); root.insertBefore(mt, root.firstChild); }
-  mt.textContent = subtitleText;
-}
-}
 })();
+
    
 
 /* ============================================================================
