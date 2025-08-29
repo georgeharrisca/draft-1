@@ -1890,8 +1890,14 @@ function overlayCredits(osmd, host, pickedLabel, arrangerText){
   // Pinned top positions (don’t derive from composer rect)
   const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scale;
   const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scale;
-  const arrTop    = svgRect.top  + ARR_TOP_PAD_DEFAULT   * scale;
-  const arrRightX = svgRect.right - ARR_RIGHT_PAD_DEFAULT * scale;
+const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scale;
+const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scale;
+
+
+   const ARR_TOP_TWEAK   = 10;  // +px lower than current top
+const ARR_RIGHT_INSET = 40;  // +px further from the right edge
+
+   
 
   // Part/Score (top-left)
   if (pickedLabel) {
