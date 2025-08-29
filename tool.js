@@ -1513,8 +1513,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 /* =========================================================================
-   M7) Final Viewer — list parts, render with OSMD, downloads,
-       ensure XML prolog, and a viewer-only credits overlay (Score/Part + Arranger)
+   M7) Final Viewer — dropdown lists all parts; ensure title; ensure XML prolog
+   + viewer-only overlays (Score/Part top-left, Arranger top-right) that scale
    ------------------------------------------------------------------------- */
 ;(function () {
   AA.on("credits:done", () => AA.safe("finalViewer", bootWhenReady));
@@ -1610,8 +1610,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     var osmdBox = ce("div");
     osmdBox.id = "aa-osmd-box";
     osmdBox.style.cssText =
-      "margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;" +
-      "flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;position:relative;";
+      "position:relative;margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;" +
+      "flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;";
     card.appendChild(osmdBox);
     document.body.appendChild(wrap);
 
@@ -1625,31 +1625,25 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     var btnXMLAll = btnRow.querySelector("#aa-btn-xml-all");
 
     var lastXml = "";
-    var lastSelection = "";
-
-    function refreshOverlay() {
-      if (!lastXml) return;
-      overlayCredits(osmdBox, lastXml, lastSelection);
-    }
-    window.addEventListener("resize", function(){
-      fitScoreToHeight(osmd, osmdBox);
-      refreshOverlay();
-    });
+    var lastLabel = "";
 
     btnVis.addEventListener("click", function(){
       var picked = pickXml(select.value);
       var xml = picked.xml;
+      lastLabel = (select.value === "__SCORE__" ? "Score" : select.value);
       if (!xml) { alert("No XML found to visualize."); return; }
       (async function(){
         try{
-          lastSelection = select.value;
-          lastXml = withXmlProlog(transformXmlForSlashes(ensureTitle(xml, songName)));
+          lastXml = ensureTitle(xml, songName);
+          var processed = transformXmlForSlashes(lastXml);
+          var osmdReady = withXmlProlog(processed);
           if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
-          await osmd.load(lastXml);
+          await osmd.load(osmdReady);
           await osmd.render();
           await new Promise(function(r){ requestAnimationFrame(r); });
           fitScoreToHeight(osmd, osmdBox);
-          refreshOverlay();
+          // draw overlays (scale with zoom)
+          overlayCredits(osmd, osmdBox, lastLabel, getArrangerFromXml(lastXml));
           btnPDF.disabled = false; btnXML.disabled = false;
         } catch(e){
           console.error("[finalViewer] render failed", e);
@@ -1658,20 +1652,18 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       })();
     });
 
-    btnPDF.addEventListener("click", async function(){
+    // refresh overlay on resize (after fitting)
+    window.addEventListener("resize", function(){
+      fitScoreToHeight(osmd, osmdBox);
+      if (osmd && osmd.isReadyToRender()) {
+        overlayCredits(osmd, osmdBox, lastLabel, getArrangerFromXml(lastXml));
+      }
+    });
+
+    btnPDF.addEventListener("click", function(){
       if (!lastXml) { alert("Load a score/part first."); return; }
       var base = (select.value === "__SCORE__" ? "Score" : select.value);
-
-      // Hide viewer-only overlay during PDF capture
-      var overlay = osmdBox.querySelector("#aa-overlay");
-      var prevVis = overlay ? overlay.style.visibility : null;
-      if (overlay) overlay.style.visibility = "hidden";
-
-      try {
-        await exportCurrentViewToPdf(osmdBox, base);
-      } finally {
-        if (overlay && prevVis !== null) overlay.style.visibility = prevVis;
-      }
+      exportCurrentViewToPdf(osmdBox, base);
     });
 
     btnXML.addEventListener("click", function(){
@@ -1692,23 +1684,13 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         for (var i=0;i<partsNow.length;i++){
           var p = partsNow[i];
           try{
-            var processed = withXmlProlog(transformXmlForSlashes(ensureTitle(p.xml, p.instrumentName)));
-            await osmd.load(processed);
+            var processed = transformXmlForSlashes(ensureTitle(p.xml, p.instrumentName));
+            var osmdReady = withXmlProlog(processed);
+            await osmd.load(osmdReady);
             await osmd.render();
-
-            // ensure overlay hidden for export
-            var overlay = osmdBox.querySelector("#aa-overlay");
-            var prevVis = overlay ? overlay.style.visibility : null;
-            if (overlay) overlay.style.visibility = "hidden";
-
             var snap = await snapshotCanvas(osmdBox);
-
-            if (overlay && prevVis !== null) overlay.style.visibility = prevVis;
-
             var w = snap.w, h = snap.h, canvas = snap.canvas;
-            var jspdfNS2 = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
-            var JsPDFCtor2 = jspdfNS2.jsPDF || jspdfNS2.JSPDF || jspdfNS2.jsPDFConstructor;
-            if (!doc) doc = new JsPDFCtor2({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
+            if (!doc) doc = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
             else doc.addPage([w,h], w>=h?"landscape":"portrait");
             doc.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
           }catch(e){ console.error("[finalViewer] PDF all parts failed on", p.instrumentName, e); }
@@ -1803,6 +1785,157 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       var hasWork = !!doc.querySelector("work > work-title");
       if (!hasMovement && !hasWork) {
         var root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
+        var mv = doc.createElement("movement-title"); mv.textContent = title || "Auto Arranger Score";
+        root.insertBefore(mv, root.firstChild);
+      }
+      return new XMLSerializer().serializeToString(doc);
+    } catch (e) { return xmlString; }
+  }
+  function transformXmlForSlashes(xmlString) {
+    try {
+      var parser = new DOMParser();
+      var xmlDoc = parser.parseFromString(xmlString, "application/xml");
+      xmlDoc.querySelectorAll("lyric").forEach(function(n){ n.remove(); });
+      return new XMLSerializer().serializeToString(xmlDoc);
+    } catch (e) { return xmlString; }
+  }
+  function withXmlProlog(str){
+    if (!str) return str;
+    var s = String(str).replace(/^\uFEFF/, "").replace(/^\s+/, "");
+    if (!/^\<\?xml/i.test(s)) s = '<?xml version="1.0" encoding="UTF-8"?>\n' + s;
+    return s;
+  }
+
+  // --- file helpers ---
+  function safe(name){
+    return String(name || "")
+      .replace(/[\\\/:*?"<>|]+/g, "_")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  function downloadText(text, filename, mimetype){
+    try{
+      var blob = new Blob([text], { type: mimetype || "application/octet-stream" });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url; a.download = filename || "download.txt";
+      document.body.appendChild(a); a.click();
+      setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); }, 50);
+    } catch(e){ console.warn("downloadText failed", e); }
+  }
+
+  // --- overlay (viewer-only) ------------------------------------------------
+  function getArrangerFromXml(xmlString){
+    try{
+      var p = new DOMParser();
+      var doc = p.parseFromString(xmlString || "", "application/xml");
+      var creditArr = doc.querySelector('credit:has(credit-type), credit');
+      var arr = "";
+      doc.querySelectorAll("credit").forEach(function(c){
+        var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
+        if (!arr && t === "arranger") {
+          var w = c.querySelector("credit-words");
+          arr = (w && w.textContent || "").trim();
+        }
+      });
+      if (!arr) {
+        arr = (doc.querySelector('identification > creator[type="arranger"]') && doc.querySelector('identification > creator[type="arranger"]').textContent || "").trim();
+      }
+      return arr || "Arranged by Auto Arranger";
+    } catch(e){ return "Arranged by Auto Arranger"; }
+  }
+
+  function overlayCredits(osmd, host, pickedLabel, arrangerText){
+    // Baseline values at zoom = 1 (you can tweak)
+    var PART_TOP_PAD  = 14;   // px from top
+    var PART_LEFT_PAD = 18;   // px from left
+    var PART_FONT_PX  = 11;
+
+    var ARR_TOP_PAD   = 28;   // px from top
+    var ARR_RIGHT_PAD = 20;   // px from right
+    var ARR_FONT_PX   = 11;
+
+    var zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
+
+    // get / reset overlay container
+    var overlay = host.querySelector(".aa-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "aa-overlay";
+      overlay.style.cssText =
+        "position:absolute;inset:0;pointer-events:none;";
+      host.appendChild(overlay);
+    } else {
+      overlay.innerHTML = "";
+    }
+
+    var svg = host.querySelector("svg");
+    if (!svg) return;
+
+    var svgRect  = svg.getBoundingClientRect();
+    var hostRect = host.getBoundingClientRect();
+
+    function absLeft(px){ return (px - hostRect.left) + "px"; }
+    function absTop(px){  return (px - hostRect.top)  + "px"; }
+    function absRight(px){ return (hostRect.right - px) + "px"; }
+
+    // Try to match OSMD font size/family from composer text
+    var composerFontPx = null;
+    var composerFontFamily = null;
+    var composerTextNode = Array.prototype.slice.call(svg.querySelectorAll("text"))
+      .find(function(t){ return /composed/i.test((t.textContent||"")); });
+    if (composerTextNode) {
+      var cs = getComputedStyle(composerTextNode);
+      if (cs && cs.fontSize && cs.fontSize.endsWith("px")) composerFontPx = parseFloat(cs.fontSize);
+      if (cs && cs.fontFamily) composerFontFamily = cs.fontFamily;
+    }
+
+    var partFontPx = Math.round((composerFontPx || PART_FONT_PX) * zoom);
+    var arrFontPx  = Math.round((composerFontPx || ARR_FONT_PX)  * zoom);
+    var family     = composerFontFamily || getComputedStyle(host).fontFamily || "serif";
+
+    var partTop   = svgRect.top  + PART_TOP_PAD  * zoom;
+    var partLeft  = svgRect.left + PART_LEFT_PAD * zoom;
+    var arrTop    = svgRect.top  + ARR_TOP_PAD   * zoom;
+    var arrRightX = svgRect.right - ARR_RIGHT_PAD * zoom;
+
+    // Draw "Score/Part" (top-left)
+    if (pickedLabel) {
+      var el = document.createElement("div");
+      el.textContent = pickedLabel;
+      el.style.cssText =
+        "position:absolute;" +
+        "left:" + absLeft(partLeft) + ";" +
+        "top:" + absTop(partTop) + ";" +
+        "font-size:" + partFontPx + "px;" +
+        "font-weight:600;" +
+        "font-family:" + family + ";" +
+        "color:#111;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
+      overlay.appendChild(el);
+    }
+
+    // Draw Arranger (top-right)
+    var arr = document.createElement("div");
+    arr.textContent = arrangerText || "Arranged by Auto Arranger";
+    arr.style.cssText =
+      "position:absolute;" +
+      "right:" + absRight(arrRightX) + ";" +
+      "top:" + absTop(arrTop) + ";" +
+      "font-size:" + arrFontPx + "px;" +
+      "font-weight:600;" +
+      "font-family:" + family + ";" +
+      "color:#111;text-align:right;pointer-events:none;user-select:none;white-space:nowrap;";
+    overlay.appendChild(arr);
+  }
+
+  // tiny DOM helper used above
+  function ce(tag, props){
+    var el = document.createElement(tag);
+    if (props) Object.assign(el, props);
+    return el;
+  }
+})();
+-partwise, score-timewise") || doc.documentElement;
         var mv = doc.createElement("movement-title"); mv.textContent = title || "Auto Arranger Score";
         root.insertBefore(mv, root.firstChild);
       }
