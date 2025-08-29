@@ -1520,54 +1520,13 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 
-
-// ---- constants (declare BEFORE use)
-const ARR_TOP_TWEAK     = 10; // px extra down from the very top
-const ARR_RIGHT_INSET   = 40; // px inset from the right edge
-const PART_FONT_PX_DEFAULT = 11;
-const ARR_FONT_PX_DEFAULT  = 11;
-
-// ...you already computed measuredPx and grabbed composer styles into `cs`
-
-// Start with a scale guess from measured composer text (includes OSMD zoom)
-let scale = (measuredPx && isFinite(measuredPx) && measuredPx > 0)
-  ? (measuredPx / PART_FONT_PX_DEFAULT)
-  : NaN;
-
-// Fallback: compute from viewBox vs client size, else OSMD zoom, else 1
-if (!scale || !isFinite(scale)) {
-  const vb = svg.viewBox && svg.viewBox.baseVal;
-  if (vb && vb.height) {
-    scale = svgRect.height / vb.height;
-  }
-}
-if (!scale || !isFinite(scale)) {
-  const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
-  scale = zoom;
-}
-
-const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
-const weight = (cs && cs.fontWeight) ? cs.fontWeight : "normal";
-const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
-
-const basePx = (measuredPx && isFinite(measuredPx) && measuredPx > 0)
-  ? measuredPx
-  : PART_FONT_PX_DEFAULT;
-
-const partPx = Math.round(basePx * (scale || 1));
-const arrPx  = Math.round(((measuredPx && isFinite(measuredPx)) ? measuredPx : ARR_FONT_PX_DEFAULT) * (scale || 1));
-
-// Pinned top positions (don’t derive from composer rect)
-const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scale;
-const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scale;
-const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scale;
-const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scale;
-
-
 /* =========================================================================
    M7) Final Viewer
    ------------------------------------------------------------------------- */
 ;(function () {
+  // --- SAFETY SHIM: prevent ReferenceError if any stale code still touches measuredPx
+  var measuredPx;
+
   // Start viewer only after combine is done (won’t interfere with Step 1 boot)
   AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
 
@@ -1681,7 +1640,7 @@ const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * sc
       overlayCredits(osmd, osmdBox, pickedLabel, arranger);
     }
 
-    // keep overlay label in sync if user toggles selection after render
+    // Keep overlay synced when changing the dropdown
     select.addEventListener("change", refreshOverlay);
 
     btnVis.addEventListener("click", async () => {
@@ -1708,7 +1667,7 @@ const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * sc
     btnPDF.addEventListener("click", async () => {
       if (!lastXml) { alert("Load a score/part first."); return; }
       const base = (select.value === "__SCORE__" ? "Score" : select.value);
-      // Hide overlay so it doesn't appear in exported PDF
+      // Hide overlay while snapshotting
       const overlay = osmdBox.querySelector(".aa-overlay");
       const prev = overlay ? overlay.style.visibility : null;
       if (overlay) overlay.style.visibility = "hidden";
@@ -1893,18 +1852,18 @@ const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * sc
   // --- overlay (viewer-only) ------------------------------------------------
   function overlayCredits(osmd, host, pickedLabel, arrangerText){
     try {
-      // Tunable baselines
-      const PART_TOP_PAD_DEFAULT   = 10;  // closer to top
+      // Baselines
+      const PART_TOP_PAD_DEFAULT   = 10;
       const PART_LEFT_PAD_DEFAULT  = 18;
-      const ARR_TOP_PAD_DEFAULT    = 6;   // near absolute top
+      const ARR_TOP_PAD_DEFAULT    = 6;
       const ARR_RIGHT_PAD_DEFAULT  = 20;
 
       // Fine-tune
-      const ARR_TOP_TWEAK          = 8;   // push a bit lower from very top
-      const ARR_RIGHT_INSET        = 40;  // bring in from right edge
+      const ARR_TOP_TWEAK          = 8;
+      const ARR_RIGHT_INSET        = 40;
 
       // Default font sizes if composer size can't be measured
-      const PART_FONT_Px_DEFAULT   = 11;
+      const PART_FONT_PX_DEFAULT   = 11;
       const ARR_FONT_PX_DEFAULT    = 11;
 
       // Container
@@ -1935,7 +1894,7 @@ const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * sc
         if (/compos/i.test(txt)) { composerTextNode = t; break; }
       }
       const cs = composerTextNode ? getComputedStyle(composerTextNode) : null;
-      const measuredPx = (cs && cs.fontSize && cs.fontSize.endsWith("px"))
+      const localMeasuredPx = (cs && cs.fontSize && cs.fontSize.endsWith("px"))
         ? parseFloat(cs.fontSize) : NaN;
 
       // Position scale: prefer viewBox ratio; else OSMD zoom; else 1
@@ -1952,13 +1911,13 @@ const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * sc
       const weight = (cs && cs.fontWeight) ? cs.fontWeight : "normal";
       const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
 
-      // Font size selection
-      const partPx = (isFinite(measuredPx) && measuredPx > 0)
-        ? Math.round(measuredPx)
-        : Math.round(PART_FONT_Px_DEFAULT * (scalePos || 1));
+      // Font sizes (use measured if available, else defaults scaled)
+      const partPx = (isFinite(localMeasuredPx) && localMeasuredPx > 0)
+        ? Math.round(localMeasuredPx)
+        : Math.round(PART_FONT_PX_DEFAULT * (scalePos || 1));
 
-      const arrPx  = (isFinite(measuredPx) && measuredPx > 0)
-        ? Math.round(measuredPx)
+      const arrPx  = (isFinite(localMeasuredPx) && localMeasuredPx > 0)
+        ? Math.round(localMeasuredPx)
         : Math.round(ARR_FONT_PX_DEFAULT * (scalePos || 1));
 
       // Pinned positions
@@ -2006,6 +1965,7 @@ const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * sc
   // tiny DOM helper
   function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
 })();
+
 
 
 
