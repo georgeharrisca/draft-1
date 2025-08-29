@@ -608,6 +608,21 @@ function extractPartsFromScore(xmlText){
     const stateSel = { selections: [], openCats: new Set() }; // collapsed by default
     const baseOf = (name) => String(name).replace(/\s+\d+$/, "");
 
+function naturalLabelCompare(a, b) {
+  // Compare by base name (case-insensitive), then by trailing number
+  const re = /(.*?)(?:\s+(\d+))?$/;
+  const ma = String(a).match(re) || [];
+  const mb = String(b).match(re) || [];
+  const abase = (ma[1] || "").trim().toLowerCase();
+  const bbase = (mb[1] || "").trim().toLowerCase();
+  if (abase !== bbase) return abase.localeCompare(bbase);
+  const ai = ma[2] ? parseInt(ma[2], 10) : 0;
+  const bi = mb[2] ? parseInt(mb[2], 10) : 0;
+  if (ai !== bi) return ai - bi;
+  return a.localeCompare(b); // stable tie-break
+}
+
+     
     // Build the collapsible category tree
     function buildTree(){
       const instruments = getInstruments();
@@ -665,6 +680,7 @@ function extractPartsFromScore(xmlText){
     // Right list helpers
     function refreshRight(){
       const sorted = [...stateSel.selections].sort((a,b)=> a.localeCompare(b));
+       const sorted = [...stateSel.selections].sort(naturalLabelCompare);
       listRight.innerHTML = sorted.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
     }
     function addSelection(baseName){
@@ -760,6 +776,8 @@ function extractPartsFromScore(xmlText){
       const metaIndex = Object.fromEntries((s.instrumentData||[]).map(m => [m.name, m]));
       const instrumentSelections = [...stateSel.selections]
         .sort((a,b)=> a.localeCompare(b))
+         const instrumentSelections = [...stateSel.selections]
+         .sort(naturalLabelCompare)   
         .map(label => {
           const base = label.replace(/\s+\d+$/,"");
           const meta = metaIndex[base] || {};
