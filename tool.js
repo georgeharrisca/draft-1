@@ -1,4 +1,4 @@
-/* =============================================================================
+* =============================================================================
    AUTO ARRANGER • tool.js  (Draft 1 core flow only)
    Sections:
      A) Global singletons & constants
@@ -1515,8 +1515,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 /* =========================================================================
    M7) Final Viewer — dropdown lists all parts; ensure title; ensure XML prolog
-   + Back button now fully resets selections & pipeline state, and rebuilds Step 3 UI
-   ---------------------------------------------------------------------------- */
+   ------------------------------------------------------------------------- */
 (function () {
   AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
 
@@ -1538,36 +1537,12 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       document.head.appendChild(script);
     });
   }
-  function lookupGlobal(name) { return name.split(".").reduce((o,k)=> (o && o[k]!=null ? o[k] : null), window); }
-
-function ensureOsmdHostWidth(host){
-  // If OSMD sees width 0 it logs “width not > 0 …”
-  if (!host) return;
-  // Force a width if clientWidth is 0 for any reason (rare, but can happen right after attach)
-  if (host.clientWidth <= 0) {
-    host.style.width = "100%";
-    host.style.minWidth = "800px"; // fallback safety
+  function lookupGlobal(name) {
+    return name.split(".").reduce((o,k)=> (o && o[k]!=null ? o[k] : null), window);
   }
-}
 
-async function renderWithMutedOsmdWarning(osmd, xml, host){
-  ensureOsmdHostWidth(host);
-  const origWarn = console.warn;
-  console.warn = (...args) => {
-    const msg = args && args[0] ? String(args[0]) : "";
-    if (msg.includes("SkyBottomLineBatchCalculatorBackend: width not > 0")) return; // swallow only this one
-    origWarn.apply(console, args);
-  };
-  try {
-    await osmd.load(xml);
-    await osmd.render();
-  } finally {
-    console.warn = origWarn;
-  }
-}
-
-   
   function buildViewerUI() {
+    // clean old viewers
     document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
 
     const state = getState();
@@ -1587,24 +1562,34 @@ async function renderWithMutedOsmdWarning(osmd, xml, host){
     backBtn.textContent = "← Back";
     backBtn.title = "Back to instrument selection";
     backBtn.style.cssText = `position:absolute;top:16px;left:16px;padding:8px 12px;border-radius:8px;border:none;background:#e5e7eb;color:#111;font:600 13px system-ui;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)`;
-    backBtn.addEventListener("click", () => backToInstrumentSelection());
+    backBtn.addEventListener("click", () => backToInstrumentSelection(state));
     wrap.appendChild(backBtn);
 
     const card = ce("div");
     card.style.cssText = `margin:auto;width:min(1200px,100%);height:calc(100vh - 56px);background:#fff;border-radius:14px;box-shadow:0 12px 36px rgba(0,0,0,.18);padding:20px 20px 18px;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;overflow:hidden;`;
     wrap.appendChild(card);
 
+    // (we removed the header title to keep the score title only)
+    const controls = ce("div");
+    controls.style.cssText = `display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:2px;`;
+    card.appendChild(controls);
 
+    const label = ce("div", { textContent: "Select Score or Part" });
+    label.style.cssText = `color:#000;font:600 13px/1 system-ui;`;
+    controls.appendChild(label);
 
-    const controls = ce("div"); controls.style.cssText = `display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:2px;`; card.appendChild(controls);
-    const label = ce("div", { textContent: "Select Score or Part" }); label.style.cssText = `color:#000;font:600 13px/1 system-ui;`; controls.appendChild(label);
-
-    const select = ce("select"); select.id = "aa-viewer-select"; select.style.cssText = `padding:8px 10px;font:14px system-ui;`;
+    const select = ce("select");
+    select.id = "aa-viewer-select";
+    select.style.cssText = `padding:8px 10px;font:14px system-ui;`;
     if (hasScore) select.appendChild(new Option("Score","__SCORE__"));
-    for (const p of parts) select.appendChild(new Option(p.instrumentName || p.baseName || "Part", p.instrumentName || p.baseName || "Part"));
+    for (const p of parts) {
+      select.appendChild(new Option(p.instrumentName || p.baseName || "Part",
+                                    p.instrumentName || p.baseName || "Part"));
+    }
     controls.appendChild(select);
 
-    const btnRow = ce("div"); btnRow.style.cssText = `display:flex;gap:8px;flex-wrap:nowrap;justify-content:center;align-items:center;`;
+    const btnRow = ce("div");
+    btnRow.style.cssText = `display:flex;gap:8px;flex-wrap:nowrap;justify-content:center;align-items:center;`;
     btnRow.innerHTML = `
       <button id="aa-btn-visualize" class="aa-btn">Visualize</button>
       <button id="aa-btn-pdf" class="aa-btn" disabled>Download PDF</button>
@@ -1614,22 +1599,29 @@ async function renderWithMutedOsmdWarning(osmd, xml, host){
     controls.appendChild(btnRow);
 
     const styleBtn = ce("style");
-    styleBtn.textContent = `.aa-btn{padding:8px 12px;border-radius:8px;background:#0f62fe;color:#fff;border:none;cursor:pointer;font:600 13px system-ui}.aa-btn[disabled]{opacity:.5;cursor:not-allowed}.aa-btn:hover:not([disabled]){filter:brightness(0.92)}`;
+    styleBtn.textContent =
+      `.aa-btn{padding:8px 12px;border-radius:8px;background:#0f62fe;color:#fff;border:none;cursor:pointer;font:600 13px system-ui}
+       .aa-btn[disabled]{opacity:.5;cursor:not-allowed}
+       .aa-btn:hover:not([disabled]){filter:brightness(0.92)}`;
     card.appendChild(styleBtn);
 
     const osmdBox = ce("div");
     osmdBox.id = "aa-osmd-box";
-    osmdBox.style.cssText = `margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;`;
+    osmdBox.style.cssText =
+      `margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;
+       flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;`;
     card.appendChild(osmdBox);
     document.body.appendChild(wrap);
 
     const OSMD = lookupGlobal("opensheetmusicdisplay");
-    const osmd = new OSMD.OpenSheetMusicDisplay(osmdBox, { autoResize:true, backend:"svg", drawingParameters:"default" });
+    const osmd = new OSMD.OpenSheetMusicDisplay(osmdBox, {
+      autoResize:true, backend:"svg", drawingParameters:"default"
+    });
     window.addEventListener("resize", () => fitScoreToHeight(osmd, osmdBox));
 
-    const btnVis = btnRow.querySelector("#aa-btn-visualize");
-    const btnPDF = btnRow.querySelector("#aa-btn-pdf");
-    const btnXML = btnRow.querySelector("#aa-btn-xml");
+    const btnVis    = btnRow.querySelector("#aa-btn-visualize");
+    const btnPDF    = btnRow.querySelector("#aa-btn-pdf");
+    const btnXML    = btnRow.querySelector("#aa-btn-xml");
     const btnPDFAll = btnRow.querySelector("#aa-btn-pdf-all");
     const btnXMLAll = btnRow.querySelector("#aa-btn-xml-all");
 
@@ -1643,11 +1635,12 @@ async function renderWithMutedOsmdWarning(osmd, xml, host){
         const processed = transformXmlForSlashes(lastXml);
         const osmdReady = withXmlProlog(processed);
         if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
-        await renderWithMutedOsmdWarning(osmd, osmdReady, osmdBox);
-
+        await osmd.load(osmdReady);
+        await osmd.render();
         await new Promise(r => requestAnimationFrame(r));
         fitScoreToHeight(osmd, osmdBox);
-        btnPDF.disabled = false; btnXML.disabled = false;
+        btnPDF.disabled = false;
+        btnXML.disabled = false;
       } catch(e){
         console.error("[finalViewer] render failed", e);
         alert("Failed to render this selection.");
@@ -1656,39 +1649,44 @@ async function renderWithMutedOsmdWarning(osmd, xml, host){
 
     btnPDF.addEventListener("click", async () => {
       if (!lastXml) return alert("Load a score/part first.");
-      await exportCurrentViewToPdf(osmdBox, select.value.replace(/[^a-z0-9 _-]/gi,"") || "score");
+      await exportCurrentViewToPdf(osmdBox, select.value === "__SCORE__" ? "Score" : select.value);
     });
+
     btnXML.addEventListener("click", () => {
       if (!lastXml) return alert("Load a score/part first.");
       const name = (select.value === "__SCORE__" ? "Score" : select.value) || "part";
       downloadText(lastXml, `${safe(name)}.musicxml`, "application/xml");
     });
+
     btnPDFAll.addEventListener("click", async () => {
-      const parts = sortPartsEvenIfNoPid(Array.isArray(getState().arrangedFiles)?getState().arrangedFiles:[]);
-      if (!parts.length) return alert("No parts found.");
+      const partsNow = sortPartsEvenIfNoPid(Array.isArray(getState().arrangedFiles) ? getState().arrangedFiles : []);
+      if (!partsNow.length) return alert("No parts found.");
       const jspdfNS = window.jspdf || window.jspdf?.jsPDF ? window.jspdf : window;
-      const jsPDF = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
-      if (!jsPDF) return alert("jsPDF not available.");
+      const JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
+      if (!JsPDFCtor) return alert("jsPDF not available.");
       const docName = `${safe(songName)} - All Parts.pdf`;
       let doc = null;
-      for (const p of parts) {
+      for (const p of partsNow) {
         try {
           const processed = transformXmlForSlashes(ensureTitle(p.xml, p.instrumentName));
           const osmdReady = withXmlProlog(processed);
-         await renderWithMutedOsmdWarning(osmd, osmdReady, osmdBox);
-
+          await osmd.load(osmdReady);
+          await osmd.render();
           const { canvas, w, h } = await snapshotCanvas(osmdBox);
-          if (!doc) doc = new (jspdfNS.jsPDF)({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
+          if (!doc) doc = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
           else doc.addPage([w,h], w>=h?"landscape":"portrait");
           doc.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
-        } catch(e){ console.error("[finalViewer] PDF all parts failed on", p.instrumentName, e); }
+        } catch(e){
+          console.error("[finalViewer] PDF all parts failed on", p.instrumentName, e);
+        }
       }
       if (doc) doc.save(docName);
     });
+
     btnXMLAll.addEventListener("click", async () => {
-      const parts = sortPartsEvenIfNoPid(Array.isArray(getState().arrangedFiles)?getState().arrangedFiles:[]);
-      if (!parts.length) return alert("No parts found.");
-      for (const p of parts) {
+      const partsNow = sortPartsEvenIfNoPid(Array.isArray(getState().arrangedFiles) ? getState().arrangedFiles : []);
+      if (!partsNow.length) return alert("No parts found.");
+      for (const p of partsNow) {
         downloadText(ensureTitle(p.xml, p.instrumentName), `${safe(p.instrumentName || "Part")}.musicxml`, "application/xml");
         await new Promise(r => setTimeout(r, 60));
       }
@@ -1697,7 +1695,8 @@ async function renderWithMutedOsmdWarning(osmd, xml, host){
     function pickXml(choice){
       const s = getState();
       if (choice === "__SCORE__") return { xml: s.combinedScoreXml || "" };
-      const hit = (Array.isArray(s.arrangedFiles) ? s.arrangedFiles : []).find(f => (f.instrumentName || f.baseName) === choice);
+      const hit = (Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [])
+                    .find(f => (f.instrumentName || f.baseName) === choice);
       return { xml: hit?.xml || "" };
     }
   }
@@ -1706,74 +1705,45 @@ async function renderWithMutedOsmdWarning(osmd, xml, host){
   function sortPartsEvenIfNoPid(files){
     const out = [];
     for (const f of files) {
-      const pid = f.newPartId || extractPidFromXml(f.xml) || "";  // don’t drop if missing
+      const pid = f.newPartId || extractPidFromXml(f.xml) || "";
       const n = parseInt(String(pid).replace(/^P/i,""), 10);
       out.push({ ...f, _pnum: Number.isFinite(n)?n:999 });
     }
     out.sort((a,b)=> (a._pnum - b._pnum) || String(a.instrumentName||"").localeCompare(String(b.instrumentName||"")));
     return out;
   }
-  function extractPidFromXml(xml){ const m = String(xml||"").match(/<score-part\s+id="([^"]+)"/i); return m ? m[1] : null; }
-  function snapshotCanvas(container){ return html2canvas(container, { scale:2, backgroundColor:"#fff" }).then(canvas => ({canvas, w:canvas.width, h:canvas.height})); }
+  function extractPidFromXml(xml){
+    const m = String(xml||"").match(/<score-part\s+id="([^"]+)"/i);
+    return m ? m[1] : null;
+  }
+  function snapshotCanvas(container){
+    return html2canvas(container, { scale:2, backgroundColor:"#fff" })
+           .then(canvas => ({canvas, w:canvas.width, h:canvas.height}));
+  }
   async function exportCurrentViewToPdf(container, baseName){
     const { canvas, w, h } = await snapshotCanvas(container);
     const jspdfNS = window.jspdf || window.jspdf?.jsPDF ? window.jspdf : window;
-    const jsPDF = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
-    if (!jsPDF) return alert("jsPDF not loaded.");
-    const pdf = new (jspdfNS.jsPDF)({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
+    const JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
+    if (!JsPDFCtor) return alert("jsPDF not loaded.");
+    const pdf = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
     pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
-    pdf.save(`${safe(baseName)}.pdf`);
+    pdf.save(`${safe(baseName || "score")}.pdf`);
   }
-
-  // 👇 NEW: full reset when returning to Step 3 (clears selections & all downstream processing)
-  function backToInstrumentSelection(){
-    const s = getState();
-    setState({
-      // keep pack & song + extracted parts
-      packIndex: s.packIndex, pack: s.pack,
-      songIndex: s.songIndex, song: s.song, selectedSong: s.selectedSong,
-      libraryPacks: s.libraryPacks,
-      instrumentData: s.instrumentData,
-      parts: Array.isArray(s.parts) ? s.parts : [],
-
-      // clear picks + pipeline artifacts
-      instrumentSelections: [],
-      assignedResults: [],
-      groupedAssignments: [],
-      arrangedFiles: [],
-      combinedScoreXml: "",
-
-      arrangeDone: false,
-      renameDone: false,
-      reassignByScoreDone: false,
-      combineDone: false,
-
-      timestamp: Date.now()
-    });
-
-    // remove viewer overlay
+  function backToInstrumentSelection(prevState){
+    const packName = prevState?.pack || prevState?.selectedPack?.name || "";
+    const songName = prevState?.song || prevState?.selectedSong?.name || "";
+    setState({ pack: packName, song: songName, packIndex: getState().packIndex, songIndex: getState().songIndex, timestamp: Date.now() });
     document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
-    hideArrangingLoading?.();
-
-    // force a fresh Step 3 builder by removing the old container (resets stateSel & wiring)
-    const oldPickers = document.getElementById("aa-pickers");
-    if (oldPickers) oldPickers.remove();
-
-    // go back to Instruments stage (this will trigger your setupInstrumentPicker listener)
-    if (typeof setWizardStage === "function") {
-      setWizardStage("instruments");
-    } else {
-      // fallback if helper isn’t available for any reason
-      qs("step1")?.classList.add("hidden");
-      qs("step2")?.classList.add("hidden");
-      qs("step3")?.classList.remove("hidden");
-      AA.emit?.("wizard:stage", "instruments");
-    }
+    hideArrangingLoading();
+    qs("step1")?.classList.add("hidden");
+    qs("step2")?.classList.add("hidden");
+    qs("step3")?.classList.remove("hidden");
   }
-
   function fitScoreToHeight(osmd, host){
-    const svg = host.querySelector("svg"); if (!svg) return;
-    const maxH = host.clientHeight; if (!maxH) return;
+    const svg = host.querySelector("svg");
+    if (!svg) return;
+    const maxH = host.clientHeight;
+    if (!maxH) return;
     let svgH = 0; try { svgH = svg.getBBox().height; } catch {}
     if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
     if (!svgH) return;
@@ -1793,7 +1763,8 @@ async function renderWithMutedOsmdWarning(osmd, xml, host){
       const hasWork = !!doc.querySelector("work > work-title");
       if (!hasMovement && !hasWork) {
         const root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
-        const mv = doc.createElement("movement-title"); mv.textContent = title || "Auto Arranger Score";
+        const mv = doc.createElement("movement-title");
+        mv.textContent = title || "Auto Arranger Score";
         root.insertBefore(mv, root.firstChild);
       }
       return new XMLSerializer().serializeToString(doc);
@@ -1810,8 +1781,39 @@ async function renderWithMutedOsmdWarning(osmd, xml, host){
   function withXmlProlog(str){
     if (!str) return str;
     let s = String(str).replace(/^\uFEFF/, "").replace(/^\s+/, "");
-    if (!/^\<\?xml/i.test(s)) s = `<?xml version="1.0" encoding="UTF-8"?>\n` + s;
+    if (!/^\<\?xml/i.test(s)) {
+      s = `<?xml version="1.0" encoding="UTF-8"?>\n` + s;
+    }
     return s;
+  }
+
+  // --- file helpers (missing before) ---
+  function safe(name){
+    return String(name || "")
+      .replace(/[\\\/:*?"<>|]+/g, "_")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  function downloadText(text, filename, mimetype){
+    try{
+      const blob = new Blob([text], { type: mimetype || "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename || "download.txt";
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 50);
+    } catch(e){
+      console.warn("downloadText failed", e);
+    }
+  }
+
+  // tiny DOM helper used above
+  function ce(tag, props){
+    const el = document.createElement(tag);
+    if (props) Object.assign(el, props);
+    return el;
   }
 })();
 
