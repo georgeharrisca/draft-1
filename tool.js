@@ -1520,6 +1520,12 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 
+
+
+
+
+
+
 /* =========================================================================
    M7) Final Viewer
    ------------------------------------------------------------------------- */
@@ -1849,118 +1855,128 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     } catch(e){ return "Arranged by Auto Arranger"; }
   }
 
-  // --- overlay (viewer-only) ------------------------------------------------
-  function overlayCredits(osmd, host, pickedLabel, arrangerText){
-    try {
-      // Baselines
-      const PART_TOP_PAD_DEFAULT   = 10;
-      const PART_LEFT_PAD_DEFAULT  = 18;
-      const ARR_TOP_PAD_DEFAULT    = 6;
-      const ARR_RIGHT_PAD_DEFAULT  = 20;
+ // --- overlay (viewer-only) ------------------------------------------------
+function overlayCredits(osmd, host, pickedLabel, arrangerText){
+  try {
+    // Baselines in OSMD “logical” units; we’ll scale them.
+    const PART_TOP_PAD_DEFAULT   = 10;
+    const PART_LEFT_PAD_DEFAULT  = 18;
+    const ARR_TOP_PAD_DEFAULT    = 6;
+    const ARR_RIGHT_PAD_DEFAULT  = 20;
 
-      // Fine-tune
-      const ARR_TOP_TWEAK          = 8;
-      const ARR_RIGHT_INSET        = 40;
+    // Small tuning offsets
+    const ARR_TOP_TWEAK          = 8;
+    const ARR_RIGHT_INSET        = 40;
 
-      // Default font sizes if composer size can't be measured
-      const PART_FONT_PX_DEFAULT   = 11;
-      const ARR_FONT_PX_DEFAULT    = 11;
+    // Default font px if we can’t measure OSMD’s composer text
+    const PART_FONT_PX_DEFAULT   = 11;
+    const ARR_FONT_PX_DEFAULT    = 11;
 
-      // Container
-      let overlay = host.querySelector(".aa-overlay");
-      if (!overlay) {
-        overlay = document.createElement("div");
-        overlay.className = "aa-overlay";
-        overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
-        host.appendChild(overlay);
-      } else {
-        overlay.innerHTML = "";
-      }
-
-      const svg = host.querySelector("svg");
-      if (!svg) return;
-
-      const svgRect  = svg.getBoundingClientRect();
-      const hostRect = host.getBoundingClientRect();
-
-      const absLeft  = (px) => (px - hostRect.left) + "px";
-      const absTop   = (px) => (px - hostRect.top)  + "px";
-      const absRight = (px) => (hostRect.right - px) + "px";
-
-      // Try to match OSMD font via a visible composer <text>
-      let composerTextNode = null;
-      for (const t of svg.querySelectorAll("text")) {
-        const txt = (t.textContent || "");
-        if (/compos/i.test(txt)) { composerTextNode = t; break; }
-      }
-      const cs = composerTextNode ? getComputedStyle(composerTextNode) : null;
-      const localMeasuredPx = (cs && cs.fontSize && cs.fontSize.endsWith("px"))
-        ? parseFloat(cs.fontSize) : NaN;
-
-      // Position scale: prefer viewBox ratio; else OSMD zoom; else 1
-      let scalePos = NaN;
-      const vb = svg.viewBox && svg.viewBox.baseVal;
-      if (vb && vb.height) scalePos = svgRect.height / vb.height;
-      if (!scalePos || !isFinite(scalePos)) {
-        const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
-        scalePos = zoom;
-      }
-
-      // Font style/family
-      const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
-      const weight = (cs && cs.fontWeight) ? cs.fontWeight : "normal";
-      const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
-
-      // Font sizes (use measured if available, else defaults scaled)
-      const partPx = (isFinite(localMeasuredPx) && localMeasuredPx > 0)
-        ? Math.round(localMeasuredPx)
-        : Math.round(PART_FONT_PX_DEFAULT * (scalePos || 1));
-
-      const arrPx  = (isFinite(localMeasuredPx) && localMeasuredPx > 0)
-        ? Math.round(localMeasuredPx)
-        : Math.round(ARR_FONT_PX_DEFAULT * (scalePos || 1));
-
-      // Pinned positions
-      const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scalePos;
-      const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scalePos;
-      const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scalePos;
-      const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scalePos;
-
-      // Score/Part (top-left)
-      if (pickedLabel) {
-        const el = document.createElement("div");
-        el.textContent = pickedLabel;
-        el.style.cssText =
-          "position:absolute;" +
-          "left:" + absLeft(partLeft) + ";" +
-          "top:" + absTop(partTop) + ";" +
-          "font-size:" + partPx + "px;" +
-          "font-weight:" + weight + ";" +
-          "font-style:" + fstyle + ";" +
-          "font-family:" + family + ";" +
-          "color:#111;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
-        overlay.appendChild(el);
-      }
-
-      // Arranger (top-right)
-      if (arrangerText) {
-        const el = document.createElement("div");
-        el.textContent = arrangerText;
-        el.style.cssText =
-          "position:absolute;" +
-          "right:" + absRight(arrRightX) + ";" +
-          "top:" + absTop(arrTop) + ";" +
-          "font-size:" + arrPx + "px;" +
-          "font-weight:" + weight + ";" +
-          "font-style:" + fstyle + ";" +
-          "font-family:" + family + ";" +
-          "color:#111;text-align:right;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
-        overlay.appendChild(el);
-      }
-    } catch (e) {
-      console.warn("[M7 overlay] skipped due to error:", e);
+    // Ensure overlay container
+    let overlay = host.querySelector(".aa-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "aa-overlay";
+      overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
+      host.appendChild(overlay);
+    } else {
+      overlay.innerHTML = "";
     }
+
+    const svg = host.querySelector("svg");
+    if (!svg) return;
+
+    const svgRect  = svg.getBoundingClientRect();
+    const hostRect = host.getBoundingClientRect();
+
+    const absLeft  = (px) => (px - hostRect.left) + "px";
+    const absTop   = (px) => (px - hostRect.top)  + "px";
+    const absRight = (px) => (hostRect.right - px) + "px";
+
+    // Try to match OSMD header font via the composer text node
+    let composerTextNode = null;
+    for (const t of svg.querySelectorAll("text")) {
+      const txt = (t.textContent || "");
+      if (/compos/i.test(txt)) { composerTextNode = t; break; }
+    }
+    const cs = composerTextNode ? getComputedStyle(composerTextNode) : null;
+    const measuredPx = (cs && cs.fontSize && cs.fontSize.endsWith("px"))
+      ? parseFloat(cs.fontSize)
+      : NaN;
+
+    // One unified scale for *both* font and position:
+    // 1) use measured composer font vs our default;
+    // 2) else viewBox ratio; 3) else OSMD zoom; 4) else 1.
+    let scale = NaN;
+    if (isFinite(measuredPx) && measuredPx > 0) {
+      scale = measuredPx / PART_FONT_PX_DEFAULT;
+    }
+    if (!isFinite(scale)) {
+      const vb = svg.viewBox && svg.viewBox.baseVal;
+      if (vb && vb.height) scale = svgRect.height / vb.height;
+    }
+    if (!isFinite(scale)) {
+      const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
+      scale = zoom;
+    }
+    if (!isFinite(scale) || scale <= 0) scale = 1;
+
+    // Font settings to mirror OSMD as closely as possible
+    const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
+    const weight = (cs && cs.fontWeight) ? cs.fontWeight : "normal";
+    const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
+
+    // Font sizes: use measuredPx if available; otherwise scale defaults
+    const partPx = (isFinite(measuredPx) && measuredPx > 0)
+      ? measuredPx
+      : Math.round(PART_FONT_PX_DEFAULT * scale);
+
+    const arrPx  = (isFinite(measuredPx) && measuredPx > 0)
+      ? measuredPx
+      : Math.round(ARR_FONT_PX_DEFAULT * scale);
+
+    // Positions use the *same* scale as fonts, so they track perfectly
+    const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scale;
+    const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scale;
+    const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scale;
+    const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scale;
+
+    // Score/Part (top-left)
+    if (pickedLabel) {
+      const el = document.createElement("div");
+      el.textContent = pickedLabel;
+      el.style.cssText =
+        "position:absolute;" +
+        "left:" + absLeft(partLeft) + ";" +
+        "top:" + absTop(partTop) + ";" +
+        "font-size:" + partPx + "px;" +
+        "font-weight:" + weight + ";" +
+        "font-style:" + fstyle + ";" +
+        "font-family:" + family + ";" +
+        "color:#111;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
+      overlay.appendChild(el);
+    }
+
+    // Arranger (top-right)
+    if (arrangerText) {
+      const el = document.createElement("div");
+      el.textContent = arrangerText;
+      el.style.cssText =
+        "position:absolute;" +
+        "right:" + absRight(arrRightX) + ";" +
+        "top:" + absTop(arrTop) + ";" +
+        "font-size:" + arrPx + "px;" +
+        "font-weight:" + weight + ";" +
+        "font-style:" + fstyle + ";" +
+        "font-family:" + family + ";" +
+        "color:#111;text-align:right;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
+      overlay.appendChild(el);
+    }
+  } catch (e) {
+    console.warn("[M7 overlay] skipped due to error:", e);
   }
+}
+
 
   // tiny DOM helper
   function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
