@@ -1822,8 +1822,10 @@ M7) Final Viewer — dropdown lists all parts; ensure title; ensure XML prolog
 })();
 
 /* =========================================================================
-M8) applyCredits — clone credit blocks from source and set OSMD header:
-movement-title = Title, work/work-title = Subtitle
+M8) applyCredits — rebuild credits (Title, Subtitle, Composer, Arranger, Part/Score)
+and set OSMD header lines:
+  movement-title  = Title
+  work/work-title = Subtitle
 - Listens:  combine:done
 - Emits:    credits:done
 ------------------------------------------------------------------------- */
@@ -1840,7 +1842,7 @@ movement-title = Title, work/work-title = Subtitle
       return;
     }
 
-    // Prefer the pristine source XML for credits
+    // Prefer pristine source XML for pulling text
     var baseXml =
       (s.parts && s.parts[0] && s.parts[0].xml) ||
       (s.selectedSong && s.selectedSong.rawXml) || "";
@@ -1853,68 +1855,68 @@ movement-title = Title, work/work-title = Subtitle
     }
     if (!baseXml) baseXml = combined;
 
-    var pack = collectCredits(baseXml);
+    var snap = snapshotCredits(baseXml);
+    console.log("[M8] credits snapshot:", snap);
 
     // Apply to combined (part name = Score)
-    var updatedCombined = applyCreditsToDoc(combined, pack, "Score");
+    var updatedCombined = applyCreditsToDoc(combined, snap, "Score");
 
     // Apply to each arranged part (part name = instrument label)
     var updatedArranged = arranged.map(function(f){
       var label = f.instrumentName || f.baseName || "Part";
-      return Object.assign({}, f, { xml: applyCreditsToDoc(f.xml, pack, label) });
+      return Object.assign({}, f, { xml: applyCreditsToDoc(f.xml, snap, label) });
     });
 
     mergeState({ combinedScoreXml: updatedCombined, arrangedFiles: updatedArranged, creditsDone:true });
     AA.emit("credits:done");
   }
 
-  // ----- grab first instances of each credit from the source -----
-  function collectCredits(xmlString){
-    var out = {
-      titleEl:null, subtitleEl:null, composerEl:null, arrangerEl:null, partNameEl:null,
-      titleText:"", subtitleText:""
-    };
+  // --------- read strings from source XML ----------
+  function snapshotCredits(xmlString){
+    var out = { title:"", subtitle:"", composer:"", arranger:"" };
     try{
       var p = new DOMParser();
       var doc = p.parseFromString(xmlString, "application/xml");
+      var getCredit = function(type){
+        var hit = null;
+        doc.querySelectorAll("credit").forEach(function(c){
+          if (hit) return;
+          var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
+          if (t === type) hit = c;
+        });
+        return (hit && hit.querySelector("credit-words") && hit.querySelector("credit-words").textContent.trim()) || "";
+      };
+      var getCreator = function(kind){
+        return (doc.querySelector('identification > creator[type="'+kind+'"]') &&
+                doc.querySelector('identification > creator[type="'+kind+'"]').textContent.trim()) || "";
+      };
 
-      var map = { "title":"titleEl", "subtitle":"subtitleEl", "composer":"composerEl", "arranger":"arrangerEl", "part name":"partNameEl" };
-      var credits = doc.querySelectorAll("credit");
-      for (var i=0;i<credits.length;i++){
-        var c = credits[i];
-        var ct = c.querySelector("credit-type");
-        var t  = (ct && ct.textContent || "").toLowerCase().trim();
-        if (map[t] && !out[map[t]]) out[map[t]] = c;
-      }
+      // Title: prefer credit "title", else movement-title, else work-title
+      out.title =
+        getCredit("title") ||
+        ((doc.querySelector("movement-title") && doc.querySelector("movement-title").textContent.trim()) || "") ||
+        ((doc.querySelector("work > work-title") && doc.querySelector("work > work-title").textContent.trim()) || "");
 
-      // Title text: prefer <credit type="title">, else <movement-title>, else <work-title>
-      out.titleText =
-        textOf(out.titleEl) ||
-        (doc.querySelector("movement-title") && doc.querySelector("movement-title").textContent.trim()) ||
-        (doc.querySelector("work > work-title") && doc.querySelector("work > work-title").textContent.trim()) ||
-        "";
+      // Subtitle: prefer credit "subtitle", else work-title (if different from title)
+      var sub = getCredit("subtitle") ||
+                ((doc.querySelector("work > work-title") && doc.querySelector("work > work-title").textContent.trim()) || "");
+      out.subtitle = (sub && sub !== out.title) ? sub : (getCredit("subtitle") || "");
 
-      // Subtitle text: prefer <credit type="subtitle"> (don't infer if absent)
-      out.subtitleText = textOf(out.subtitleEl) || "";
-    }catch(e){ console.warn("[M8] collectCredits failed", e); }
+      // Composer / Arranger: credit first, else identification/creator
+      out.composer = getCredit("composer") || getCreator("composer");
+      out.arranger = getCredit("arranger") || getCreator("arranger");
+    }catch(e){ console.warn("[M8] snapshotCredits failed", e); }
     return out;
   }
 
-  function textOf(creditEl){
-    try{
-      var w = creditEl && creditEl.querySelector("credit-words");
-      return (w && w.textContent || "").trim();
-    }catch(e){ return ""; }
-  }
-
-  // ----- write credits + header into a target MusicXML -----
-  function applyCreditsToDoc(xmlString, pack, partNameOverride){
+  // --------- write credits into a target MusicXML ----------
+  function applyCreditsToDoc(xmlString, snap, partName){
     try{
       var p = new DOMParser();
       var doc = p.parseFromString(xmlString, "application/xml");
       var root = doc.documentElement;
 
-      // Remove any existing target credits of these types
+      // Remove existing target credits of these types
       var toRemove = [];
       root.querySelectorAll("credit").forEach(function(c){
         var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
@@ -1922,50 +1924,41 @@ movement-title = Title, work/work-title = Subtitle
       });
       toRemove.forEach(function(n){ n.remove(); });
 
-      // Insert before <part-list> to mimic originals
+      // Insert before <part-list> (matches your originals)
       function beforePartList(node){
         var pl = root.querySelector("part-list");
         if (pl) root.insertBefore(node, pl); else root.appendChild(node);
       }
-      function insertCreditFrom(src, type){
-        if (!src) return;
-        var node = doc.importNode(src, true);
-        var ct = node.querySelector("credit-type");
-        if (ct) ct.textContent = type; // normalize casing
-        beforePartList(node);
+
+      function makeCredit(type, text, pos){
+        if (!text) return null;
+        var credit = doc.createElement("credit");
+        credit.setAttribute("page","1");
+        var ct = doc.createElement("credit-type"); ct.textContent = type; credit.appendChild(ct);
+        var words = doc.createElement("credit-words");
+        // position defaults matching your sample file
+        if (pos.center){ words.setAttribute("halign","center"); words.setAttribute("justify","center"); words.setAttribute("default-x","1018"); }
+        else if (pos.right){ words.setAttribute("halign","right"); words.setAttribute("justify","right"); words.setAttribute("default-x","1807"); }
+        else { words.setAttribute("default-x","226"); }
+        words.setAttribute("valign","top");
+        words.setAttribute("font-size", String(pos.size || 10.8));
+        words.setAttribute("default-y", String(pos.y));
+        words.textContent = text;
+        credit.appendChild(words);
+        return credit;
       }
 
-      // Clone title / subtitle / composer / arranger
-      insertCreditFrom(pack.titleEl,    "title");
-      insertCreditFrom(pack.subtitleEl, "subtitle");
-      insertCreditFrom(pack.composerEl, "composer");
-      insertCreditFrom(pack.arrangerEl, "arranger");
+      // Rebuild credits
+      var cTitle    = makeCredit("title",     snap.title,    { center:true, y:2375, size:21.6 });
+      var cSubtitle = makeCredit("subtitle",  snap.subtitle, { center:true, y:2282, size:16.2 });
+      var cComposer = makeCredit("composer",  snap.composer, { right:true,  y:2298, size:10.8 });
+      var cArranger = makeCredit("arranger",  snap.arranger, { right:true,  y:2247, size:10.8 });
+      var cPart     = makeCredit("part name", partName||"Part", { y:2380, size:10.8 });
 
-      // part name credit: clone if present; otherwise synthesize
-      if (pack.partNameEl){
-        var pn = doc.importNode(pack.partNameEl, true);
-        var words = pn.querySelector("credit-words");
-        if (words) words.textContent = partNameOverride || "Part";
-        var ct2 = pn.querySelector("credit-type"); if (ct2) ct2.textContent = "part name";
-        beforePartList(pn);
-      } else {
-        var synth = doc.createElement("credit");
-        synth.setAttribute("page","1");
-        var ctt = doc.createElement("credit-type"); ctt.textContent = "part name"; synth.appendChild(ctt);
-        var cw = doc.createElement("credit-words");
-        cw.setAttribute("default-x","226");
-        cw.setAttribute("default-y","2380");
-        cw.setAttribute("font-size","10.8");
-        cw.setAttribute("valign","top");
-        cw.textContent = partNameOverride || "Part";
-        synth.appendChild(cw);
-        beforePartList(synth);
-      }
+      [cTitle, cComposer, cPart, cArranger, cSubtitle].forEach(function(n){ if (n) beforePartList(n); });
 
-      // OSMD header lines:
-      //   movement-title  = Title  (big header)
-      //   work/work-title = Subtitle (small header under title)
-      ensureHeaderTitles(doc, root, pack.titleText, pack.subtitleText);
+      // OSMD header lines
+      ensureHeaderTitles(doc, root, snap.title, snap.subtitle);
 
       return new XMLSerializer().serializeToString(doc);
     }catch(e){
@@ -1993,6 +1986,7 @@ movement-title = Title, work/work-title = Subtitle
     }
   }
 })();
+
 
    
 
