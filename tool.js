@@ -571,8 +571,8 @@ function extractPartsFromScore(xmlText){
           <h4>Instruments</h4>
           <div id="instrumentTree" aria-label="Instrument categories"></div>
           <div id="aa-left-controls">
-            <button id="btnBackToSong" class="aa-btn" style="background:#1a1f2a;border:1px solid var(--line);color:var(--text);">Back</button>
-            <button id="btnAddInstrument" class="aa-btn">Add to Score</button>
+            <button id="btnBackToSong" class="aa-btn" type="button" style="background:#1a1f2a;border:1px solid var(--line);color:var(--text);">Back</button>
+            <button id="btnAddInstrument" class="aa-btn" type="button">Add to Score</button>
           </div>
         </div>
 
@@ -581,8 +581,8 @@ function extractPartsFromScore(xmlText){
           <h4>Selections</h4>
           <select id="selectionsList" size="14" style="width:100%;height:360px;"></select>
           <div style="display:flex; gap:10px; margin-top:10px;">
-            <button id="btnRemoveSelected" class="aa-btn">Remove</button>
-            <button id="btnSaveSelections" class="aa-btn aa-accent">Save Selections</button>
+            <button id="btnRemoveSelected" class="aa-btn" type="button">Remove</button>
+            <button id="btnSaveSelections" class="aa-btn aa-accent" type="button">Save Selections</button>
           </div>
         </div>
       </div>
@@ -754,6 +754,7 @@ function extractPartsFromScore(xmlText){
     container.addEventListener("click", (ev) => {
       const saveBtn = ev.target.closest("#btnSaveSelections");
       if (!saveBtn) return;
+      ev.preventDefault(); // just in case
 
       const s = getState();
       const metaIndex = Object.fromEntries((s.instrumentData||[]).map(m => [m.name, m]));
@@ -788,7 +789,6 @@ function extractPartsFromScore(xmlText){
   AA.on("wizard:stage", (stage) => { if (stage === "instruments") setupInstrumentPicker(); });
 
 })(); // end Step 3
-
 
 
 
