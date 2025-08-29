@@ -1766,16 +1766,61 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
     pdf.save(safe(baseName || "score") + ".pdf");
   }
-  function backToInstrumentSelection(prevState){
-    const packName = (prevState && (prevState.pack || (prevState.selectedPack && prevState.selectedPack.name))) || "";
-    const songName = (prevState && (prevState.song || (prevState.selectedSong && prevState.selectedSong.name))) || "";
-    setState({ pack: packName, song: songName, packIndex: getState().packIndex, songIndex: getState().songIndex, timestamp: Date.now() });
-    document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
-    hideArrangingLoading();
-    qs("step1") && qs("step1").classList.add("hidden");
-    qs("step2") && qs("step2").classList.add("hidden");
-    qs("step3") && qs("step3").classList.remove("hidden");
+// 👇 Replace M7's backToInstrumentSelection with this version
+function backToInstrumentSelection() {
+  const s = getState();
+
+  setState({
+    // keep context so the user stays in the same pack/song
+    packIndex: s.packIndex,
+    pack: s.pack,
+    songIndex: s.songIndex,
+    song: s.song,
+    selectedSong: s.selectedSong,
+
+    // keep loaded data sources
+    libraryPacks: s.libraryPacks,
+    instrumentData: s.instrumentData,
+
+    // keep extracted parts from the source song, but…
+    parts: Array.isArray(s.parts) ? s.parts : [],
+
+    // …clear user picks + all downstream artifacts
+    instrumentSelections: [],
+    assignedResults: [],
+    groupedAssignments: [],
+    arrangedFiles: [],
+    combinedScoreXml: "",
+
+    // clear any “done” flags so steps can run again
+    arrangeDone: false,
+    renameDone: false,
+    reassignByScoreDone: false,
+    combineDone: false,
+
+    timestamp: Date.now()
+  });
+
+  // remove the viewer overlay
+  document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
+  // if a spinner was up for any reason
+  if (typeof hideArrangingLoading === "function") hideArrangingLoading();
+
+  // force a clean Step-3 rebuild (clears any lingering local UI state)
+  const oldPickers = document.getElementById('aa-pickers');
+  if (oldPickers) oldPickers.remove();
+
+  // navigate back to Step 3 (and trigger your Step-3 builder)
+  if (typeof setWizardStage === "function") {
+    setWizardStage("instruments");
+  } else {
+    qs("step1")?.classList.add("hidden");
+    qs("step2")?.classList.add("hidden");
+    qs("step3")?.classList.remove("hidden");
+    AA.emit?.("wizard:stage", "instruments");
   }
+}
+
   function fitScoreToHeight(osmd, host){
     const svg = host.querySelector("svg"); if (!svg) return;
     const maxH = host.clientHeight; if (!maxH) return;
