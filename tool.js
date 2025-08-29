@@ -1312,15 +1312,16 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 })();
 
 /* =========================================================================
-   M6) combineArrangedParts — build full score + enforce titles & names
+   M6) combineArrangedParts — build full score + adopt header front-matter
    - Listens:  reid:done
    - Emits:    combine:done
    - What it does:
-       * Orders files by new part IDs (P1..Pn)
-       * Merges <score-part> and <part> blocks into a single score
-       * Ensures <work-title>/<movement-title> is set to the Song name
-       * Enforces visible names in combined <part-list> to instance labels
-       * (Optional) Logs the combined <part-list> for quick debug
+       • Orders files by new part IDs (P1..Pn)
+       • Merges <score-part> and <part> blocks into a single score
+       • Copies front-matter (credits, title/subtitle, composer/arranger)
+         from the original extracted MusicXML:
+           - Combined score keeps the top-left “Score”
+           - Each arranged single-part gets top-left “Part”
    ------------------------------------------------------------------------- */
 (function(){
   AA.on("reid:done", () => AA.safe("combineArrangedParts", run));
@@ -1328,77 +1329,186 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   function run(){
     const state = getState();
     const files = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
-    if (!files.length) {
-      console.warn("[M6] combineArrangedParts: no files; skipping.");
-      return;
-    }
+    if (!files.length) { console.warn("[M6] combineArrangedParts: no files; skipping."); return; }
 
-    // Build rows with numeric P#
+    // ---- 0) Harvest front-matter from original extracted part(s) ----
+    const fm = harvestFrontMatterFromSource(Array.isArray(state.parts) ? state.parts : []);
+    // fm = { creditsXML: '<credit>...</credit>...', movementTitle, workTitle, identificationXML, hasArranger:boolean }
+
+    // ---- 1) Apply front-matter to each arranged single-part (Score→Part) ----
+    const updatedSingles = files.map(f => {
+      try {
+        const patched = applyFrontMatterToSinglePart(f.xml, fm, /*isScore*/ false, f.instrumentName);
+        return { ...f, xml: patched };
+      } catch(e){
+        console.warn("[M6] single-part front-matter apply failed for", f.instrumentName, e);
+        return f;
+      }
+    });
+
+    // ---- 2) Order parts by P# for merge ----
     const rows = [];
-    for (const f of files) {
+    for (const f of updatedSingles) {
       const pid = f.newPartId || extractPidFromXml(f.xml);
       if (!pid) continue;
       const num = parseInt(String(pid).replace(/^P/i, ""), 10);
       rows.push({ f, partId: pid, partNum: Number.isFinite(num) ? num : 999 });
     }
     rows.sort((a,b)=> (a.partNum - b.partNum) || String(a.partId).localeCompare(String(b.partId)));
+    if (!rows.length) { console.warn("[M6] combineArrangedParts: rows empty after PID extraction."); return; }
 
-    if (!rows.length) {
-      console.warn("[M6] combineArrangedParts: rows empty after PID extraction.");
-      return;
-    }
-
-    // Start with the first file's XML (as a valid <score-partwise>)
-    let combined = rows[0].f.xml;
-    // Remove trailing closing tag so we can append content
-    combined = combined.replace(/<\/score-partwise>\s*$/i, "");
-
-    // Inject remaining <score-part> and <part> blocks
+    // ---- 3) Start with first part’s XML and append others ----
+    let combined = rows[0].f.xml.replace(/<\/score-partwise>\s*$/i, "");
     for (let i=1; i<rows.length; i++){
       const { f, partId } = rows[i];
       const text = f.xml;
-
-      // Insert <score-part id="P#">...</score-part> before </part-list>
       const scorePartBlock = block(text, `<score-part\\s+id="${esc(partId)}"`, `</score-part>`);
       if (scorePartBlock) {
         const plEnd = combined.lastIndexOf("</part-list>");
-        if (plEnd !== -1) {
-          combined = combined.slice(0,plEnd) + "\n" + scorePartBlock + "\n" + combined.slice(plEnd);
-        }
+        if (plEnd !== -1) combined = combined.slice(0,plEnd) + "\n" + scorePartBlock + "\n" + combined.slice(plEnd);
       }
-
-      // Insert <part id="P#">...</part> before </score-partwise>
       const partBlock = block(text, `<part\\s+id="${esc(partId)}"`, `</part>`);
       if (partBlock) {
         const rootEnd = combined.lastIndexOf("</score-partwise>");
-        if (rootEnd !== -1) {
-          combined = combined.slice(0, rootEnd) + "\n" + partBlock + "\n" + combined.slice(rootEnd);
-        } else {
-          combined += "\n" + partBlock;
-        }
+        if (rootEnd !== -1) combined = combined.slice(0, rootEnd) + "\n" + partBlock + "\n" + combined.slice(rootEnd);
+        else combined += "\n" + partBlock;
       }
     }
-
-    // Re-close the document if needed
     if (!/<\/score-partwise>\s*$/i.test(combined)) combined += "\n</score-partwise>";
 
-    // Title safety: ensure we have a nice title from current Song selection
-    const songName = state?.selectedSong?.name || state?.song || "Auto Arranger Result";
-    combined = ensureCombinedTitle(combined, songName);
+    // ---- 4) Apply front-matter to the combined score (keep “Score”) ----
+    combined = applyFrontMatterToSinglePart(combined, fm, /*isScore*/ true, "Score");
 
-    // Enforce visible names for each score-part in the combined part-list
-    combined = enforcePartNamesInCombined(combined, rows);
-
-    // (Optional) quick debug tap — prints the combined <part-list> to console
+    // (Optional) quick debug tap — harmless in production
     debugLogPartList(combined);
 
-    mergeState({ combinedScoreXml: combined, combineDone: true });
+    mergeState({ arrangedFiles: updatedSingles, combinedScoreXml: combined, combineDone: true });
     console.log("[M6] combineArrangedParts: combined score built.");
     AA.emit("combine:done");
   }
 
-  /* ---------- helpers (local to M6) ---------- */
+  /* ---------- front-matter helpers ---------- */
 
+  function harvestFrontMatterFromSource(parts){
+    const out = { creditsXML:"", movementTitle:"", workTitle:"", identificationXML:"", hasArranger:false };
+    const parser = new DOMParser();
+
+    // Pick the first source that contains anything useful
+    let sample = parts.find(p => /<credit\b/i.test(p.xml) || /<movement-title>|<work-title>|<identification>/i.test(p.xml));
+    if (!sample) sample = parts[0];
+    if (!sample) return out;
+
+    try {
+      const doc = parser.parseFromString(sample.xml, "application/xml");
+      const ser = new XMLSerializer();
+
+      // credits (as raw XML string, may include "Score", "Subtitle", "Composed by...", etc.)
+      const credits = Array.from(doc.querySelectorAll("credit"));
+      if (credits.length) out.creditsXML = credits.map(n => ser.serializeToString(n)).join("\n");
+
+      // titles
+      const mt = doc.querySelector("movement-title");
+      const wt = doc.querySelector("work > work-title");
+      out.movementTitle = mt ? (mt.textContent || "").trim() : "";
+      out.workTitle     = wt ? (wt.textContent || "").trim() : "";
+
+      // identification (creators)
+      const ident = doc.querySelector("identification");
+      if (ident) {
+        out.identificationXML = ser.serializeToString(ident);
+        out.hasArranger = /\btype\s*=\s*["']arranger["']/i.test(out.identificationXML);
+      }
+    } catch(e){ console.warn("[M6] harvestFrontMatterFromSource: failed to parse source XML", e); }
+
+    return out;
+  }
+
+  function applyFrontMatterToSinglePart(xmlString, fm, isScore, labelForTopLeft){
+    try {
+      const parser = new DOMParser();
+      const doc    = parser.parseFromString(xmlString, "application/xml");
+      const root   = doc.documentElement;
+      const ns     = root.namespaceURI || null;
+      const ser    = new XMLSerializer();
+
+      const ensure = (parent, tag) => {
+        let el = parent.querySelector(tag);
+        if (!el) { el = doc.createElementNS(ns, tag); parent.appendChild(el); }
+        return el;
+      };
+
+      // --- Titles: replace with source titles when available; otherwise leave existing ---
+      // Clear existing titles to prevent the duplicate Title/Subtitle effect.
+      doc.querySelectorAll("movement-title, work > work-title").forEach(n => n.remove());
+      if (fm.movementTitle) {
+        const mt = doc.createElementNS(ns, "movement-title");
+        mt.textContent = fm.movementTitle;
+        root.insertBefore(mt, root.firstChild);
+      }
+      if (fm.workTitle) {
+        let work = doc.querySelector("work");
+        if (!work) {
+          work = doc.createElementNS(ns, "work");
+          root.insertBefore(work, root.firstChild);
+        }
+        const wt = doc.createElementNS(ns, "work-title");
+        wt.textContent = fm.workTitle;
+        work.appendChild(wt);
+      }
+
+      // --- Identification (composer/arranger) ---
+      doc.querySelectorAll("identification").forEach(n => n.remove());
+      if (fm.identificationXML) {
+        const frag = parser.parseFromString(`<wrap>${fm.identificationXML}</wrap>`, "application/xml");
+        const idNode = frag.querySelector("identification");
+        if (idNode) root.insertBefore(doc.importNode(idNode, true), root.firstChild);
+      }
+      // If no arranger in source, add one
+      const hasArranger = !!doc.querySelector('identification creator[type="arranger"]');
+      if (!hasArranger) {
+        let id = doc.querySelector("identification");
+        if (!id) { id = doc.createElementNS(ns, "identification"); root.insertBefore(id, root.firstChild); }
+        const arr = doc.createElementNS(ns, "creator");
+        arr.setAttribute("type", "arranger");
+        arr.textContent = "Auto Arranger";
+        id.appendChild(arr);
+      }
+
+      // --- Credits (visible header text) ---
+      // Remove all credits, then import source credits. For parts, rewrite “Score” → “Part”.
+      doc.querySelectorAll("credit").forEach(n => n.remove());
+      if (fm.creditsXML) {
+        const frag = parser.parseFromString(`<wrap>${fm.creditsXML}</wrap>`, "application/xml");
+        const credits = Array.from(frag.querySelectorAll("credit"));
+        for (const c of credits) {
+          // clone and optionally rewrite “Score” label for parts
+          const copy = doc.importNode(c, true);
+          if (!isScore) {
+            // change any top-left “Score” word to “Part”
+            copy.querySelectorAll("credit-words").forEach(w => {
+              const t = (w.textContent || "").trim();
+              if (/^score$/i.test(t)) w.textContent = "Part";
+            });
+          }
+          root.insertBefore(copy, root.firstChild);
+        }
+      } else {
+        // Minimal fallback: create just a “Score”/“Part” credit on page 1
+        const credit = doc.createElementNS(ns, "credit"); credit.setAttribute("page","1");
+        const cw = doc.createElementNS(ns, "credit-words");
+        cw.textContent = isScore ? "Score" : "Part";
+        credit.appendChild(cw);
+        root.insertBefore(credit, root.firstChild);
+      }
+
+      return ser.serializeToString(doc);
+    } catch(e){
+      console.warn("[M6] applyFrontMatterToSinglePart: failed; returning original XML", e);
+      return xmlString;
+    }
+  }
+
+  /* ---------- misc helpers ---------- */
   function extractPidFromXml(xml){
     const m = String(xml||"").match(/<score-part\s+id="([^"]+)"/i);
     return m ? m[1] : null;
@@ -1409,111 +1519,15 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     const m  = String(xml).match(re);
     return m ? m[0] : null;
   }
-
-  // Ensure <work-title> (or <movement-title>) is present and set to songName
-  function ensureCombinedTitle(xmlString, songName){
-    try {
-      const parser = new DOMParser();
-      const doc    = parser.parseFromString(xmlString, "application/xml");
-      const root   = doc.documentElement;
-      const ns     = root.namespaceURI || null;
-
-      const ensure = (parent, tag) => {
-        let el = parent.querySelector(tag);
-        if (!el) { el = doc.createElementNS(ns, tag); parent.appendChild(el); }
-        return el;
-      };
-
-      // Prefer <work><work-title>, else <movement-title>
-      let work = doc.querySelector("work");
-      if (!work) {
-        work = doc.createElementNS(ns, "work");
-        // Put it near the top if possible
-        const firstChild = root.firstElementChild;
-        if (firstChild) root.insertBefore(work, firstChild);
-        else root.appendChild(work);
-      }
-      const wt = ensure(work, "work-title");
-      wt.textContent = songName;
-
-      // Optional: mirror in <movement-title> for software that reads only that
-      let mt = doc.querySelector("movement-title");
-      if (!mt) {
-        mt = doc.createElementNS(ns, "movement-title");
-        root.insertBefore(mt, root.firstElementChild || null);
-      }
-      mt.textContent = songName;
-
-      return new XMLSerializer().serializeToString(doc);
-    } catch {
-      return xmlString;
-    }
-  }
-
-  // Overwrite visible names for each <score-part id="P#"> in the combined score
-  function enforcePartNamesInCombined(xmlString, rows){
-    try {
-      const parser = new DOMParser();
-      const doc    = parser.parseFromString(xmlString, "application/xml");
-      const root   = doc.documentElement;
-      const ns     = root.namespaceURI || null;
-
-      const ensure = (parent, tag) => {
-        let el = parent.querySelector(tag);
-        if (!el) { el = doc.createElementNS(ns, tag); parent.appendChild(el); }
-        return el;
-      };
-
-      for (const { partId, f } of rows) {
-        const sp = doc.querySelector(`score-part[id="${partId}"]`);
-        if (!sp) continue;
-
-        const label = (f.instrumentName || f.baseName || "").trim() || "Part";
-
-
-        const pn = ensure(sp, "part-name");
-        pn.textContent = label;
-        pn.removeAttribute("print-object");
-
-        const pa = ensure(sp, "part-abbreviation");
-        pa.textContent = label;
-        pa.removeAttribute("print-object");
-
-        const pnd = ensure(sp, "part-name-display");
-        pnd.textContent = "";
-        const pndt = doc.createElementNS(ns, "display-text");
-        pndt.textContent = label;
-        pnd.appendChild(pndt);
-
-        const pad = ensure(sp, "part-abbreviation-display");
-        pad.textContent = "";
-        const padt = doc.createElementNS(ns, "display-text");
-        padt.textContent = label;
-        pad.appendChild(padt);
-
-        let si = sp.querySelector("score-instrument");
-        if (!si) {
-          si = doc.createElementNS(ns, "score-instrument");
-          si.setAttribute("id", `${partId}-I1`);
-          sp.appendChild(si);
-        }
-        let iname = si.querySelector("instrument-name");
-        if (!iname) iname = doc.createElementNS(ns, "instrument-name");
-        iname.textContent = label;
-        iname.removeAttribute("print-object");
-        if (!si.contains(iname)) si.appendChild(iname);
-      }
-      return new XMLSerializer().serializeToString(doc);
-    } catch {
-      return xmlString;
-    }
-  }
-
-  // 🔎 Debug tap: logs the <part-list> block so you can verify names quickly
   function debugLogPartList(xml){
-    function debugLogPartList(/* xml */) { /* disabled */ }
+    try {
+      const m = String(xml||"").match(/<part-list[\s\S]*?<\/part-list>/i);
+      // eslint-disable-next-line no-console
+      console.log("%c[M6][DEBUG] Combined <part-list> →", "color:#0aa", "\n", m ? m[0] : "(none)");
+    } catch {}
   }
 })();
+
 
 
 
