@@ -1822,18 +1822,16 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   }
 
 function overlayCredits(osmd, host, pickedLabel, arrangerText){
-  // Baselines when we don't have metrics to copy from the SVG
+  // Baselines if we can’t read metrics from the SVG
   const PART_TOP_PAD_DEFAULT  = 14;   // px from top
   const PART_LEFT_PAD_DEFAULT = 18;   // px from left
   const PART_FONT_PX_DEFAULT  = 11;
 
-  const ARR_TOP_PAD_DEFAULT   = 28;   // px from top (under composer)
+  const ARR_TOP_PAD_DEFAULT   = 24;   // px from top (keep pinned near top)
   const ARR_RIGHT_PAD_DEFAULT = 20;   // px from right
   const ARR_FONT_PX_DEFAULT   = 11;
 
-  const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
-
-  // Container
+  // Ensure overlay root
   let overlay = host.querySelector(".aa-overlay");
   if (!overlay) {
     overlay = document.createElement("div");
@@ -1854,43 +1852,48 @@ function overlayCredits(osmd, host, pickedLabel, arrangerText){
   const absTop   = (px) => (px - hostRect.top)  + "px";
   const absRight = (px) => (hostRect.right - px) + "px";
 
-  // Try to match OSMD font from the composer credit
+  // Try to match OSMD font from a composer credit text node
   const composerTextNode = Array.from(svg.querySelectorAll("text"))
-    .find(t => /compos/i.test((t.textContent||""))); // e.g. "Composed by ..."
+    .find(t => /compos/i.test((t.textContent||""))); // “Composed by …”
   let cs = null;
-  if (composerTextNode) {
-    try { cs = getComputedStyle(composerTextNode); } catch(_) {}
-  }
+  try { if (composerTextNode) cs = getComputedStyle(composerTextNode); } catch(_) {}
 
-  // Use measured metrics if available; otherwise fallback + scale
-  const measuredPx = cs && cs.fontSize && cs.fontSize.endsWith("px") ? parseFloat(cs.fontSize) : null;
-  const useMeasured = !!measuredPx && isFinite(measuredPx) && measuredPx > 0;
+  // Measured (CSS) font size and rendered size -> exact scale factor
+  const measuredPx = cs && cs.fontSize && cs.fontSize.endsWith("px")
+    ? parseFloat(cs.fontSize) : null;
+
+  let scale = null;
+  if (composerTextNode && measuredPx && isFinite(measuredPx) && measuredPx > 0){
+    const cr = composerTextNode.getBoundingClientRect();
+    if (cr.height > 0) scale = cr.height / measuredPx; // how much the SVG scaled text
+  }
+  // Fallback: compute from viewBox vs client size, else OSMD zoom, else 1
+  if (!scale || !isFinite(scale)) {
+    const vb = svg.viewBox && svg.viewBox.baseVal;
+    if (vb && vb.height) {
+      scale = svgRect.height / vb.height;
+    }
+  }
+  if (!scale || !isFinite(scale)) {
+    const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
+    scale = zoom;
+  }
 
   const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
   const weight = (cs && cs.fontWeight) ? cs.fontWeight : "normal";
   const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
 
-  const partFontPx = Math.round(useMeasured ? measuredPx : PART_FONT_PX_DEFAULT * zoom);
-  const arrFontPx  = Math.round(useMeasured ? measuredPx : ARR_FONT_PX_DEFAULT  * zoom);
+  const basePx   = (measuredPx && isFinite(measuredPx) && measuredPx > 0) ? measuredPx : PART_FONT_PX_DEFAULT;
+  const partPx   = Math.round(basePx * scale);
+  const arrPx    = Math.round(((measuredPx && isFinite(measuredPx)) ? measuredPx : ARR_FONT_PX_DEFAULT) * scale);
 
-  // Positioning — if we can read the composer’s bounding box, stack arranger under it;
-  // otherwise use default top paddings scaled by zoom.
-  let partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * zoom;
-  let partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * zoom;
-  let arrTop    = svgRect.top  + ARR_TOP_PAD_DEFAULT   * zoom;
-  let arrRightX = svgRect.right - ARR_RIGHT_PAD_DEFAULT * zoom;
+  // Pinned top positions (don’t derive from composer rect)
+  const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scale;
+  const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scale;
+  const arrTop    = svgRect.top  + ARR_TOP_PAD_DEFAULT   * scale;
+  const arrRightX = svgRect.right - ARR_RIGHT_PAD_DEFAULT * scale;
 
-  if (composerTextNode) {
-    try {
-      const cr = composerTextNode.getBoundingClientRect();
-      // Place arranger 6px (scaled) under the composer line for nice spacing
-      arrTop = cr.bottom + 6 * zoom;
-      // Right edge aligns with SVG’s right, same as before
-      arrRightX = svgRect.right - ARR_RIGHT_PAD_DEFAULT * zoom;
-    } catch(_) {}
-  }
-
-  // Score/Part (top-left)
+  // Part/Score (top-left)
   if (pickedLabel) {
     const el = document.createElement("div");
     el.textContent = pickedLabel;
@@ -1898,7 +1901,7 @@ function overlayCredits(osmd, host, pickedLabel, arrangerText){
       "position:absolute;" +
       "left:" + absLeft(partLeft) + ";" +
       "top:" + absTop(partTop) + ";" +
-      "font-size:" + partFontPx + "px;" +
+      "font-size:" + partPx + "px;" +
       "font-weight:" + weight + ";" +
       "font-style:" + fstyle + ";" +
       "font-family:" + family + ";" +
@@ -1906,7 +1909,7 @@ function overlayCredits(osmd, host, pickedLabel, arrangerText){
     overlay.appendChild(el);
   }
 
-  // Arranger (right side, under composer)
+  // Arranger (top-right, pinned near top)
   if (arrangerText) {
     const el = document.createElement("div");
     el.textContent = arrangerText;
@@ -1914,7 +1917,7 @@ function overlayCredits(osmd, host, pickedLabel, arrangerText){
       "position:absolute;" +
       "right:" + absRight(arrRightX) + ";" +
       "top:" + absTop(arrTop) + ";" +
-      "font-size:" + arrFontPx + "px;" +
+      "font-size:" + arrPx + "px;" +
       "font-weight:" + weight + ";" +
       "font-style:" + fstyle + ";" +
       "font-family:" + family + ";" +
@@ -1922,6 +1925,7 @@ function overlayCredits(osmd, host, pickedLabel, arrangerText){
     overlay.appendChild(el);
   }
 }
+
 
 
   // tiny DOM helper
