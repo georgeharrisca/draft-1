@@ -544,6 +544,16 @@ function extractPartsFromScore(xmlText){
     document.head.appendChild(st);
   })();
 
+  // Small local helper (fallback if no global escapeHtml)
+  function escapeHtml(s){
+    return String(s)
+      .replace(/&/g,"&amp;")
+      .replace(/</g,"&lt;")
+      .replace(/>/g,"&gt;")
+      .replace(/"/g,"&quot;")
+      .replace(/'/g,"&#39;");
+  }
+
   // Ensure a Step 3 host exists
   function ensureStep3Host(){
     let host = document.getElementById("step3");
@@ -608,21 +618,6 @@ function extractPartsFromScore(xmlText){
     const stateSel = { selections: [], openCats: new Set() }; // collapsed by default
     const baseOf = (name) => String(name).replace(/\s+\d+$/, "");
 
-function naturalLabelCompare(a, b) {
-  // Compare by base name (case-insensitive), then by trailing number
-  const re = /(.*?)(?:\s+(\d+))?$/;
-  const ma = String(a).match(re) || [];
-  const mb = String(b).match(re) || [];
-  const abase = (ma[1] || "").trim().toLowerCase();
-  const bbase = (mb[1] || "").trim().toLowerCase();
-  if (abase !== bbase) return abase.localeCompare(bbase);
-  const ai = ma[2] ? parseInt(ma[2], 10) : 0;
-  const bi = mb[2] ? parseInt(mb[2], 10) : 0;
-  if (ai !== bi) return ai - bi;
-  return a.localeCompare(b); // stable tie-break
-}
-
-     
     // Build the collapsible category tree
     function buildTree(){
       const instruments = getInstruments();
@@ -677,86 +672,139 @@ function naturalLabelCompare(a, b) {
       if (note) note.textContent = "";
     }
 
-// ---- natural sort helpers (Instrument 2 < Instrument 10) ----
-function parseLabel(str) {
-  const m = String(str).match(/^(.*?)(?:\s+(\d+))?$/);
-  return {
-    base: (m && m[1] ? m[1] : str).trim(),
-    num:  m && m[2] ? parseInt(m[2], 10) : 0
-  };
-}
-function naturalLabelCompare(a, b) {
-  const A = parseLabel(a), B = parseLabel(b);
-  if (A.base !== B.base) return A.base.localeCompare(B.base);
-  return A.num - B.num;
-}
-
-// Right list helpers
-function refreshRight(){
-  const sorted = [...stateSel.selections].sort(naturalLabelCompare);
-  listRight.innerHTML = sorted
-    .map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`)
-    .join("");
-}
-function addSelection(baseName){
-  const siblings = stateSel.selections.filter(n => baseOf(n) === baseName).length;
-  const label = siblings === 0 ? baseName : `${baseName} ${siblings+1}`;
-  stateSel.selections.push(label);
-  if (siblings === 1) { // second copy → rename bare to "… 1"
-    const i = stateSel.selections.findIndex(n => n === baseName);
-    if (i >= 0) stateSel.selections[i] = `${baseName} 1`;
-  }
-  refreshRight();
-}
-function removeSelection(label){
-  const i = stateSel.selections.indexOf(label);
-  if (i>=0) stateSel.selections.splice(i,1);
-  const b = baseOf(label);
-  const same = stateSel.selections.filter(n => baseOf(n) === b);
-  if (same.length === 1) {
-    const j = stateSel.selections.findIndex(n => baseOf(n) === b);
-    stateSel.selections[j] = b; // drop trailing " 1"
-  } else if (same.length > 1) {
-    let k = 1;
-    for (let idx=0; idx<stateSel.selections.length; idx++) {
-      if (baseOf(stateSel.selections[idx]) === b) {
-        stateSel.selections[idx] = `${b} ${k++}`;
-      }
-    }
-  }
-  refreshRight();
-}
-
-// ---- Delegated SAVE handler (survives rebuilds) ----
-container.addEventListener("click", (ev) => {
-  const saveBtn = ev.target.closest("#btnSaveSelections");
-  if (!saveBtn) return;
-  ev.preventDefault();
-
-  const s = getState();
-  const metaIndex = Object.fromEntries((s.instrumentData||[]).map(m => [m.name, m]));
-  const instrumentSelections = [...stateSel.selections]
-    .sort(naturalLabelCompare)
-    .map(label => {
-      const base = label.replace(/\s+\d+$/,"");
-      const meta = metaIndex[base] || {};
+    // ---- natural sort helpers (Instrument 2 < Instrument 10) ----
+    function parseLabel(str) {
+      const m = String(str).match(/^(.*?)(?:\s+(\d+))?$/);
       return {
-        name: base,
-        instanceLabel: label,
-        instrumentPart: meta.instrumentPart || "",
-        sortingOctave: Number(meta.sortingOctave)||0,
-        clef: meta.clef ?? null,
-        transpose: meta.transpose ?? null,
-        scoreOrder: Number(meta.scoreOrder)||999,
-        assignedPart: ""
+        base: (m && m[1] ? m[1] : str).trim(),
+        num:  m && m[2] ? parseInt(m[2], 10) : 0
       };
+    }
+    function naturalLabelCompare(a, b) {
+      const A = parseLabel(a), B = parseLabel(b);
+      if (A.base !== B.base) return A.base.localeCompare(B.base);
+      return A.num - B.num;
+    }
+
+    // Right list helpers
+    function refreshRight(){
+      const sorted = [...stateSel.selections].sort(naturalLabelCompare);
+      listRight.innerHTML = sorted
+        .map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`)
+        .join("");
+    }
+    function addSelection(baseName){
+      const siblings = stateSel.selections.filter(n => baseOf(n) === baseName).length;
+      const label = siblings === 0 ? baseName : `${baseName} ${siblings+1}`;
+      stateSel.selections.push(label);
+      if (siblings === 1) { // second copy → rename bare to "… 1"
+        const i = stateSel.selections.findIndex(n => n === baseName);
+        if (i >= 0) stateSel.selections[i] = `${baseName} 1`;
+      }
+      refreshRight();
+    }
+    function removeSelection(label){
+      const i = stateSel.selections.indexOf(label);
+      if (i>=0) stateSel.selections.splice(i,1);
+      const b = baseOf(label);
+      const same = stateSel.selections.filter(n => baseOf(n) === b);
+      if (same.length === 1) {
+        const j = stateSel.selections.findIndex(n => baseOf(n) === b);
+        stateSel.selections[j] = b; // drop trailing " 1"
+      } else if (same.length > 1) {
+        let k = 1;
+        for (let idx=0; idx<stateSel.selections.length; idx++) {
+          if (baseOf(stateSel.selections[idx]) === b) {
+            stateSel.selections[idx] = `${b} ${k++}`;
+          }
+        }
+      }
+      refreshRight();
+    }
+
+    // Initial build + live updates when instrumentData arrives/changes
+    buildTree();
+    AA.on("data:instrumentData", buildTree);
+
+    // Highlight last clicked item (lets Add button work without re-click)
+    treeHost.addEventListener("click", (e) => {
+      const it = e.target.closest(".item");
+      if (!it) return;
+      treeHost.querySelectorAll(".item").forEach(n => n.classList.remove("highlight"));
+      it.classList.add("highlight");
     });
 
-  mergeState({ instrumentSelections });
-  console.log(`[Step3] Saved ${instrumentSelections.length} selections`, instrumentSelections);
-  AA.emit("instruments:saved");
-});
+    // Buttons (direct bindings for add/back/remove)
+    if (btnAdd) {
+      btnAdd.addEventListener("click", () => {
+        const highlighted = treeHost.querySelector(".item.highlight");
+        if (!highlighted) {
+          if (note) {
+            note.textContent = "Select an instrument on the left, then click Add to Score.";
+            setTimeout(() => { if (note.textContent.includes("Add to Score")) note.textContent = ""; }, 2000);
+          }
+          return;
+        }
+        addSelection(highlighted.dataset.name);
+      });
+    }
 
+    if (btnBack) {
+      btnBack.addEventListener("click", () => {
+        const s = getState();
+        mergeState({
+          songIndex: null,
+          song: null,
+          selectedSong: null,
+          parts: [],
+          instrumentSelections: []
+        });
+        stateSel.selections = [];
+        refreshRight();
+        if (Number.isInteger(s.packIndex)) populateSongsForPack(s.packIndex);
+        const sSel = (typeof songSelectEl === "function" ? songSelectEl() : null);
+        if (sSel) sSel.value = "";
+        setWizardStage("song");
+      });
+    }
+
+    if (btnRemove) {
+      btnRemove.addEventListener("click", () => {
+        const sel = listRight.value;
+        if (!sel) return;
+        removeSelection(sel);
+      });
+    }
+
+    // ---- Delegated SAVE handler (survives rebuilds) ----
+    container.addEventListener("click", (ev) => {
+      const saveBtn = ev.target.closest("#btnSaveSelections");
+      if (!saveBtn) return;
+      ev.preventDefault();
+
+      const s = getState();
+      const metaIndex = Object.fromEntries((s.instrumentData||[]).map(m => [m.name, m]));
+      const instrumentSelections = [...stateSel.selections]
+        .sort(naturalLabelCompare)
+        .map(label => {
+          const base = label.replace(/\s+\d+$/,"");
+          const meta = metaIndex[base] || {};
+          return {
+            name: base,
+            instanceLabel: label,
+            instrumentPart: meta.instrumentPart || "",
+            sortingOctave: Number(meta.sortingOctave)||0,
+            clef: meta.clef ?? null,
+            transpose: meta.transpose ?? null,
+            scoreOrder: Number(meta.scoreOrder)||999,
+            assignedPart: ""
+          };
+        });
+
+      mergeState({ instrumentSelections });
+      console.log(`[Step3] Saved ${instrumentSelections.length} selections`, instrumentSelections);
+      AA.emit("instruments:saved");
+    });
 
   } // end setupInstrumentPicker
 
