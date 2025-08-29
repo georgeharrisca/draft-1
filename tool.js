@@ -1312,7 +1312,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 })();
 
 /* =========================================================================
-   M6) combineArrangedParts — merge & adopt front-matter (titles/credits)
+   M6) combineArrangedParts — merge & adopt front-matter from source
    ------------------------------------------------------------------------- */
 (function(){
   AA.on("reid:done", () => AA.safe("combineArrangedParts", run));
@@ -1322,10 +1322,10 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     const files = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
     if (!files.length) { console.warn("[M6] combineArrangedParts: no files; skipping."); return; }
 
-    // 0) Harvest front-matter from original extracted song parts (best-effort)
-    const fm = harvestFrontMatter(Array.isArray(s.parts) ? s.parts : [], s);
+    // 0) Harvest front-matter (title, subtitle, composer/arranger) from a source part
+    const fm = harvestFrontMatter(Array.isArray(s.parts)? s.parts: [], s);
 
-    // 1) Apply to each single part (Score→Part)
+    // 1) Apply FM to each single-part (label: "Part")
     const singles = files.map(f => {
       try { return { ...f, xml: applyFrontMatter(f.xml, fm, /*isScore*/false) }; }
       catch(e){ console.warn("[M6] single-part FM failed", e); return f; }
@@ -1361,82 +1361,70 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     }
     if (!/<\/score-partwise>\s*$/i.test(combined)) combined += "\n</score-partwise>";
 
-    // 4) Apply FM to the combined (keep “Score”)
+    // 4) Apply FM to the combined (label: "Score")
     combined = applyFrontMatter(combined, fm, /*isScore*/true);
 
-    // Debug tap (safe)
-    debugPartList(combined);
+    // Debug tap (safe): combined part-list
+    try {
+      const m = String(combined||"").match(/<part-list[\s\S]*?<\/part-list>/i);
+      console.log("%c[M6][DEBUG] Combined <part-list> →","color:#0aa","\n",m?m[0]:"(none)");
+    } catch {}
 
     mergeState({ arrangedFiles: singles, combinedScoreXml: combined, combineDone:true });
     console.log("[M6] combineArrangedParts: combined score built.");
     AA.emit("combine:done");
   }
 
-  /* ---------- FM harvest ---------- */
+  /* ---------- harvest ---------- */
   function harvestFrontMatter(parts, s){
-    const out = {
-      // titles
-      movementTitle: "", workTitle: "",
-      // subtitle text (from credits with type=subtitle if present)
-      subtitle: "",
-      // people
-      composer: "", arranger: "",
-      // full source credits (not strictly required now)
-      credits: []
-    };
+    const out = { title:"", subtitle:"", composer:"", arranger:"" };
     const parser = new DOMParser();
-
-    // Find a source that still has header info
-    let sample = parts.find(p => /<credit\b|<movement-title>|<work-title>|<identification>/i.test(p.xml)) || parts[0];
+    const sample = parts.find(p => /<credit\b|<movement-title>|<work-title>|<identification>/i.test(p.xml)) || parts[0];
     if (!sample) return out;
 
     try {
       const doc = parser.parseFromString(sample.xml, "application/xml");
 
-      // titles if present
-      const mt = doc.querySelector("movement-title");
-      const wt = doc.querySelector("work > work-title");
-      out.movementTitle = mt ? (mt.textContent||"").trim() : "";
-      out.workTitle     = wt ? (wt.textContent||"").trim() : "";
+      // Prefer movement-title/work-title
+      const mt = doc.querySelector("movement-title")?.textContent?.trim() || "";
+      const wt = doc.querySelector("work > work-title")?.textContent?.trim() || "";
+      if (mt) out.title = mt; else if (wt) out.title = wt;
 
-      // subtitle from credits if tagged
-      const sub = Array.from(doc.querySelectorAll("credit"))
-        .map(c => ({ c, t: c.querySelector("credit-type")?.textContent?.trim().toLowerCase() || "" }))
-        .find(x => x.t === "subtitle");
-      if (sub) {
-        const cw = sub.c.querySelector("credit-words");
-        if (cw) out.subtitle = (cw.textContent||"").trim();
+      // If no title yet, heuristically promote the first centered credit to title
+      if (!out.title) {
+        const centered = Array.from(doc.querySelectorAll('credit > credit-words[justify="center"]'))
+          .map(n => (n.textContent||"").trim())
+          .filter(t => t && !/^score$/i.test(t) && !/^part$/i.test(t));
+        if (centered[0]) out.title = centered[0];
+        if (centered[1]) out.subtitle = centered[1];
       }
 
-      // composer/arranger from identification
+      // Subtitle from an explicit credit-type if present (overrides heuristic)
+      const sub = Array.from(doc.querySelectorAll("credit"))
+        .find(c => (c.querySelector("credit-type")?.textContent||"").trim().toLowerCase()==="subtitle");
+      if (sub) out.subtitle = sub.querySelector("credit-words")?.textContent?.trim() || out.subtitle;
+
+      // People from identification (use as-is; do NOT add prefixes)
       const creators = Array.from(doc.querySelectorAll("identification > creator"));
       out.composer = creators.find(n => (n.getAttribute("type")||"").toLowerCase()==="composer")?.textContent?.trim() || "";
       out.arranger = creators.find(n => (n.getAttribute("type")||"").toLowerCase()==="arranger")?.textContent?.trim() || "";
-
-      // keep all credits if any (not used now because we build clean credits)
-      out.credits = Array.from(doc.querySelectorAll("credit"));
     } catch(e){
       console.warn("[M6] harvestFrontMatter: parse failed", e);
     }
 
-    // Practical fallbacks
-    if (!out.movementTitle && !out.workTitle) {
-      // last resort: use UI selection as title (only if nothing in source)
-      out.movementTitle = s?.selectedSong?.name || s?.song || "";
-    }
+    // Final fallbacks
+    if (!out.title) out.title = s?.selectedSong?.name || s?.song || "";
     if (!out.arranger) out.arranger = "Auto Arranger";
-
     return out;
   }
 
-  /* ---------- Apply FM to a document ---------- */
+  /* ---------- apply to a document ---------- */
   function applyFrontMatter(xmlString, fm, isScore){
     try{
       const parser = new DOMParser();
       const doc = parser.parseFromString(xmlString, "application/xml");
       const root = doc.documentElement;
       const ns = root.namespaceURI || null;
-      const ser = new XMLSerializer();
 
       const ensure = (parent, tag) => {
         let el = parent.querySelector(tag);
@@ -1444,81 +1432,65 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         return el;
       };
 
-      // 1) Titles — only overwrite if we actually have something from the source
-      const hadTitle = !!doc.querySelector("movement-title, work > work-title");
-      if (fm.movementTitle || fm.workTitle) {
+      // (A) Titles: set movement-title to source title (don’t inject filename)
+      if (fm.title) {
         doc.querySelectorAll("movement-title, work > work-title").forEach(n => n.remove());
-        if (fm.movementTitle) {
-          const mt = doc.createElementNS(ns, "movement-title");
-          mt.textContent = fm.movementTitle;
-          root.insertBefore(mt, root.firstChild);
-        }
-        if (fm.workTitle) {
-          let work = doc.querySelector("work");
-          if (!work) { work = doc.createElementNS(ns, "work"); root.insertBefore(work, root.firstChild); }
-          const wt = doc.createElementNS(ns, "work-title");
-          wt.textContent = fm.workTitle;
-          work.appendChild(wt);
-        }
-      } else {
-        // keep existing titles; do nothing (prevents M7 from injecting the filename)
+        const mt = doc.createElementNS(ns, "movement-title");
+        mt.textContent = fm.title;
+        root.insertBefore(mt, root.firstChild);
+        // keep work-title optional; not needed for OSMD to show the big heading
       }
 
-      // 2) Identification — keep composer; ensure arranger exists
+      // (B) Identification: ensure arranger exists (composer we keep as-is)
       let id = doc.querySelector("identification");
       if (!id) { id = doc.createElementNS(ns, "identification"); root.appendChild(id); }
-      const hasArr = !!id.querySelector('creator[type="arranger"]');
-      if (!hasArr && fm.arranger) {
+      if (fm.arranger && !id.querySelector('creator[type="arranger"]')) {
         const arr = doc.createElementNS(ns, "creator");
         arr.setAttribute("type","arranger");
-        arr.textContent = fm.arranger;
+        arr.textContent = fm.arranger; // no prefix added
         id.appendChild(arr);
       }
 
-      // 3) Credits — rebuild minimal, consistent set (prevents duplicates)
+      // (C) Credits: rebuild with a minimal clean set
+      //   * Left corner: "Score" or "Part"
+      //   * Center: subtitle (if any)
+      // Composer/Arranger credits are NOT added here (OSMD uses <identification>).
       doc.querySelectorAll("credit").forEach(n => n.remove());
 
-      // Top-left: Score/Part
-      addCredit(doc, root, ns, isScore ? "Score" : "Part", "left");
+      // Left label
+      if (true){
+        const credit = doc.createElementNS(ns, "credit");
+        credit.setAttribute("page","1");
+        const cw = doc.createElementNS(ns, "credit-words");
+        cw.textContent = isScore ? "Score" : "Part";
+        cw.setAttribute("valign","top");
+        cw.setAttribute("justify","left");
+        cw.setAttribute("default-x","10"); // nudge left
+        credit.appendChild(cw);
+        const ct = doc.createElementNS(ns, "credit-type"); ct.textContent = "label"; credit.appendChild(ct);
+        root.insertBefore(credit, root.firstChild);
+      }
 
-      // Center: subtitle (if any)
-      if (fm.subtitle) addCredit(doc, root, ns, fm.subtitle, "center", "subtitle");
+      // Centered subtitle
+      if (fm.subtitle){
+        const credit = doc.createElementNS(ns, "credit");
+        credit.setAttribute("page","1");
+        const cw = doc.createElementNS(ns, "credit-words");
+        cw.textContent = fm.subtitle;
+        cw.setAttribute("valign","top");
+        cw.setAttribute("justify","center");
+        const ct = doc.createElementNS(ns, "credit-type"); ct.textContent = "subtitle"; credit.appendChild(cw); credit.appendChild(ct);
+        root.insertBefore(credit, root.firstChild);
+      }
 
-      // Top-right: composer (from identification if available)
-      const compName =
-        id.querySelector('creator[type="composer"]')?.textContent?.trim() || "";
-      if (compName) addCredit(doc, root, ns, `Composed by ${compName}`, "right", "composer");
-
-      // Top-right (under composer): arranger (always, from fm.arranger)
-      if (fm.arranger) addCredit(doc, root, ns, `Arranged by ${fm.arranger}`, "right", "arranger");
-
-      return ser.serializeToString(doc);
+      return new XMLSerializer().serializeToString(doc);
     } catch(e){
       console.warn("[M6] applyFrontMatter failed", e);
       return xmlString;
     }
   }
 
-  function addCredit(doc, root, ns, text, align, type){
-    const credit = doc.createElementNS(ns, "credit");
-    credit.setAttribute("page","1");
-    const cw = doc.createElementNS(ns, "credit-words");
-    cw.textContent = text;
-    cw.setAttribute("valign","top");
-    if (align === "left")   cw.setAttribute("justify","left");
-    if (align === "center") cw.setAttribute("justify","center");
-    if (align === "right")  cw.setAttribute("justify","right");
-    credit.appendChild(cw);
-    if (type){
-      const ct = doc.createElementNS(ns, "credit-type");
-      ct.textContent = type;
-      credit.appendChild(ct);
-    }
-    // put credits near the top so OSMD sees them early
-    root.insertBefore(credit, root.firstChild);
-  }
-
-  /* ---------- misc ---------- */
+  /* ---------- utils ---------- */
   function pidFromXml(xml){ const m = String(xml||"").match(/<score-part\s+id="([^"]+)"/i); return m ? m[1] : null; }
   function esc(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
   function block(xml, startRe, endTag){
@@ -1526,13 +1498,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     const m  = String(xml).match(re);
     return m ? m[0] : null;
   }
-  function debugPartList(xml){
-    try {
-      const m = String(xml||"").match(/<part-list[\s\S]*?<\/part-list>/i);
-      console.log("%c[M6][DEBUG] Combined <part-list> →", "color:#0aa", "\n", m ? m[0] : "(none)");
-    } catch {}
-  }
 })();
+
 
 
 
