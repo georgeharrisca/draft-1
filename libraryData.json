@@ -2,11 +2,11 @@
   "Library Pack 1": [
     {
       "name": "Auto Arranger Parts Data C Major Scale Test",
-      "url": "https://raw.githubusercontent.com/georgeharrisca/draft-1/refs/heads/main/Auto%20Arranger%20Parts%20Data%20C%20Major%20Scale%20Test.xml"
-    }
-      {
+      "url": "https://raw.githubusercontent.com/georgeharrisca/draft-1/main/Auto%20Arranger%20Parts%20Data%20C%20Major%20Scale%20Test.xml"
+    },
+    {
       "name": "C Scale Test LONG",
-      "url": "https://raw.githubusercontent.com/georgeharrisca/draft-1/refs/heads/main/C%20Scale%20Test%20LONG.xml"
+      "url": "https://raw.githubusercontent.com/georgeharrisca/draft-1/main/C%20Scale%20Test%20LONG.xml"
     }
   ],
   "Library Pack 2": [],
