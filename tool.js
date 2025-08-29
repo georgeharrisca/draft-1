@@ -1600,9 +1600,7 @@ async function renderWithMutedOsmdWarning(osmd, xml, host){
     card.style.cssText = `margin:auto;width:min(1200px,100%);height:calc(100vh - 56px);background:#fff;border-radius:14px;box-shadow:0 12px 36px rgba(0,0,0,.18);padding:20px 20px 18px;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;overflow:hidden;`;
     wrap.appendChild(card);
 
-    const title = ce("h2", { textContent: songName });
-    title.style.cssText = `margin:0;text-align:center;color:#000;font:700 20px/1.2 system-ui,Arial`;
-    card.appendChild(title);
+
 
     const controls = ce("div"); controls.style.cssText = `display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:2px;`; card.appendChild(controls);
     const label = ce("div", { textContent: "Select Score or Part" }); label.style.cssText = `color:#000;font:600 13px/1 system-ui;`; controls.appendChild(label);
