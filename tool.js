@@ -1819,122 +1819,119 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 })();
 
 /* =========================================================================
-   M8) applyCredits — normalize/clone credits & set OSMD header
+   M8) applyCredits — clone credits from *original* score & set OSMD header
+   - Fetches original XML from selectedSong.url if needed
+   - Writes credits with absolute Y positions matching your sample layout
    - Listens:  combine:done
    - Emits:    credits:done
    ------------------------------------------------------------------------- */
 ;(function(){
-  var DEBUG_CREDITS = true; // set false to silence
+  var DEBUG_CREDITS = true;
 
   AA.on("combine:done", function(){ AA.safe("applyCredits", run); });
 
-  function run(){
+  async function run(){
     var s = getState();
     var arranged = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
     var combined = s.combinedScoreXml || "";
-
     if (!combined || !arranged.length){
       console.warn("[M8] nothing to do (no combined or no arranged files).");
       AA.emit("credits:done");
       return;
     }
 
-    // Find the BEST source xml to read credits from (prefer original full score)
-    var baseXml = findSourceXmlForCredits(s) || combined;
+    // --- 1) Pull the original full score XML (for subtitle, part-name credit etc.)
+    var baseXml = await findBestCreditSource(s, combined);
     if (DEBUG_CREDITS) console.log("[M8] credit source chosen:", sniffSource(baseXml));
 
     var snap = snapshotCredits(baseXml);
-
-    // Fallback: if subtitle missing, try to find any subtitle credit anywhere in state
-    if (!snap.subtitleText) {
+    if (!snap.subtitleText){
+      // last-ditch: scan whole state for a subtitle credit
       var subAny = findAnyCreditInState(s, "subtitle");
-      if (subAny) { snap.subtitleText = subAny; if (DEBUG_CREDITS) console.log("[M8] subtitle filled via global scan:", subAny); }
+      if (subAny){ snap.subtitleText = subAny; if (DEBUG_CREDITS) console.log("[M8] subtitle via global scan:", subAny); }
     }
-
     if (DEBUG_CREDITS) console.log("[M8] FINAL snapshot:", JSON.stringify(snap));
 
-    // Apply to combined (label = "Score")
+    // --- 2) Apply to combined with "Score"; to each arranged part with instrument label
     combined = applyCreditsToDoc(combined, snap, "Score");
-
-    // Apply to each arranged part (label = instrument name)
     var updated = arranged.map(function(f){
       var label = f.instrumentName || f.baseName || "Part";
       return Object.assign({}, f, { xml: applyCreditsToDoc(f.xml, snap, label) });
     });
 
-    mergeState({ combinedScoreXml: combined, arrangedFiles: updated, creditsDone: true });
+    mergeState({ combinedScoreXml: combined, arrangedFiles: updated, creditsDone:true });
     AA.emit("credits:done");
   }
 
-  /* ----------------- pick best source xml ----------------- */
+  /* ---------------- credit source helpers ---------------- */
 
-  function findSourceXmlForCredits(state){
-    // 1) obvious keys if present
+  async function findBestCreditSource(state, combined){
+    // Prefer: selectedSong.url (fetch original XML)
+    var url = (state.selectedSong && state.selectedSong.url) || state.songUrl || null;
+    if (url){
+      try{
+        var txt = await fetch(url, { cache:"no-store" }).then(r => r.ok ? r.text() : "");
+        if (txt && /<score-(partwise|timewise)\b/i.test(txt)) {
+          if (DEBUG_CREDITS) console.log("[M8] fetched original XML from", url);
+          return txt;
+        }
+      }catch(e){ console.warn("[M8] fetch original failed", e); }
+    }
+
+    // Next: any obvious fields
     var guesses = [
       state.originalXml, state.sourceXml, state.fullScoreXml, state.selectedSongXml,
-      state.songXml, state.rawXml, state.scoreXml
-    ].filter(function(x){ return typeof x === "string" && x.indexOf("<score-partwise") >= 0; });
+      state.songXml, state.rawXml, state.scoreXml, combined
+    ].filter(function(x){ return typeof x === "string" && /<score-(partwise|timewise)\b/i.test(x); });
     if (guesses.length) return bestByCreditDensity(guesses);
 
-    // 2) look inside selectedSong if it might carry inline xml (rare)
-    try{
-      if (state.selectedSong && typeof state.selectedSong.xml === "string" &&
-          state.selectedSong.xml.indexOf("<score-partwise") >= 0) {
-        guesses.push(state.selectedSong.xml);
-      }
-    }catch(_){}
-
-    // 3) deep scan the whole state object for any big MusicXML strings
+    // Finally: deep scan state for MusicXML strings
     var pool = [];
     try{
       var seen = new Set();
       (function walk(obj){
         if (!obj || seen.has(obj)) return;
         seen.add(obj);
-        if (typeof obj === "string") {
-          if (obj.indexOf("<score-partwise") >= 0 || obj.indexOf("<score-timewise") >= 0) pool.push(obj);
+        if (typeof obj === "string"){
+          if (/<score-(partwise|timewise)\b/i.test(obj)) pool.push(obj);
           return;
         }
         if (Array.isArray(obj)) { for (var i=0;i<obj.length;i++) walk(obj[i]); return; }
         if (typeof obj === "object") { for (var k in obj) if (obj.hasOwnProperty(k)) walk(obj[k]); }
       })(state);
     }catch(_){}
-    if (pool.length) return bestByCreditDensity(pool);
-
-    return null;
+    return pool.length ? bestByCreditDensity(pool) : combined;
   }
 
   function bestByCreditDensity(list){
-    // choose the xml that has the MOST <credit-type> hits (likely the original full score)
-    var best = null, max = -1;
+    var best = list[0], max = -1;
     for (var i=0;i<list.length;i++){
       var x = String(list[i]);
-      var score = (x.match(/<credit-type>/gi) || []).length + (x.match(/<credit\b/gi) || []).length;
-      if (score > max) { max = score; best = x; }
+      var score = (x.match(/<credit-type>/gi)||[]).length + (x.match(/<credit\b/gi)||[]).length;
+      if (score > max){ max = score; best = x; }
     }
     return best;
   }
 
   function findAnyCreditInState(state, type){
-    var needle = "<credit-type>" + String(type).toLowerCase();
-    var found = null;
+    var found = null, lowerType = String(type).toLowerCase();
     try{
       var seen = new Set();
       (function walk(obj){
         if (found || !obj || seen.has(obj)) return;
         seen.add(obj);
-        if (typeof obj === "string" && obj.toLowerCase().indexOf(needle) >= 0){
+        if (typeof obj === "string" && /<credit-type>/i.test(obj)){
           try{
             var p = new DOMParser().parseFromString(obj, "application/xml");
             p.querySelectorAll("credit").forEach(function(c){
+              if (found) return;
               var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
-              if (!found && t === type) {
-                var txt = (c.querySelector("credit-words") && c.querySelector("credit-words").textContent || "").trim();
-                if (txt) found = txt;
+              if (t === lowerType){
+                var w = (c.querySelector("credit-words") && c.querySelector("credit-words").textContent || "").trim();
+                if (w) found = w;
               }
             });
           }catch(_){}
-          return;
         }
         if (Array.isArray(obj)) { for (var i=0;i<obj.length;i++) walk(obj[i]); return; }
         if (typeof obj === "object") { for (var k in obj) if (obj.hasOwnProperty(k)) walk(obj[k]); }
@@ -1944,59 +1941,49 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   }
 
   function sniffSource(xml){
-    // quick info for logs
     return {
       chars: xml.length,
       credits: (xml.match(/<credit-type>/gi)||[]).length,
       hasSub: /<credit-type>\s*subtitle/i.test(xml),
       hasMovTitle: /<movement-title>/i.test(xml)
     };
-    }
+  }
 
   /* ---------------- snapshot (read) ---------------- */
 
   function snapshotCredits(xmlString){
-    var out = {
-      titleText: "",        // BIG header (work/work-title) + credit "title"
-      subtitleText: "",     // small header (movement-title) + credit "subtitle"
-      composerText: "",
-      arrangerText: ""
-    };
+    var out = { titleText:"", subtitleText:"", composerText:"", arrangerText:"" };
     try{
       var p   = new DOMParser();
       var doc = p.parseFromString(xmlString, "application/xml");
 
       function firstCredit(type){
-        var hit = "";
+        var want = String(type).toLowerCase(), hit = "";
         doc.querySelectorAll("credit").forEach(function(c){
           if (hit) return;
-          var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "")
-                    .toLowerCase().trim();
-          if (t === type) hit = (c.querySelector("credit-words") && c.querySelector("credit-words").textContent || "").trim();
+          var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
+          if (t === want){
+            var w = (c.querySelector("credit-words") && c.querySelector("credit-words").textContent || "").trim();
+            if (w) hit = w;
+          }
         });
         return hit;
       }
 
-      // Title: prefer credit title, then movement-title, then work-title
       out.titleText =
         firstCredit("title") ||
         (doc.querySelector("movement-title") && doc.querySelector("movement-title").textContent.trim()) ||
-        (doc.querySelector("work > work-title") && doc.querySelector("work > work-title").textContent.trim()) ||
-        "";
+        (doc.querySelector("work > work-title") && doc.querySelector("work > work-title").textContent.trim()) || "";
 
-      // Subtitle: prefer credit subtitle ONLY (don’t guess subtitle from title)
       out.subtitleText = firstCredit("subtitle") || "";
 
-      // Composer / Arranger
       out.composerText =
         firstCredit("composer") ||
-        (doc.querySelector('identification > creator[type="composer"]') && doc.querySelector('identification > creator[type="composer"]').textContent.trim()) ||
-        "";
+        (doc.querySelector('identification > creator[type="composer"]') && doc.querySelector('identification > creator[type="composer"]').textContent.trim()) || "";
 
       out.arrangerText =
         firstCredit("arranger") ||
-        (doc.querySelector('identification > creator[type="arranger"]') && doc.querySelector('identification > creator[type="arranger"]').textContent.trim()) ||
-        "";
+        (doc.querySelector('identification > creator[type="arranger"]') && doc.querySelector('identification > creator[type="arranger"]').textContent.trim()) || "";
 
       if (DEBUG_CREDITS){
         console.log("[M8] sourceOf:", {
@@ -2006,9 +1993,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
           arrangerFromCredit: !!firstCredit("arranger")
         });
       }
-    }catch(e){
-      console.warn("[M8] snapshotCredits failed", e);
-    }
+    }catch(e){ console.warn("[M8] snapshotCredits failed", e); }
     return out;
   }
 
@@ -2020,36 +2005,41 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       var doc = p.parseFromString(xmlString, "application/xml");
       var root= doc.documentElement;
 
-      // Remove only what we control to prevent duplicates
+      // Remove only the credit types we own
       root.querySelectorAll("credit").forEach(function(c){
         var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
-        if (t==="title" || t==="subtitle" || t==="composer" || t==="arranger" || t==="part name" || t==="aa-partlabel") c.remove();
+        if (t==="title" || t==="subtitle" || t==="composer" || t==="arranger" || t==="part name") c.remove();
       });
 
-      // Insert before <part-list> (matches originals)
+      // Insert right before <part-list>
       function beforePartList(node){
         var pl = root.querySelector("part-list");
         if (pl) root.insertBefore(node, pl); else root.appendChild(node);
       }
 
-      // Layout from <defaults><page-layout> with fallbacks
-      var layout = readLayout(doc);
-      if (DEBUG_CREDITS) console.log("[M8] layout:", layout);
+      // Read page layout (with defaults)
+      var ly = readLayout(doc);
+      if (DEBUG_CREDITS) console.log("[M8] layout:", ly);
 
-      // Center stack
-      if (snap.titleText)    beforePartList(makeCredit(doc, "title",    snap.titleText,    layout, "center",  0, 21.6));
-      if (snap.subtitleText) beforePartList(makeCredit(doc, "subtitle", snap.subtitleText, layout, "center", 70, 16.2));
+      // Absolute Y positions to match your sample:
+      //   title    2375 center
+      //   subtitle 2282 center
+      //   composer 2298 right
+      //   arranger 2247 right
+      //   partname 2380 left
+      var yTitle    = ly.pageHeight - ly.top;              // base ~ 2376 with your defaults; nudge -1
+      var ySubtitle = 2282;
+      var yComposer = 2298;
+      var yArranger = 2247;
+      var yPart     = 2380;
 
-      // Right column
-      if (snap.arrangerText) beforePartList(makeCredit(doc, "arranger", snap.arrangerText, layout, "right",  52, 10.8));
-      if (snap.composerText) beforePartList(makeCredit(doc, "composer", snap.composerText, layout, "right",  90, 10.8));
+      if (snap.titleText)    beforePartList(makeCredit(doc, "title",    snap.titleText,    ly, "center", null, 21.6, yTitle-1));
+      if (snap.subtitleText) beforePartList(makeCredit(doc, "subtitle", snap.subtitleText, ly, "center", null, 16.2, ySubtitle));
+      if (snap.arrangerText) beforePartList(makeCredit(doc, "arranger", snap.arrangerText, ly, "right",  null, 10.8, yArranger));
+      if (snap.composerText) beforePartList(makeCredit(doc, "composer", snap.composerText, ly, "right",  null, 10.8, yComposer));
+      if (partName)          beforePartList(makeCredit(doc, "part name", partName,         ly, "left",   null, 10.8, yPart));
 
-      // Left label (Score / Part)
-      if (partName)          beforePartList(makeCredit(doc, "part name", partName,         layout, "left",   20, 10.8));
-
-      // OSMD header lines:
-      //   BIG header  = work/work-title = Title
-      //   small line  = movement-title  = Subtitle (remove if empty)
+      // OSMD header mapping: big = Title, small = Subtitle
       ensureHeaderTitles(doc, root, snap.titleText, snap.subtitleText);
 
       return new XMLSerializer().serializeToString(doc);
@@ -2082,40 +2072,25 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   /* ---------------- building blocks ---------------- */
 
   function readLayout(doc){
-    // Defaults from your sample files (used if the XML lacks them)
-    var dPageWidth  = 1923;
-    var dPageHeight = 2489;
-    var dLeft       = 226;
-    var dRight      = 113;
-    var dTop        = 113;
-
-    function firstNum(parent, sel, def){
-      try{
-        var n = parseFloat(parent.querySelector(sel).textContent);
-        return isFinite(n) ? n : def;
-      }catch(e){ return def; }
-    }
-
-    var defaults = doc.querySelector("defaults");
-    var pageLayout = defaults && defaults.querySelector("page-layout");
-    var pageWidth  = pageLayout ? firstNum(pageLayout, "page-width",  dPageWidth)  : dPageWidth;
-    var pageHeight = pageLayout ? firstNum(pageLayout, "page-height", dPageHeight) : dPageHeight;
-
-    var pm = pageLayout && (pageLayout.querySelector('page-margins[type="both"]') || pageLayout.querySelector("page-margins"));
-    var left  = pm ? firstNum(pm, "left-margin",  dLeft) : dLeft;
-    var right = pm ? firstNum(pm, "right-margin", dRight): dRight;
-    var top   = pm ? firstNum(pm, "top-margin",   dTop)  : dTop;
-
-    // Coordinates: top of page ≈ pageHeight; y decreases as we go down
-    var baseY   = pageHeight - top;
-    var leftX   = left;
-    var rightX  = pageWidth - right;
-    var centerX = Math.round(pageWidth / 2);
-
-    return { pageWidth:pageWidth, pageHeight:pageHeight, left:left, right:right, top:top, baseY:baseY, leftX:leftX, rightX:rightX, centerX:centerX };
+    var d = { pageWidth:1923, pageHeight:2489, left:226, right:113, top:113 };
+    try{
+      var defaults = doc.querySelector("defaults");
+      var pl = defaults && defaults.querySelector("page-layout");
+      var both = pl && (pl.querySelector('page-margins[type="both"]') || pl.querySelector("page-margins"));
+      function num(q, v){ try{ var n = parseFloat(q.textContent); return isFinite(n)?n:v; } catch(e){ return v; } }
+      d.pageWidth  = pl ? num(pl.querySelector("page-width"),  d.pageWidth)  : d.pageWidth;
+      d.pageHeight = pl ? num(pl.querySelector("page-height"), d.pageHeight) : d.pageHeight;
+      d.left  = both ? num(both.querySelector("left-margin"),  d.left)  : d.left;
+      d.right = both ? num(both.querySelector("right-margin"), d.right) : d.right;
+      d.top   = both ? num(both.querySelector("top-margin"),   d.top)   : d.top;
+    }catch(_){}
+    d.leftX   = d.left;
+    d.rightX  = d.pageWidth - d.right;
+    d.centerX = Math.round(d.pageWidth / 2);
+    return d;
   }
 
-  function makeCredit(doc, type, text, layout, anchor, offsetDown, sizePt){
+  function makeCredit(doc, type, text, layout, anchor, offsetDown, sizePt, yOverride){
     var credit = doc.createElement("credit");
     credit.setAttribute("page","1");
 
@@ -2125,6 +2100,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
     var words = doc.createElement("credit-words");
     var x = layout.leftX;
+
     if (anchor === "center"){
       words.setAttribute("justify","center");
       words.setAttribute("halign","center");
@@ -2133,8 +2109,14 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       words.setAttribute("justify","right");
       words.setAttribute("halign","right");
       x = layout.rightX;
+    } else {
+      // force left alignment so OSMD doesn't drop it
+      words.setAttribute("justify","left");
+      words.setAttribute("halign","left");
+      x = layout.leftX;
     }
-    var y = Math.round(layout.baseY - (offsetDown || 0));
+
+    var y = (yOverride != null) ? yOverride : Math.round(layout.pageHeight - layout.top - (offsetDown || 0));
 
     words.setAttribute("default-x", String(x));
     words.setAttribute("default-y", String(y));
@@ -2143,11 +2125,11 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     words.textContent = text;
 
     credit.appendChild(words);
-
     if (DEBUG_CREDITS) console.log("[M8] add credit:", type, { anchor: anchor||"left", x: String(x), y: y, size: sizePt||"", text: text });
     return credit;
   }
 })();
+
 
 
 
