@@ -1822,8 +1822,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
    M8) applyCredits — clone credits from original & set OSMD header
    - Fetch original XML from selectedSong.url if available
    - Title/Subtitle/Composer shown via credits + header
-   - Arranger: credit + identification/creator[type="lyricist"]
-   - Part/Score label: as generic credit *and* movement-number (upper-left)
+   - Arranger: render as a second "composer" (right)
+   - Part/Score label: render as "lyricist" (left) + mirror to <movement-number>
    - Listens:  combine:done  |  Emits: credits:done
    ------------------------------------------------------------------------- */
 ;(function(){
@@ -2002,7 +2002,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       var doc = p.parseFromString(xmlString, "application/xml");
       var root= doc.documentElement;
 
-      // Remove managed credit types (plus lyricist for arranger mapping, and type-less old part labels)
+      // Remove managed credit types (start clean)
       root.querySelectorAll("credit").forEach(function(c){
         var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
         if (!t || t==="title" || t==="subtitle" || t==="composer" || t==="arranger" || t==="lyricist" || t==="part name") c.remove();
@@ -2052,33 +2052,32 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
         credit.appendChild(words);
         beforePartList(credit);
-        if (DEBUG_CREDITS) console.log("[M8] add credit:", (type||"(no type)"), { anchor, x: words.getAttribute("default-x"), y: opts.y, size: opts.size, text });
+        if (DEBUG_CREDITS) console.log("[M8] add credit:", (type||"(no type)"), { anchor, text, x: words.getAttribute("default-x"), y: opts.y, size: opts.size });
       }
 
       // Positions matching your sample (tenths)
-      var yTitle    = ly.pageHeight - ly.top - 1; // ~2375 by your defaults
+      var yTitle    = ly.pageHeight - ly.top - 1; // ~2375
       var ySubtitle = 2282;
       var yComposer = 2298;
-      var yArranger = 2247;
+      var yArranger = 2247;  // will be the 2nd "composer" line
       var yPart     = 2380;
 
-      // Title / subtitle / composer
+      // Title / subtitle
       addCredit({ type:"title",    text:snap.titleText,    anchor:"center", size:21.6, y:yTitle    });
       addCredit({ type:"subtitle", text:snap.subtitleText, anchor:"center", size:16.2, y:ySubtitle });
+
+      // Composer (right) + Arranger (also right as a second "composer" line)
       addCredit({ type:"composer", text:snap.composerText, anchor:"right",  size:10.8, y:yComposer });
+      addCredit({ type:"composer", text:snap.arrangerText, anchor:"right",  size:10.8, y:yArranger });
+      ensureCreator(doc, "arranger", snap.arrangerText); // keep semantic
 
-      // Arranger (as lyricist, for OSMD reliability) + mirror into identification
-      addCredit({ type:"lyricist", text:snap.arrangerText, anchor:"right",  size:10.8, y:yArranger });
-      ensureCreator(doc, "arranger", snap.arrangerText); // keep original semantic
-      ensureCreator(doc, "lyricist", snap.arrangerText); // ensure OSMD shows it
-
-      // Part/Score label (upper-left): generic credit + movement-number for reliability
+      // Part/Score label (left) → render as lyricist + mirror to movement-number
       if (partName){
-        addCredit({ type:null, text:partName, anchor:"left", size:10.8, y:yPart });
+        addCredit({ type:"lyricist", text:partName, anchor:"left", size:10.8, y:yPart });
         ensureMovementNumber(doc, root, partName);
       }
 
-      // OSMD header mapping (big = Title, small = Subtitle)
+      // Header mapping (big = Title, small = Subtitle)
       ensureHeaderTitles(doc, root, snap.titleText, snap.subtitleText);
       if (DEBUG_CREDITS) console.log("[M8] header set:", { workTitle: snap.titleText, movementTitle: snap.subtitleText||"", movementNumber: partName||"" });
 
@@ -2125,9 +2124,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     var mn = root.querySelector("movement-number");
     if (!mn){
       mn = doc.createElement("movement-number");
-      // Insert before movement-title/work so it sits top-left
-      var first = root.firstChild;
-      root.insertBefore(mn, first);
+      root.insertBefore(mn, root.firstChild);
     }
     mn.textContent = label;
   }
