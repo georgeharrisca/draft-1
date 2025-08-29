@@ -1419,7 +1419,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   }
 
   /* ---------- apply to a document ---------- */
-  function applyFrontMatter(xmlString, fm, isScore){
+   function applyFrontMatter(xmlString, fm, isScore){
     try{
       const parser = new DOMParser();
       const doc = parser.parseFromString(xmlString, "application/xml");
@@ -1432,56 +1432,62 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         return el;
       };
 
-      // (A) Titles: set movement-title to source title (don’t inject filename)
+      // (A) Title: prefer the source's title; don't inject filename
       if (fm.title) {
-        doc.querySelectorAll("movement-title, work > work-title").forEach(n => n.remove());
-        const mt = doc.createElementNS(ns, "movement-title");
+        // keep movement-title as the main heading (what OSMD uses)
+        let mt = doc.querySelector("movement-title");
+        if (!mt) {
+          mt = doc.createElementNS(ns, "movement-title");
+          root.insertBefore(mt, root.firstChild);
+        }
         mt.textContent = fm.title;
-        root.insertBefore(mt, root.firstChild);
-        // keep work-title optional; not needed for OSMD to show the big heading
       }
 
-      // (B) Identification: ensure arranger exists (composer we keep as-is)
+      // (B) Identification: keep composers; ensure arranger exists, but
+      // OSMD will only render arranger if a credit exists too (handled below).
       let id = doc.querySelector("identification");
       if (!id) { id = doc.createElementNS(ns, "identification"); root.appendChild(id); }
       if (fm.arranger && !id.querySelector('creator[type="arranger"]')) {
         const arr = doc.createElementNS(ns, "creator");
         arr.setAttribute("type","arranger");
-        arr.textContent = fm.arranger; // no prefix added
+        arr.textContent = fm.arranger;
         id.appendChild(arr);
       }
 
-      // (C) Credits: rebuild with a minimal clean set
-      //   * Left corner: "Score" or "Part"
-      //   * Center: subtitle (if any)
-      // Composer/Arranger credits are NOT added here (OSMD uses <identification>).
-      doc.querySelectorAll("credit").forEach(n => n.remove());
+      // (C) Credits: remove previous versions of the three we control
+      doc.querySelectorAll("credit").forEach(cr => {
+        const t = (cr.querySelector("credit-type")?.textContent || "").toLowerCase().trim();
+        if (t === "subtitle" || t === "arranger" || t === "part name" || t === "label") {
+          cr.remove();
+        }
+      });
 
-      // Left label
-      if (true){
+      // helper to create a credit quickly
+      function addCredit(type, text, { justify, halign, valign } = {}){
         const credit = doc.createElementNS(ns, "credit");
         credit.setAttribute("page","1");
-        const cw = doc.createElementNS(ns, "credit-words");
-        cw.textContent = isScore ? "Score" : "Part";
-        cw.setAttribute("valign","top");
-        cw.setAttribute("justify","left");
-        cw.setAttribute("default-x","10"); // nudge left
-        credit.appendChild(cw);
-        const ct = doc.createElementNS(ns, "credit-type"); ct.textContent = "label"; credit.appendChild(ct);
-        root.insertBefore(credit, root.firstChild);
+        const words = doc.createElementNS(ns, "credit-words");
+        words.textContent = text;
+        if (justify) words.setAttribute("justify", justify);
+        if (halign)  words.setAttribute("halign",  halign);
+        if (valign)  words.setAttribute("valign",  valign);
+        const ctype = doc.createElementNS(ns, "credit-type");
+        ctype.textContent = type;
+        credit.appendChild(ctype);
+        credit.appendChild(words);
+        // put near top of score (before part-list is fine)
+        const before = root.querySelector("part-list") || root.firstChild;
+        root.insertBefore(credit, before);
       }
 
-      // Centered subtitle
-      if (fm.subtitle){
-        const credit = doc.createElementNS(ns, "credit");
-        credit.setAttribute("page","1");
-        const cw = doc.createElementNS(ns, "credit-words");
-        cw.textContent = fm.subtitle;
-        cw.setAttribute("valign","top");
-        cw.setAttribute("justify","center");
-        const ct = doc.createElementNS(ns, "credit-type"); ct.textContent = "subtitle"; credit.appendChild(cw); credit.appendChild(ct);
-        root.insertBefore(credit, root.firstChild);
-      }
+      // Left corner label (exact Finale credit-type name)
+      addCredit("part name", isScore ? "Score" : "Part", { justify:"left", halign:"left", valign:"top" });
+
+      // Subtitle (centered) — only if we have one
+      if (fm.subtitle) addCredit("subtitle", fm.subtitle, { justify:"center", halign:"center", valign:"top" });
+
+      // Arranger (right) — OSMD needs a credit for this to appear
+      if (fm.arranger) addCredit("arranger", fm.arranger, { justify:"right", halign:"right", valign:"top" });
 
       return new XMLSerializer().serializeToString(doc);
     } catch(e){
