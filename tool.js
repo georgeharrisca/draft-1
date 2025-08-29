@@ -1820,8 +1820,10 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 /* =========================================================================
    M8) applyCredits — clone credits from *original* score & set OSMD header
-   - Fetches original XML from selectedSong.url if needed
-   - Writes credits with absolute Y positions matching your sample layout
+   - Fetches original XML from selectedSong.url if available
+   - Writes credits with fixed positions (matching your sample)
+   - Maps arranger -> lyricist (OSMD renders it), and writes part label as a
+     generic credit (no credit-type) at top-left.
    - Listens:  combine:done
    - Emits:    credits:done
    ------------------------------------------------------------------------- */
@@ -1840,19 +1842,18 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       return;
     }
 
-    // --- 1) Pull the original full score XML (for subtitle, part-name credit etc.)
+    // 1) Pull the original full score XML (best source of credits)
     var baseXml = await findBestCreditSource(s, combined);
     if (DEBUG_CREDITS) console.log("[M8] credit source chosen:", sniffSource(baseXml));
 
     var snap = snapshotCredits(baseXml);
     if (!snap.subtitleText){
-      // last-ditch: scan whole state for a subtitle credit
       var subAny = findAnyCreditInState(s, "subtitle");
       if (subAny){ snap.subtitleText = subAny; if (DEBUG_CREDITS) console.log("[M8] subtitle via global scan:", subAny); }
     }
     if (DEBUG_CREDITS) console.log("[M8] FINAL snapshot:", JSON.stringify(snap));
 
-    // --- 2) Apply to combined with "Score"; to each arranged part with instrument label
+    // 2) Apply to combined with "Score"; to each arranged part with instrument label
     combined = applyCreditsToDoc(combined, snap, "Score");
     var updated = arranged.map(function(f){
       var label = f.instrumentName || f.baseName || "Part";
@@ -1866,7 +1867,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   /* ---------------- credit source helpers ---------------- */
 
   async function findBestCreditSource(state, combined){
-    // Prefer: selectedSong.url (fetch original XML)
     var url = (state.selectedSong && state.selectedSong.url) || state.songUrl || null;
     if (url){
       try{
@@ -1877,15 +1877,12 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         }
       }catch(e){ console.warn("[M8] fetch original failed", e); }
     }
-
-    // Next: any obvious fields
     var guesses = [
       state.originalXml, state.sourceXml, state.fullScoreXml, state.selectedSongXml,
       state.songXml, state.rawXml, state.scoreXml, combined
     ].filter(function(x){ return typeof x === "string" && /<score-(partwise|timewise)\b/i.test(x); });
     if (guesses.length) return bestByCreditDensity(guesses);
 
-    // Finally: deep scan state for MusicXML strings
     var pool = [];
     try{
       var seen = new Set();
@@ -2005,43 +2002,86 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       var doc = p.parseFromString(xmlString, "application/xml");
       var root= doc.documentElement;
 
-      // Remove only the credit types we own
+      // Remove the credit types we manage (plus lyricist for our arranger mapping)
       root.querySelectorAll("credit").forEach(function(c){
         var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
-        if (t==="title" || t==="subtitle" || t==="composer" || t==="arranger" || t==="part name") c.remove();
+        if (t==="title" || t==="subtitle" || t==="composer" || t==="arranger" || t==="lyricist" || t==="part name") c.remove();
       });
 
-      // Insert right before <part-list>
+      var ly = readLayout(doc);
+      if (DEBUG_CREDITS) console.log("[M8] layout:", ly);
+
       function beforePartList(node){
         var pl = root.querySelector("part-list");
         if (pl) root.insertBefore(node, pl); else root.appendChild(node);
       }
 
-      // Read page layout (with defaults)
-      var ly = readLayout(doc);
-      if (DEBUG_CREDITS) console.log("[M8] layout:", ly);
+      // helper: build a credit (optionally without a type)
+      function addCredit(params){
+        var type = params.type;          // string or null (for generic credit)
+        var text = params.text;
+        var anchor = params.anchor || "left"; // left|center|right
+        var size = params.size;
+        var y = params.y;
 
-      // Absolute Y positions to match your sample:
-      //   title    2375 center
-      //   subtitle 2282 center
-      //   composer 2298 right
-      //   arranger 2247 right
-      //   partname 2380 left
-      var yTitle    = ly.pageHeight - ly.top;              // base ~ 2376 with your defaults; nudge -1
+        if (!text) return;
+        var credit = doc.createElement("credit");
+        credit.setAttribute("page","1");
+
+        if (type){
+          var ct = doc.createElement("credit-type");
+          ct.textContent = type;
+          credit.appendChild(ct);
+        }
+
+        var words = doc.createElement("credit-words");
+        if (anchor === "center"){
+          words.setAttribute("justify","center");
+          words.setAttribute("halign","center");
+          words.setAttribute("default-x", String(ly.centerX));
+        } else if (anchor === "right"){
+          words.setAttribute("justify","right");
+          words.setAttribute("halign","right");
+          words.setAttribute("default-x", String(ly.rightX));
+        } else {
+          words.setAttribute("justify","left");
+          words.setAttribute("halign","left");
+          words.setAttribute("default-x", String(ly.leftX));
+        }
+        words.setAttribute("default-y", String(y));
+        if (size != null) words.setAttribute("font-size", String(size));
+        words.setAttribute("valign","top");
+        words.textContent = text;
+
+        credit.appendChild(words);
+        beforePartList(credit);
+        if (DEBUG_CREDITS) console.log("[M8] add credit:", (type||"(no type)"), { anchor, x: words.getAttribute("default-x"), y, size, text });
+      }
+
+      // Absolute Y positions to match your sample (tenths)
+      var yTitle    = ly.pageHeight - ly.top - 1; // ~2375 with defaults
       var ySubtitle = 2282;
       var yComposer = 2298;
       var yArranger = 2247;
       var yPart     = 2380;
 
-      if (snap.titleText)    beforePartList(makeCredit(doc, "title",    snap.titleText,    ly, "center", null, 21.6, yTitle-1));
-      if (snap.subtitleText) beforePartList(makeCredit(doc, "subtitle", snap.subtitleText, ly, "center", null, 16.2, ySubtitle));
-      if (snap.arrangerText) beforePartList(makeCredit(doc, "arranger", snap.arrangerText, ly, "right",  null, 10.8, yArranger));
-      if (snap.composerText) beforePartList(makeCredit(doc, "composer", snap.composerText, ly, "right",  null, 10.8, yComposer));
-      if (partName)          beforePartList(makeCredit(doc, "part name", partName,         ly, "left",   null, 10.8, yPart));
+      // Title / subtitle / composer
+      addCredit({ type:"title",    text:snap.titleText,    anchor:"center", size:21.6, y:yTitle });
+      addCredit({ type:"subtitle", text:snap.subtitleText, anchor:"center", size:16.2, y:ySubtitle });
+      addCredit({ type:"composer", text:snap.composerText, anchor:"right",  size:10.8, y:yComposer });
 
-      // OSMD header mapping: big = Title, small = Subtitle
+      // Arranger → map to "lyricist" (OSMD renders this at top-right)
+      addCredit({ type:"lyricist", text:snap.arrangerText, anchor:"right",  size:10.8, y:yArranger });
+
+      // Part label at top-left as a generic credit (no credit-type)
+      if (partName){
+        addCredit({ type:null, text:partName, anchor:"left", size:10.8, y:yPart });
+      }
+
+      // OSMD header mapping (big = Title, small = Subtitle)
       ensureHeaderTitles(doc, root, snap.titleText, snap.subtitleText);
 
+      if (DEBUG_CREDITS) console.log("[M8] header set:", { workTitle: snap.titleText, movementTitle: snap.subtitleText||"" });
       return new XMLSerializer().serializeToString(doc);
     }catch(e){
       console.warn("[M8] applyCreditsToDoc failed; returning original.", e);
@@ -2065,11 +2105,9 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     } else if (mt){
       mt.remove();
     }
-
-    if (DEBUG_CREDITS) console.log("[M8] header set:", { workTitle: wt && wt.textContent, movementTitle: subtitleText || "" });
   }
 
-  /* ---------------- building blocks ---------------- */
+  /* ---------------- layout helper ---------------- */
 
   function readLayout(doc){
     var d = { pageWidth:1923, pageHeight:2489, left:226, right:113, top:113 };
@@ -2088,45 +2126,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     d.rightX  = d.pageWidth - d.right;
     d.centerX = Math.round(d.pageWidth / 2);
     return d;
-  }
-
-  function makeCredit(doc, type, text, layout, anchor, offsetDown, sizePt, yOverride){
-    var credit = doc.createElement("credit");
-    credit.setAttribute("page","1");
-
-    var ct = doc.createElement("credit-type");
-    ct.textContent = type;
-    credit.appendChild(ct);
-
-    var words = doc.createElement("credit-words");
-    var x = layout.leftX;
-
-    if (anchor === "center"){
-      words.setAttribute("justify","center");
-      words.setAttribute("halign","center");
-      x = layout.centerX;
-    } else if (anchor === "right"){
-      words.setAttribute("justify","right");
-      words.setAttribute("halign","right");
-      x = layout.rightX;
-    } else {
-      // force left alignment so OSMD doesn't drop it
-      words.setAttribute("justify","left");
-      words.setAttribute("halign","left");
-      x = layout.leftX;
-    }
-
-    var y = (yOverride != null) ? yOverride : Math.round(layout.pageHeight - layout.top - (offsetDown || 0));
-
-    words.setAttribute("default-x", String(x));
-    words.setAttribute("default-y", String(y));
-    if (sizePt != null) words.setAttribute("font-size", String(sizePt));
-    words.setAttribute("valign","top");
-    words.textContent = text;
-
-    credit.appendChild(words);
-    if (DEBUG_CREDITS) console.log("[M8] add credit:", type, { anchor: anchor||"left", x: String(x), y: y, size: sizePt||"", text: text });
-    return credit;
   }
 })();
 
