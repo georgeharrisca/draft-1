@@ -1959,33 +1959,34 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       var doc = p.parseFromString(xmlString, "application/xml");
       var root= doc.documentElement;
 
-      // Remove only the types we control (to avoid duplicates)
+      // Remove only the types we control (avoid duplicates)
       root.querySelectorAll("credit").forEach(function(c){
         var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
         if (t==="title" || t==="subtitle" || t==="composer" || t==="arranger" || t==="part name" || t==="aa-partlabel") c.remove();
       });
 
-      // Insert before <part-list> (matches your originals)
+      // Insert before <part-list> (matches originals)
       function beforePartList(node){
         var pl = root.querySelector("part-list");
         if (pl) root.insertBefore(node, pl); else root.appendChild(node);
       }
 
-      // Target page layout (so coordinates are always valid)
+      // Page layout → compute safe coordinates
       var layout = readLayout(doc);
       if (DEBUG_CREDITS) console.log("[M8] layout:", layout);
 
-      // Title (center, top)
-      if (snap.titleText)    beforePartList(makeCredit(doc, "title",     snap.titleText,    layout, "center",  0, 21.6));
-      // Subtitle (center, under title)
-      if (snap.subtitleText) beforePartList(makeCredit(doc, "subtitle",  snap.subtitleText, layout, "center", 90, 16.2));
-      // Composer / Arranger (right)
-      if (snap.composerText) beforePartList(makeCredit(doc, "composer",  snap.composerText, layout, "right",  78, 10.8));
-      if (snap.arrangerText) beforePartList(makeCredit(doc, "arranger",  snap.arrangerText, layout, "right", 129, 10.8));
-      // Part label (left) — place it *below* the title to avoid any top clipping
+      // Title / Subtitle (center)
+      if (snap.titleText)    beforePartList(makeCredit(doc, "title",     snap.titleText,    layout, "center", 0,  21.6));
+      if (snap.subtitleText) beforePartList(makeCredit(doc, "subtitle",  snap.subtitleText, layout, "center", 70, 16.2));
+
+      // Right column (arranger ABOVE composer to avoid colliding with first system)
+      if (snap.arrangerText) beforePartList(makeCredit(doc, "arranger",  snap.arrangerText, layout, "right",  52, 10.8));
+      if (snap.composerText) beforePartList(makeCredit(doc, "composer",  snap.composerText, layout, "right",  90, 10.8));
+
+      // Left label (Score / Part name) — slightly below title
       if (partName)          beforePartList(makeCredit(doc, "part name", partName,          layout, "left",   20, 10.8));
 
-      // OSMD header lines
+      // OSMD header lines (BIG title = work/work-title, small = movement-title)
       ensureHeaderTitles(doc, root, snap.titleText, snap.subtitleText);
 
       return new XMLSerializer().serializeToString(doc);
@@ -1994,6 +1995,27 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       return xmlString;
     }
   }
+
+  function ensureHeaderTitles(doc, root, titleText, subtitleText){
+    // BIG line → work/work-title = Title
+    var work = root.querySelector("work");
+    if (!work){ work = doc.createElement("work"); root.insertBefore(work, root.firstChild); }
+    var wt = work.querySelector("work-title");
+    if (!wt){ wt = doc.createElement("work-title"); work.appendChild(wt); }
+    wt.textContent = titleText || "";
+
+    // Small line → movement-title = Subtitle (remove if empty)
+    var mt = root.querySelector("movement-title");
+    if (subtitleText){
+      if (!mt){ mt = doc.createElement("movement-title"); root.insertBefore(mt, root.firstChild); }
+      mt.textContent = subtitleText;
+    } else if (mt){
+      mt.remove();
+    }
+
+    if (DEBUG_CREDITS) console.log("[M8] header set:", { workTitle: wt && wt.textContent, movementTitle: subtitleText || "" });
+  }
+
 
   function readLayout(doc){
     var pageWidth = 1923, pageHeight = 2489, left=226, right=113, top=113;
