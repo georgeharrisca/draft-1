@@ -1820,10 +1820,10 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 /* =========================================================================
    M8) applyCredits — clone credits from original & set OSMD header
-   - Fetch original XML from selectedSong.url if available
-   - Title/Subtitle/Composer shown via credits + header
-   - Arranger: render as a second "composer" (right)
-   - Part/Score label: render as "lyricist" (left) + mirror to <movement-number>
+   - Title/Subtitle/Composer shown via standard credits + header
+   - Arranger: write as real <credit-type>arranger</...> AND also as 'rights' (right side alias)
+   - Part/Score label: write as 'lyricist' (left) AND as 'part name' (semantic)
+   - Also mirror the part/score into <movement-number> for extra fallback
    - Listens:  combine:done  |  Emits: credits:done
    ------------------------------------------------------------------------- */
 ;(function(){
@@ -1841,11 +1841,11 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       return;
     }
 
-    // 1) Choose best credit source (prefer the original score file)
+    // choose the richest original as credit source (prefer the original file URL if present)
     var baseXml = await findBestCreditSource(s, combined);
     if (DEBUG_CREDITS) console.log("[M8] credit source chosen:", sniffSource(baseXml));
 
-    // 2) Snapshot original credits
+    // snapshot the source credits
     var snap = snapshotCredits(baseXml);
     if (!snap.subtitleText){
       var subAny = findAnyCreditInState(s, "subtitle");
@@ -1853,7 +1853,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     }
     if (DEBUG_CREDITS) console.log("[M8] FINAL snapshot:", JSON.stringify(snap));
 
-    // 3) Apply to combined and parts
+    // apply to combined + parts
     combined = applyCreditsToDoc(combined, snap, "Score");
     var updated = arranged.map(function(f){
       var label = f.instrumentName || f.baseName || "Part";
@@ -1864,8 +1864,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     AA.emit("credits:done");
   }
 
-  /* ---------------- credit source helpers ---------------- */
-
+  /* --------- credit-source helpers --------- */
   async function findBestCreditSource(state, combined){
     var url = (state.selectedSong && state.selectedSong.url) || state.songUrl || null;
     if (url){
@@ -1899,7 +1898,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     }catch(_){}
     return pool.length ? bestByCreditDensity(pool) : combined;
   }
-
   function bestByCreditDensity(list){
     var best = list[0], max = -1;
     for (var i=0;i<list.length;i++){
@@ -1909,7 +1907,14 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     }
     return best;
   }
-
+  function sniffSource(xml){
+    return {
+      chars: xml.length,
+      credits: (xml.match(/<credit-type>/gi)||[]).length,
+      hasSub: /<credit-type>\s*subtitle/i.test(xml),
+      hasMovTitle: /<movement-title>/i.test(xml)
+    };
+  }
   function findAnyCreditInState(state, type){
     var found = null, lowerType = String(type).toLowerCase();
     try{
@@ -1937,17 +1942,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     return found;
   }
 
-  function sniffSource(xml){
-    return {
-      chars: xml.length,
-      credits: (xml.match(/<credit-type>/gi)||[]).length,
-      hasSub: /<credit-type>\s*subtitle/i.test(xml),
-      hasMovTitle: /<movement-title>/i.test(xml)
-    };
-  }
-
-  /* ---------------- snapshot (read) ---------------- */
-
+  /* --------- snapshot (read) --------- */
   function snapshotCredits(xmlString){
     var out = { titleText:"", subtitleText:"", composerText:"", arrangerText:"" };
     try{
@@ -1994,18 +1989,17 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     return out;
   }
 
-  /* ---------------- apply (write) ---------------- */
-
+  /* --------- apply (write) --------- */
   function applyCreditsToDoc(xmlString, snap, partName){
     try{
       var p   = new DOMParser();
       var doc = p.parseFromString(xmlString, "application/xml");
       var root= doc.documentElement;
 
-      // Remove managed credit types (start clean)
+      // remove any old managed-types so we don't duplicate
       root.querySelectorAll("credit").forEach(function(c){
         var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
-        if (!t || t==="title" || t==="subtitle" || t==="composer" || t==="arranger" || t==="lyricist" || t==="part name") c.remove();
+        if (!t || t==="title" || t==="subtitle" || t==="composer" || t==="arranger" || t==="lyricist" || t==="part name" || t==="rights") c.remove();
       });
 
       var ly = readLayout(doc);
@@ -2055,30 +2049,35 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         if (DEBUG_CREDITS) console.log("[M8] add credit:", (type||"(no type)"), { anchor, text, x: words.getAttribute("default-x"), y: opts.y, size: opts.size });
       }
 
-      // Positions matching your sample (tenths)
+      // positions (tenths) matching your sample
       var yTitle    = ly.pageHeight - ly.top - 1; // ~2375
       var ySubtitle = 2282;
       var yComposer = 2298;
-      var yArranger = 2247;  // will be the 2nd "composer" line
+      var yArranger = 2247;
       var yPart     = 2380;
 
-      // Title / subtitle
+      // Title / Subtitle
       addCredit({ type:"title",    text:snap.titleText,    anchor:"center", size:21.6, y:yTitle    });
       addCredit({ type:"subtitle", text:snap.subtitleText, anchor:"center", size:16.2, y:ySubtitle });
 
-      // Composer (right) + Arranger (also right as a second "composer" line)
+      // Composer (right)
       addCredit({ type:"composer", text:snap.composerText, anchor:"right",  size:10.8, y:yComposer });
-      addCredit({ type:"composer", text:snap.arrangerText, anchor:"right",  size:10.8, y:yArranger });
-      ensureCreator(doc, "arranger", snap.arrangerText); // keep semantic
 
-      // Part/Score label (left) → render as lyricist + mirror to movement-number
+      // Arranger: semantic + alias (some OSMD builds only show known types; 'rights' often renders on the right)
+      addCredit({ type:"arranger", text:snap.arrangerText, anchor:"right",  size:10.8, y:yArranger });
+      addCredit({ type:"rights",   text:snap.arrangerText, anchor:"right",  size:10.8, y:yArranger });
+
+      // Part/Score label: OSMD-visible + semantic + header fallback
       if (partName){
-        addCredit({ type:"lyricist", text:partName, anchor:"left", size:10.8, y:yPart });
-        ensureMovementNumber(doc, root, partName);
+        addCredit({ type:"lyricist",  text:partName, anchor:"left", size:10.8, y:yPart });      // OSMD-visible (left)
+        addCredit({ type:"part name", text:partName, anchor:"left", size:10.8, y:yPart });      // semantic for other apps
+        ensureMovementNumber(doc, root, partName);                                              // extra fallback
       }
 
-      // Header mapping (big = Title, small = Subtitle)
+      // Header mapping (BIG = Title → work-title, small = Subtitle → movement-title)
       ensureHeaderTitles(doc, root, snap.titleText, snap.subtitleText);
+      ensureCreator(doc, "arranger", snap.arrangerText); // keep <identification> semantic
+
       if (DEBUG_CREDITS) console.log("[M8] header set:", { workTitle: snap.titleText, movementTitle: snap.subtitleText||"", movementNumber: partName||"" });
 
       return new XMLSerializer().serializeToString(doc);
@@ -2129,8 +2128,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     mn.textContent = label;
   }
 
-  /* ---------------- layout helper ---------------- */
-
+  /* --------- layout helper --------- */
   function readLayout(doc){
     var d = { pageWidth:1923, pageHeight:2489, left:226, right:113, top:113 };
     try{
@@ -2150,8 +2148,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     return d;
   }
 })();
-
-
 
 
 
