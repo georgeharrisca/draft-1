@@ -1512,8 +1512,9 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 
-<!-- M7) Final Viewer -->
-<script>
+/* =========================================================================
+   M7) Final Viewer
+   ------------------------------------------------------------------------- */
 ;(function () {
   // Start viewer only after combine is done (won’t interfere with Step 1 boot)
   AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
@@ -1907,7 +1908,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   // tiny DOM helper
   function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
 })();
-</script>
 
 
 
