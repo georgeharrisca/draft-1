@@ -1514,6 +1514,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 /* =========================================================================
    M7) Final Viewer — dropdown lists all parts; ensure title; ensure XML prolog
+   + viewer-only overlay for Part/Score (left) and Arranger (right)
    ------------------------------------------------------------------------- */
 ;(function () {
   AA.on("credits:done", () => AA.safe("finalViewer", bootWhenReady));
@@ -1541,6 +1542,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   }
 
   function buildViewerUI() {
+    // remove any existing viewer
     Array.prototype.forEach.call(document.querySelectorAll('#aa-viewer'), function(n){ n.remove(); });
 
     var state = getState();
@@ -1615,7 +1617,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
     var OSMD = lookupGlobal("opensheetmusicdisplay");
     var osmd = new OSMD.OpenSheetMusicDisplay(osmdBox, { autoResize:true, backend:"svg", drawingParameters:"default" });
-    window.addEventListener("resize", function(){ fitScoreToHeight(osmd, osmdBox); });
 
     var btnVis    = btnRow.querySelector("#aa-btn-visualize");
     var btnPDF    = btnRow.querySelector("#aa-btn-pdf");
@@ -1624,6 +1625,12 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     var btnXMLAll = btnRow.querySelector("#aa-btn-xml-all");
 
     var lastXml = "";
+
+    // keep overlays aligned after window resizes
+    window.addEventListener("resize", function(){
+      fitScoreToHeight(osmd, osmdBox);
+      if (lastXml) overlayCredits(osmdBox, lastXml, select.value);
+    });
 
     btnVis.addEventListener("click", function(){
       var picked = pickXml(select.value);
@@ -1639,6 +1646,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
           await osmd.render();
           await new Promise(function(r){ requestAnimationFrame(r); });
           fitScoreToHeight(osmd, osmdBox);
+          overlayCredits(osmdBox, lastXml, select.value);
           btnPDF.disabled = false; btnXML.disabled = false;
         } catch(e){
           console.error("[finalViewer] render failed", e);
@@ -1673,8 +1681,11 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
           try{
             var processed = transformXmlForSlashes(ensureTitle(p.xml, p.instrumentName));
             var osmdReady = withXmlProlog(processed);
+            if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
             await osmd.load(osmdReady);
             await osmd.render();
+            // overlay viewer-only credits for each part before snapshot
+            overlayCredits(osmdBox, osmdReady, p.instrumentName);
             var snap = await snapshotCanvas(osmdBox);
             var w = snap.w, h = snap.h, canvas = snap.canvas;
             if (!doc) doc = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
@@ -1763,6 +1774,73 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
   }
 
+  // --- viewer-only overlays for credits OSMD may hide ---
+  function overlayCredits(host, xmlString, selectionValue){
+    // remove old overlays
+    var old = host.querySelector('#aa-overlay');
+    if (old) old.remove();
+
+    // parse the MusicXML to find arranger text
+    var arranger = "";
+    var partLabel = (selectionValue === "__SCORE__" ? "Score" : selectionValue) || "";
+
+    try{
+      var p = new DOMParser();
+      var doc = p.parseFromString(xmlString, "application/xml");
+
+      // prefer <credit-type>arranger</credit-type>, else identification/creator[type="arranger"]
+      doc.querySelectorAll("credit").forEach(function(c){
+        if (arranger) return;
+        var t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
+        if (t === "arranger"){
+          var w = (c.querySelector("credit-words") && c.querySelector("credit-words").textContent || "").trim();
+          if (w) arranger = w;
+        }
+      });
+      if (!arranger){
+        var idArr = doc.querySelector('identification > creator[type="arranger"]');
+        if (idArr) arranger = (idArr.textContent || "").trim();
+      }
+    }catch(e){ /* ignore parse issues */ }
+
+    // if OSMD already drew the text, don't overlay to avoid duplicates
+    var svg = host.querySelector("svg");
+    var svgText = svg ? svg.textContent || "" : "";
+    function contains(hay, needle){
+      hay = String(hay || "").toLowerCase();
+      needle = String(needle || "").toLowerCase();
+      return needle && hay.indexOf(needle) !== -1;
+    }
+    var needPart     = partLabel && !contains(svgText, partLabel);
+    var needArranger = arranger  && !contains(svgText, arranger);
+
+    if (!needPart && !needArranger) return;
+
+    // build overlay container
+    var ov = document.createElement("div");
+    ov.id = "aa-overlay";
+    ov.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
+    // make sure the host is positioning context
+    if (getComputedStyle(host).position === "static") host.style.position = "relative";
+
+    function tag(text, side){
+      var d = document.createElement("div");
+      d.textContent = text;
+      d.style.cssText =
+        "position:absolute;top:8px;" +
+        (side === "right" ? "right:12px;" : "left:12px;") +
+        "font:600 12px/1.2 'Times New Roman', serif;" +
+        "letter-spacing:.2px;color:#111;" +
+        "text-shadow:0 1px 0 rgba(255,255,255,.9), 0 0 3px rgba(255,255,255,.6);";
+      return d;
+    }
+
+    if (needPart)     ov.appendChild(tag(partLabel, "left"));
+    if (needArranger) ov.appendChild(tag(arranger,  "right"));
+
+    host.appendChild(ov);
+  }
+
   // --- XML utilities for OSMD ---
   function ensureTitle(xmlString, title){
     try {
@@ -1811,12 +1889,14 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     } catch(e){ console.warn("downloadText failed", e); }
   }
 
+  // tiny DOM helper used above
   function ce(tag, props){
     var el = document.createElement(tag);
     if (props) Object.assign(el, props);
     return el;
   }
 })();
+
 
 /* =========================================================================
    M8) applyCredits — clone credits from original & set OSMD header
