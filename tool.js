@@ -1640,7 +1640,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
     const osmdBox = ce("div");
     osmdBox.id = "aa-osmd-box";
-    osmdBox.style.cssText = "margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;position:relative;";
+    // NOTE: allow horizontal scroll; keep vertical contained
+    osmdBox.style.cssText = "margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;position:relative;";
     card.appendChild(osmdBox);
     document.body.appendChild(wrap);
 
@@ -1684,11 +1685,14 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         if (m.type === "childList") {
           const added = [...m.addedNodes];
           if (added.some(n => n.nodeName === "SVG" || (n.querySelector && n.querySelector("svg")))) {
+            // When OSMD swaps in a new SVG, pin its width and refresh overlay
+            forceIntrinsicSvgWidth(osmdBox);
             scheduleOverlay();
             return;
           }
         }
         if (m.type === "attributes" && (m.target.nodeName === "svg" || m.target.nodeName === "SVG")) {
+          forceIntrinsicSvgWidth(osmdBox);
           scheduleOverlay();
           return;
         }
@@ -1715,7 +1719,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         await osmd.load(xmlToLoad);
         await osmd.render();
         await new Promise(r => requestAnimationFrame(r));
-        fitScoreToHeight(osmd, osmdBox);
+        fitScoreToHeight(osmd, osmdBox);     // vertical fit only
+        forceIntrinsicSvgWidth(osmdBox);     // keep intrinsic width → horizontal scroll
         btnPDF.disabled = false;
         btnXML.disabled = false;
         scheduleOverlay();
@@ -1827,6 +1832,49 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     pdf.save(safe(baseName || "score") + ".pdf");
   }
 
+  // Ensure vertical-fit only; keep intrinsic width so we get horizontal scroll
+  function fitScoreToHeight(osmd, host){
+    const svg = host.querySelector("svg"); if (!svg) return;
+    const maxH = host.clientHeight; if (!maxH) return;
+    let svgH = 0; try { svgH = svg.getBBox().height; } catch(e){}
+    if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
+    if (!svgH) return;
+    const current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
+    let target = Math.min(current, maxH / svgH); // height-driven scale only
+    if (!isFinite(target) || target <= 0) target = 1;
+    target = Math.max(0.3, Math.min(1.5, target));
+    if (Math.abs(target - current) > 0.01) {
+      osmd.zoom = target;
+      osmd.render();
+      // After any render/zoom change, pin the svg width to its intrinsic pixel width
+      forceIntrinsicSvgWidth(host);
+    } else {
+      // Even if zoom unchanged, re-pin width in case OSMD set width:100% after re-render
+      forceIntrinsicSvgWidth(host);
+    }
+  }
+
+  // Pin the SVG to its intrinsic content width (no responsive 100%)
+  function forceIntrinsicSvgWidth(host){
+    const svg = host.querySelector("svg");
+    if (!svg) return;
+    try {
+      const bb = svg.getBBox();
+      const w = Math.max(1, Math.ceil(bb.width));
+      const h = Math.max(1, Math.ceil(bb.height));
+      // Remove responsive sizing & enforce fixed pixel width
+      svg.style.maxWidth = "none";
+      svg.style.width = w + "px";
+      svg.style.height = h + "px";
+      // Some OSMD versions add width/height attributes; overriding them helps too
+      svg.setAttribute("width", String(w));
+      svg.setAttribute("height", String(h));
+    } catch (e) {
+      // fallback: at least disable maxWidth constraint
+      svg.style.maxWidth = "none";
+    }
+  }
+
   function backToInstrumentSelection(prevState, opts){
     try {
       const cleanup = (opts && opts.cleanupFns) || [];
@@ -1864,25 +1912,11 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       if (typeof setWizardStage === "function") {
         setWizardStage("instruments");
       } else {
-        // gentle nudge if the app relies on the wizard:stage signal
         AA.emit("wizard:stage", "instruments");
       }
     } catch(e){
       console.warn("[finalViewer] back cleanup failed", e);
     }
-  }
-
-  function fitScoreToHeight(osmd, host){
-    const svg = host.querySelector("svg"); if (!svg) return;
-    const maxH = host.clientHeight; if (!maxH) return;
-    let svgH = 0; try { svgH = svg.getBBox().height; } catch(e){}
-    if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
-    if (!svgH) return;
-    const current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
-    let target = Math.min(current, maxH / svgH);
-    if (!isFinite(target) || target <= 0) target = 1;
-    target = Math.max(0.3, Math.min(1.5, target));
-    if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
   }
 
   // --- XML utilities for OSMD ---
@@ -2054,6 +2088,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
   function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
 })();
+
 
 
 
