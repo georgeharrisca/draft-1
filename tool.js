@@ -1556,7 +1556,137 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
    M7) Final Viewer — auto-render on selection (no Visualize button)
    ------------------------------------------------------------------------- */
 ;(function () {
-  // Start viewer only after combine is done (won’t interfere with Step 1 boot)
+  // ---------- overlay helpers FIRST (so they’re always defined) ----------
+
+  function getArrangerFromXml(xmlString){
+    try{
+      const p = new DOMParser();
+      const doc = p.parseFromString(xmlString || "", "application/xml");
+      let arr = "";
+      doc.querySelectorAll("credit").forEach(c => {
+        const t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
+        if (!arr && t === "arranger") {
+          const w = c.querySelector("credit-words");
+          arr = (w && w.textContent || "").trim();
+        }
+      });
+      if (!arr) {
+        const fallback = doc.querySelector('identification > creator[type="arranger"]');
+        if (fallback) arr = (fallback.textContent || "").trim();
+      }
+      return arr || "Arranged by Auto Arranger";
+    } catch(e){ return "Arranged by Auto Arranger"; }
+  }
+
+  function overlayCredits(osmd, host, pickedLabel, arrangerText){
+    try {
+      // Tunables
+      const PART_TOP_PAD_DEFAULT   = 10;
+      const PART_LEFT_PAD_DEFAULT  = 18;
+      const ARR_TOP_PAD_DEFAULT    = 6;
+      const ARR_RIGHT_PAD_DEFAULT  = 20;
+      const ARR_TOP_TWEAK          = 8;
+      const ARR_RIGHT_INSET        = 40;
+      const PART_FONT_PX_DEFAULT   = 11;
+      const ARR_FONT_PX_DEFAULT    = 11;
+
+      // Container
+      let overlay = host.querySelector(".aa-overlay");
+      if (!overlay) {
+        overlay = document.createElement("div");
+        overlay.className = "aa-overlay";
+        overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
+        host.appendChild(overlay);
+      } else {
+        overlay.innerHTML = "";
+      }
+
+      const svg = host.querySelector("svg");
+      if (!svg) return;
+
+      const svgRect  = svg.getBoundingClientRect();
+      const hostRect = host.getBoundingClientRect();
+
+      const absLeft  = (px) => (px - hostRect.left) + "px";
+      const absTop   = (px) => (px - hostRect.top)  + "px";
+      const absRight = (px) => (hostRect.right - px) + "px";
+
+      // Try to match composer font (closest proxy to OSMD’s title fonts)
+      let composerTextNode = null;
+      for (const t of svg.querySelectorAll("text")) {
+        const txt = (t.textContent || "");
+        if (/compos/i.test(txt)) { composerTextNode = t; break; }
+      }
+      const cs = composerTextNode ? getComputedStyle(composerTextNode) : null;
+      const measuredPx = (cs && cs.fontSize && cs.fontSize.endsWith("px"))
+        ? parseFloat(cs.fontSize) : NaN;
+
+      // Position scale: prefer viewBox; else OSMD zoom; else 1
+      let scalePos = NaN;
+      const vb = svg.viewBox && svg.viewBox.baseVal;
+      if (vb && vb.height) scalePos = svgRect.height / vb.height;
+      if (!scalePos || !isFinite(scalePos)) {
+        const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
+        scalePos = zoom;
+      }
+
+      // Fonts
+      const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
+      const weight = (cs && cs.fontWeight) ? cs.fontWeight : "600";
+      const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
+
+      const partPx = (isFinite(measuredPx) && measuredPx > 0)
+        ? Math.round(measuredPx)
+        : Math.round(PART_FONT_PX_DEFAULT * (scalePos || 1));
+
+      const arrPx  = (isFinite(measuredPx) && measuredPx > 0)
+        ? Math.round(measuredPx)
+        : Math.round(ARR_FONT_PX_DEFAULT * (scalePos || 1));
+
+      // Pinned positions
+      const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scalePos;
+      const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scalePos;
+      const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scalePos;
+      const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scalePos;
+
+      // Part/Score (top-left)
+      if (pickedLabel) {
+        const el = document.createElement("div");
+        el.textContent = pickedLabel;
+        el.style.cssText =
+          "position:absolute;" +
+          "left:" + absLeft(partLeft) + ";" +
+          "top:" + absTop(partTop) + ";" +
+          "font-size:" + partPx + "px;" +
+          "font-weight:" + weight + ";" +
+          "font-style:" + fstyle + ";" +
+          "font-family:" + family + ";" +
+          "color:#111;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
+        overlay.appendChild(el);
+      }
+
+      // Arranger (top-right)
+      if (arrangerText) {
+        const el = document.createElement("div");
+        el.textContent = arrangerText;
+        el.style.cssText =
+          "position:absolute;" +
+          "right:" + absRight(arrRightX) + ";" +
+          "top:" + absTop(arrTop) + ";" +
+          "font-size:" + arrPx + "px;" +
+          "font-weight:" + weight + ";" +
+          "font-style:" + fstyle + ";" +
+          "font-family:" + family + ";" +
+          "color:#111;text-align:right;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
+        overlay.appendChild(el);
+      }
+    } catch (e) {
+      console.warn("[M7 overlay] skipped due to error:", e);
+    }
+  }
+
+  // ---------------------- boot + UI + render flow -------------------------
+
   AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
 
   async function bootWhenReady() {
@@ -1580,6 +1710,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   function lookupGlobal(name){
     return name.split(".").reduce((o,k)=> (o && o[k]!=null) ? o[k] : null, window);
   }
+  const raf = () => new Promise(r => requestAnimationFrame(r));
 
   function buildViewerUI(){
     // Remove any existing viewer
@@ -1677,8 +1808,13 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
         await osmd.load(xmlToLoad);
         await osmd.render();
-        await new Promise(r => requestAnimationFrame(r));
-        fitScoreToHeight(osmd, osmdBox);
+        await raf();
+
+        // Fit-to-height may change zoom and re-render synchronously:
+        const changed = fitScoreToHeight(osmd, osmdBox);
+        // Give the DOM a moment if it re-rendered:
+        if (changed) { await raf(); await raf(); }
+
         btnPDF.disabled = false;
         btnXML.disabled = false;
         refreshOverlay();
@@ -1798,17 +1934,20 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     qs("step2") && qs("step2").classList.add("hidden");
     qs("step3") && qs("step3").classList.remove("hidden");
   }
+
+  // return true if zoom changed (OSMD re-rendered), so caller can await RAFs
   function fitScoreToHeight(osmd, host){
-    const svg = host.querySelector("svg"); if (!svg) return;
-    const maxH = host.clientHeight; if (!maxH) return;
+    const svg = host.querySelector("svg"); if (!svg) return false;
+    const maxH = host.clientHeight; if (!maxH) return false;
     let svgH = 0; try { svgH = svg.getBBox().height; } catch(e){}
     if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
-    if (!svgH) return;
+    if (!svgH) return false;
     const current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
     let target = Math.min(current, maxH / svgH);
     if (!isFinite(target) || target <= 0) target = 1;
     target = Math.max(0.3, Math.min(1.5, target));
-    if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
+    if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); return true; }
+    return false;
   }
 
   // --- XML utilities for OSMD ---
@@ -1856,137 +1995,10 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     } catch(e){ console.warn("downloadText failed", e); }
   }
 
-  // --- overlay (viewer-only) ------------------------------------------------
-  function getArrangerFromXml(xmlString){
-    try{
-      const p = new DOMParser();
-      const doc = p.parseFromString(xmlString || "", "application/xml");
-      let arr = "";
-      doc.querySelectorAll("credit").forEach(c => {
-        const t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
-        if (!arr && t === "arranger") {
-          const w = c.querySelector("credit-words");
-          arr = (w && w.textContent || "").trim();
-        }
-      });
-      if (!arr) {
-        const fallback = doc.querySelector('identification > creator[type="arranger"]');
-        if (fallback) arr = (fallback.textContent || "").trim();
-      }
-      return arr || "Arranged by Auto Arranger";
-    } catch(e){ return "Arranged by Auto Arranger"; }
-  }
-
-  function overlayCredits(osmd, host, pickedLabel, arrangerText){
-    try {
-      // Tunables
-      const PART_TOP_PAD_DEFAULT   = 10;
-      const PART_LEFT_PAD_DEFAULT  = 18;
-      const ARR_TOP_PAD_DEFAULT    = 6;
-      const ARR_RIGHT_PAD_DEFAULT  = 20;
-      const ARR_TOP_TWEAK          = 8;
-      const ARR_RIGHT_INSET        = 40;
-      const PART_FONT_PX_DEFAULT   = 11;
-      const ARR_FONT_PX_DEFAULT    = 11;
-
-      // Container
-      let overlay = host.querySelector(".aa-overlay");
-      if (!overlay) {
-        overlay = document.createElement("div");
-        overlay.className = "aa-overlay";
-        overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
-        host.appendChild(overlay);
-      } else {
-        overlay.innerHTML = "";
-      }
-
-      const svg = host.querySelector("svg");
-      if (!svg) return;
-
-      const svgRect  = svg.getBoundingClientRect();
-      const hostRect = host.getBoundingClientRect();
-
-      const absLeft  = (px) => (px - hostRect.left) + "px";
-      const absTop   = (px) => (px - hostRect.top)  + "px";
-      const absRight = (px) => (hostRect.right - px) + "px";
-
-      // Try to match the composer font (closest OSMD style proxy)
-      let composerTextNode = null;
-      for (const t of svg.querySelectorAll("text")) {
-        const txt = (t.textContent || "");
-        if (/compos/i.test(txt)) { composerTextNode = t; break; }
-      }
-      const cs = composerTextNode ? getComputedStyle(composerTextNode) : null;
-      const measuredPx = (cs && cs.fontSize && cs.fontSize.endsWith("px"))
-        ? parseFloat(cs.fontSize) : NaN;
-
-      // Position scale: prefer viewBox; else OSMD zoom; else 1
-      let scalePos = NaN;
-      const vb = svg.viewBox && svg.viewBox.baseVal;
-      if (vb && vb.height) scalePos = svgRect.height / vb.height;
-      if (!scalePos || !isFinite(scalePos)) {
-        const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
-        scalePos = zoom;
-      }
-
-      // Fonts
-      const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
-      const weight = (cs && cs.fontWeight) ? cs.fontWeight : "600";
-      const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
-
-      const partPx = (isFinite(measuredPx) && measuredPx > 0)
-        ? Math.round(measuredPx)
-        : Math.round(PART_FONT_PX_DEFAULT * (scalePos || 1));
-
-      const arrPx  = (isFinite(measuredPx) && measuredPx > 0)
-        ? Math.round(measuredPx)
-        : Math.round(ARR_FONT_PX_DEFAULT * (scalePos || 1));
-
-      // Pinned positions
-      const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scalePos;
-      const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scalePos;
-      const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scalePos;
-      const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scalePos;
-
-      // Part/Score (top-left)
-      if (pickedLabel) {
-        const el = document.createElement("div");
-        el.textContent = pickedLabel;
-        el.style.cssText =
-          "position:absolute;" +
-          "left:" + absLeft(partLeft) + ";" +
-          "top:" + absTop(partTop) + ";" +
-          "font-size:" + partPx + "px;" +
-          "font-weight:" + weight + ";" +
-          "font-style:" + fstyle + ";" +
-          "font-family:" + family + ";" +
-          "color:#111;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
-        overlay.appendChild(el);
-      }
-
-      // Arranger (top-right)
-      if (arrangerText) {
-        const el = document.createElement("div");
-        el.textContent = arrangerText;
-        el.style.cssText =
-          "position:absolute;" +
-          "right:" + absRight(arrRightX) + ";" +
-          "top:" + absTop(arrTop) + ";" +
-          "font-size:" + arrPx + "px;" +
-          "font-weight:" + weight + ";" +
-          "font-style:" + fstyle + ";" +
-          "font-family:" + family + ";" +
-          "color:#111;text-align:right;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
-        overlay.appendChild(el);
-      }
-    } catch (e) {
-      console.warn("[M7 overlay] skipped due to error:", e);
-    }
-  }
-
   // tiny DOM helper
   function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
 })();
+
 
 
 
