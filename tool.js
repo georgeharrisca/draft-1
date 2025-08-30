@@ -1665,12 +1665,12 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     };
     cleanupFns.push(() => { if (overlayRaf) cancelAnimationFrame(overlayRaf); overlayRaf = 0; });
 
-    const onResize = () => { fitScoreToHeight(osmd, osmdBox); scheduleOverlay(); };
+    const onResize = () => { fitScoreToHeight(osmd, osmdBox, 0.9); scheduleOverlay(); };
     window.addEventListener("resize", onResize);
     cleanupFns.push(() => window.removeEventListener("resize", onResize));
 
     const ro = new ResizeObserver(() => {
-      fitScoreToHeight(osmd, osmdBox);
+      fitScoreToHeight(osmd, osmdBox, 0.9);
       scheduleOverlay();
     });
     ro.observe(osmdBox);
@@ -1709,7 +1709,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         await osmd.load(xmlToLoad);
         await osmd.render();
         await new Promise(r => requestAnimationFrame(r));
-        fitScoreToHeight(osmd, osmdBox);   // vertical fit only
+        fitScoreToHeight(osmd, osmdBox, 0.9);   // vertical fit only (90%)
         forceIntrinsicSvgWidth(osmdBox);   // keep intrinsic width → horizontal scroll
         osmdBox.scrollLeft = 0;
         btnPDF.disabled = false;
@@ -1729,12 +1729,13 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       }
     });
 
-    btnPDF.addEventListener("click", async () => {
-      if (!lastXml) { alert("Load a score/part first."); return; }
-      const base = (select.value === "__SCORE__" ? "Score" : select.value);
-      await exportCurrentViewToPdf(osmdBox, base);
-      scheduleOverlay();
-    });
+   btnPDF.addEventListener("click", async () => {
+  if (!lastXml) { alert("Load a score/part first."); return; }
+  const base = (select.value === "__SCORE__" ? "Score" : select.value);
+  await exportCurrentViewToPdf(osmdBox, base, osmd, 0.9); // << 90%
+  scheduleOverlay();
+});
+
 
     btnXML.addEventListener("click", () => {
       if (!lastXml) { alert("Load a score/part first."); return; }
@@ -1743,108 +1744,127 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     });
 
     // ---------- ZIP: PDFs for Score + all Parts (ghost renderer, no flicker) ----------
-    btnPDFAll.addEventListener("click", async () => {
-      const s = getState();
-      const items = [];
-      if (s.combinedScoreXml) items.push({ label: "Score", xml: s.combinedScoreXml });
-      (Array.isArray(s.arrangedFiles)?s.arrangedFiles:[]).forEach(p => {
-        items.push({ label: p.instrumentName || p.baseName || "Part", xml: p.xml });
-      });
-      if (!items.length) { alert("No score or parts found."); return; }
-
-      try {
-        const zip = new JSZip();
-        // ghost renderer setup
-        const { ghost, ghostBox, cleanup } = createGhostOSMD(osmdBox);
-
-        for (const it of items) {
-          const ab = await renderXmlToPdfArrayBuffer(ghost, ghostBox, ensureTitle(it.xml, songName));
-          zip.file(`${safe(songName)} - ${safe(it.label)}.pdf`, ab);
-        }
-        cleanup();
-
-        const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
-        const zipName = `${safe(songName)} - PDFs (Score & Parts).zip`;
-        triggerBlobDownload(blob, zipName);
-      } catch (e) {
-        console.error("[finalViewer] ZIP PDFs failed", e);
-        alert("Failed to export PDFs.");
-      } finally {
-        resetViewerToDefault();
-      }
+  btnPDFAll.addEventListener("click", async () => {
+    const s = getState();
+    const items = [];
+    if (s.combinedScoreXml) items.push({ label: "Score", xml: s.combinedScoreXml });
+    (Array.isArray(s.arrangedFiles)?s.arrangedFiles:[]).forEach(p => {
+      items.push({ label: p.instrumentName || p.baseName || "Part", xml: p.xml });
     });
+    if (!items.length) { alert("No score or parts found."); return; }
 
-    // ---------- ZIP: XMLs for Score + all Parts ----------
-    btnXMLAll.addEventListener("click", async () => {
-      const s = getState();
-      const items = [];
-      if (s.combinedScoreXml) items.push({ label: "Score", xml: s.combinedScoreXml });
-      (Array.isArray(s.arrangedFiles)?s.arrangedFiles:[]).forEach(p => {
-        items.push({ label: p.instrumentName || p.baseName || "Part", xml: p.xml });
-      });
-      if (!items.length) { alert("No score or parts found."); return; }
+    try {
+      const zip = new JSZip();
+      // ghost renderer setup
+      const { ghost, ghostBox, cleanup } = createGhostOSMD(osmdBox);
 
-      try {
-        const zip = new JSZip();
-        for (const it of items) {
-          const xml = withXmlProlog(transformXmlForSlashes(ensureTitle(it.xml, songName)));
-          zip.file(`${safe(songName)} - ${safe(it.label)}.musicxml`, xml);
-        }
-        const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
-        const zipName = `${safe(songName)} - XMLs (Score & Parts).zip`;
-        triggerBlobDownload(blob, zipName);
-      } catch (e) {
-        console.error("[finalViewer] ZIP XMLs failed", e);
-        alert("Failed to export XMLs.");
-      } finally {
-        resetViewerToDefault();
+      // jsPDF ctor
+      const jspdfNS = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
+      const JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
+      if (!JsPDFCtor) { alert("jsPDF not available."); cleanup(); return; }
+
+      for (const it of items) {
+        // Prepare XML and render in ghost
+        const xmlReady = withXmlProlog(transformXmlForSlashes(ensureTitle(it.xml, songName)));
+        await ghost.load(xmlReady);
+        await ghost.render();
+        await new Promise(r => requestAnimationFrame(r));
+
+        // ⬇️ ensure 90% vertical-fit before snapshot
+        fitScoreToHeight(ghost, ghostBox, 0.9);
+
+        // Snapshot → PDF page → add to ZIP
+        const { w, h, canvas } = await snapshotCanvas(ghostBox);
+        const pdf = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
+        pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
+        const ab = pdf.output("arraybuffer");
+        zip.file(`${safe(songName)} - ${safe(it.label)}.pdf`, ab);
       }
+      cleanup();
+
+      const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+      const zipName = `${safe(songName)} - PDFs (Score & Parts).zip`;
+      triggerBlobDownload(blob, zipName);
+    } catch (e) {
+      console.error("[finalViewer] ZIP PDFs failed", e);
+      alert("Failed to export PDFs.");
+    } finally {
+      resetViewerToDefault();
+    }
+  });
+
+  // ---------- ZIP: XMLs for Score + all Parts ----------
+  btnXMLAll.addEventListener("click", async () => {
+    const s = getState();
+    const items = [];
+    if (s.combinedScoreXml) items.push({ label: "Score", xml: s.combinedScoreXml });
+    (Array.isArray(s.arrangedFiles)?s.arrangedFiles:[]).forEach(p => {
+      items.push({ label: p.instrumentName || p.baseName || "Part", xml: p.xml });
     });
+    if (!items.length) { alert("No score or parts found."); return; }
 
-    function pickXml(choice){
-      const s = getState();
-      if (choice === "__SCORE__") return { xml: s.combinedScoreXml || "" };
-      const list = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
-      const hit = list.find(f => (f.instrumentName || f.baseName) === choice);
-      return { xml: (hit && hit.xml) || "" };
+    try {
+      const zip = new JSZip();
+      for (const it of items) {
+        const xml = withXmlProlog(transformXmlForSlashes(ensureTitle(it.xml, songName)));
+        zip.file(`${safe(songName)} - ${safe(it.label)}.musicxml`, xml);
+      }
+      const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+      const zipName = `${safe(songName)} - XMLs (Score & Parts).zip`;
+      triggerBlobDownload(blob, zipName);
+    } catch (e) {
+      console.error("[finalViewer] ZIP XMLs failed", e);
+      alert("Failed to export XMLs.");
+    } finally {
+      resetViewerToDefault();
     }
+  });
 
-    function ensureOverlayOnTop(host){
-      const ov = host.querySelector(".aa-overlay");
-      if (ov && ov.parentNode === host) host.appendChild(ov);
-    }
-    function overlayCleanup(host){
-      const ov = host.querySelector(".aa-overlay");
-      if (ov) ov.innerHTML = "";
-    }
-
-    // reset to first option and rerender (as if just loaded)
-    function resetViewerToDefault(){
-      if (!select || select.options.length === 0) return;
-      select.selectedIndex = 0;
-      lastXml = "";
-      osmdBox.scrollLeft = 0;
-      renderSelection();
-    }
-
-  } // buildViewerUI
-
-  /* ===== ghost renderer (prevents flicker) ===== */
-  function createGhostOSMD(referenceBox){
-    const dims = referenceBox.getBoundingClientRect();
-    const ghostBox = document.createElement("div");
-    ghostBox.id = "aa-osmd-ghost";
-    ghostBox.style.cssText = `position:fixed;left:0;top:0;width:${Math.max(800, Math.floor(dims.width))}px;height:${Math.max(600, Math.floor(dims.height))}px;opacity:0;pointer-events:none;z-index:-1;background:#fff;`;
-    document.body.appendChild(ghostBox);
-
-    const OSMD = lookupGlobal("opensheetmusicdisplay");
-    const ghost = new OSMD.OpenSheetMusicDisplay(ghostBox, { autoResize:false, backend:"svg", drawingParameters:"default" });
-
-    const cleanup = () => {
-      try { ghostBox.remove(); } catch(_) {}
-    };
-    return { ghost, ghostBox, cleanup };
+  function pickXml(choice){
+    const s = getState();
+    if (choice === "__SCORE__") return { xml: s.combinedScoreXml || "" };
+    const list = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
+    const hit = list.find(f => (f.instrumentName || f.baseName) === choice);
+    return { xml: (hit && hit.xml) || "" };
   }
+
+  function ensureOverlayOnTop(host){
+    const ov = host.querySelector(".aa-overlay");
+    if (ov && ov.parentNode === host) host.appendChild(ov);
+  }
+  function overlayCleanup(host){
+    const ov = host.querySelector(".aa-overlay");
+    if (ov) ov.innerHTML = "";
+  }
+
+  // reset to first option and rerender (as if just loaded)
+  function resetViewerToDefault(){
+    if (!select || select.options.length === 0) return;
+    select.selectedIndex = 0;
+    lastXml = "";
+    osmdBox.scrollLeft = 0;
+    renderSelection();
+  }
+
+} // buildViewerUI
+
+/* ===== ghost renderer (prevents flicker) ===== */
+function createGhostOSMD(referenceBox){
+  const dims = referenceBox.getBoundingClientRect();
+  const ghostBox = document.createElement("div");
+  ghostBox.id = "aa-osmd-ghost";
+  ghostBox.style.cssText = `position:fixed;left:0;top:0;width:${Math.max(800, Math.floor(dims.width))}px;height:${Math.max(600, Math.floor(dims.height))}px;opacity:0;pointer-events:none;z-index:-1;background:#fff;`;
+  document.body.appendChild(ghostBox);
+
+  const OSMD = lookupGlobal("opensheetmusicdisplay");
+  const ghost = new OSMD.OpenSheetMusicDisplay(ghostBox, { autoResize:false, backend:"svg", drawingParameters:"default" });
+
+  const cleanup = () => {
+    try { ghostBox.remove(); } catch(_) {}
+  };
+  return { ghost, ghostBox, cleanup };
+}
+
 
   async function renderXmlToPdfArrayBuffer(ghost, ghostBox, xml){
     const jspdfNS  = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
@@ -1893,30 +1913,41 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     return html2canvas(container, { scale:2, backgroundColor:"#fff" })
            .then(canvas => ({canvas, w:canvas.width, h:canvas.height}));
   }
-  async function exportCurrentViewToPdf(container, baseName){
-    const snap = await snapshotCanvas(container);
-    const { w, h, canvas } = snap;
-    const jspdfNS = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
-    const JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
-    if (!JsPDFCtor) { alert("jsPDF not loaded."); return; }
-    const pdf = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
-    pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
-    pdf.save(safe(baseName || "score") + ".pdf");
-  }
+// let this accept an OSMD + shrink factor
+async function exportCurrentViewToPdf(container, baseName, osmdForFit = null, shrinkFactor = 0.9){
+  if (osmdForFit) fitScoreToHeight(osmdForFit, container, shrinkFactor); // << refit at 90%
+  const { w, h, canvas } = await snapshotCanvas(container);
+  const jspdfNS   = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
+  const JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
+  if (!JsPDFCtor) { alert("jsPDF not loaded."); return; }
+  const pdf = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
+  pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
+  pdf.save(safe(baseName || "score") + ".pdf");
+}
 
-  // Vertical-fit only; keep intrinsic width for horizontal scroll
-  function fitScoreToHeight(osmd, host){
-    const svg = host.querySelector("svg"); if (!svg) return;
-    const maxH = host.clientHeight; if (!maxH) return;
-    let svgH = 0; try { svgH = svg.getBBox().height; } catch(e){}
-    if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
-    if (!svgH) return;
-    const current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
-    let target = Math.min(current, maxH / svgH);
-    if (!isFinite(target) || target <= 0) target = 1;
-    target = Math.max(0.3, Math.min(1.5, target));
-    if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
-  }
+
+ // Vertical-fit only; optional shrink factor (default 1). Keeps intrinsic width.
+function fitScoreToHeight(osmd, host, shrinkFactor = 1) {
+  const svg = host.querySelector("svg"); if (!svg) return;
+  const maxH = host.clientHeight; if (!maxH) return;
+
+  let svgH = 0; try { svgH = svg.getBBox().height; } catch(e){}
+  if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
+  if (!svgH) return;
+
+  const current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
+  let target = Math.min(current, maxH / svgH);
+
+  // apply extra shrink (e.g., 0.9 = 10% smaller than exact fit)
+  if (!isFinite(shrinkFactor) || shrinkFactor <= 0) shrinkFactor = 1;
+  target *= shrinkFactor;
+
+  if (!isFinite(target) || target <= 0) target = 1;
+  target = Math.max(0.3, Math.min(1.5, target));
+
+  if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
+}
+
 
   function forceIntrinsicSvgWidth(host){
     const svg = host.querySelector("svg"); if (!svg) return;
