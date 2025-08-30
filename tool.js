@@ -1550,10 +1550,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 
-
-
 /* =========================================================================
-   M7) Final Viewer — auto-render on selection (no Visualize button)
+   M7) Final Viewer — auto-render on selection, debounced overlay (no flicker)
    ------------------------------------------------------------------------- */
 ;(function () {
   // ---------- overlay helpers FIRST (so they’re always defined) ----------
@@ -1597,12 +1595,24 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         overlay.className = "aa-overlay";
         overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
         host.appendChild(overlay);
-      } else {
-        overlay.innerHTML = "";
+      }
+
+      // Ensure stable children (avoid clearing; just update)
+      let partEl = overlay.querySelector(".aa-part-label");
+      if (!partEl) {
+        partEl = document.createElement("div");
+        partEl.className = "aa-part-label";
+        overlay.appendChild(partEl);
+      }
+      let arrEl = overlay.querySelector(".aa-arranger-label");
+      if (!arrEl) {
+        arrEl = document.createElement("div");
+        arrEl.className = "aa-arranger-label";
+        overlay.appendChild(arrEl);
       }
 
       const svg = host.querySelector("svg");
-      if (!svg) return;
+      if (!svg) { partEl.style.display = "none"; arrEl.style.display = "none"; return; }
 
       const svgRect  = svg.getBoundingClientRect();
       const hostRect = host.getBoundingClientRect();
@@ -1651,9 +1661,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
       // Part/Score (top-left)
       if (pickedLabel) {
-        const el = document.createElement("div");
-        el.textContent = pickedLabel;
-        el.style.cssText =
+        partEl.textContent = pickedLabel;
+        partEl.style.cssText =
           "position:absolute;" +
           "left:" + absLeft(partLeft) + ";" +
           "top:" + absTop(partTop) + ";" +
@@ -1662,14 +1671,15 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
           "font-style:" + fstyle + ";" +
           "font-family:" + family + ";" +
           "color:#111;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
-        overlay.appendChild(el);
+        partEl.style.display = "block";
+      } else {
+        partEl.style.display = "none";
       }
 
       // Arranger (top-right)
       if (arrangerText) {
-        const el = document.createElement("div");
-        el.textContent = arrangerText;
-        el.style.cssText =
+        arrEl.textContent = arrangerText;
+        arrEl.style.cssText =
           "position:absolute;" +
           "right:" + absRight(arrRightX) + ";" +
           "top:" + absTop(arrTop) + ";" +
@@ -1678,7 +1688,9 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
           "font-style:" + fstyle + ";" +
           "font-family:" + family + ";" +
           "color:#111;text-align:right;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
-        overlay.appendChild(el);
+        arrEl.style.display = "block";
+      } else {
+        arrEl.style.display = "none";
       }
     } catch (e) {
       console.warn("[M7 overlay] skipped due to error:", e);
@@ -1782,7 +1794,24 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     const OSMD = lookupGlobal("opensheetmusicdisplay");
     const osmd = new OSMD.OpenSheetMusicDisplay(osmdBox, { autoResize:true, backend:"svg", drawingParameters:"default" });
 
-    window.addEventListener("resize", () => { fitScoreToHeight(osmd, osmdBox); refreshOverlay(); });
+    // Debounced overlay updater (prevents flicker during resize/reflow)
+    let overlayRaf = 0;
+    const scheduleOverlay = () => {
+      if (overlayRaf) cancelAnimationFrame(overlayRaf);
+      overlayRaf = requestAnimationFrame(() => {
+        overlayRaf = 0;
+        if (!lastXml) return;
+        const pickedLabel = (select.value === "__SCORE__" ? "Score" : select.value) || "";
+        const arranger    = getArrangerFromXml(lastXml);
+        overlayCredits(osmd, osmdBox, pickedLabel, arranger);
+      });
+    };
+
+    window.addEventListener("resize", () => {
+      const changed = fitScoreToHeight(osmd, osmdBox);
+      // schedule regardless — we want overlay to track the new SVG box
+      scheduleOverlay();
+    });
 
     const btnPDF    = btnRow.querySelector("#aa-btn-pdf");
     const btnXML    = btnRow.querySelector("#aa-btn-xml");
@@ -1790,13 +1819,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     const btnXMLAll = btnRow.querySelector("#aa-btn-xml-all");
 
     let lastXml = "";
-
-    function refreshOverlay(){
-      if (!lastXml) return;
-      const pickedLabel = (select.value === "__SCORE__" ? "Score" : select.value) || "";
-      const arranger    = getArrangerFromXml(lastXml);
-      overlayCredits(osmd, osmdBox, pickedLabel, arranger);
-    }
 
     async function renderSelection() {
       const { xml } = pickXml(select.value);
@@ -1812,12 +1834,11 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
         // Fit-to-height may change zoom and re-render synchronously:
         const changed = fitScoreToHeight(osmd, osmdBox);
-        // Give the DOM a moment if it re-rendered:
         if (changed) { await raf(); await raf(); }
 
         btnPDF.disabled = false;
         btnXML.disabled = false;
-        refreshOverlay();
+        scheduleOverlay();
       } catch(e){
         console.error("[finalViewer] render failed", e);
         alert("Failed to render this selection.");
@@ -1833,7 +1854,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     } else if (select.options.length > 0) {
       select.selectedIndex = 0;
     }
-    // Kick off the initial render
     renderSelection();
 
     btnPDF.addEventListener("click", async () => {
@@ -1845,6 +1865,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       if (overlay) overlay.style.visibility = "hidden";
       await exportCurrentViewToPdf(osmdBox, base);
       if (overlay) overlay.style.visibility = prev;
+      scheduleOverlay();
     });
 
     btnXML.addEventListener("click", () => {
@@ -1998,7 +2019,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   // tiny DOM helper
   function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
 })();
-
 
 
 
