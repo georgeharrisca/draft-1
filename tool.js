@@ -1553,12 +1553,9 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 /* =========================================================================
-   M7) Final Viewer  — auto-render on selection (no Visualize button)
+   M7) Final Viewer — auto-render on selection (no Visualize button)
    ------------------------------------------------------------------------- */
 ;(function () {
-  // Safety shim (defensive vs. old code paths)
-  var measuredPx;
-
   // Start viewer only after combine is done (won’t interfere with Step 1 boot)
   AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
 
@@ -1633,7 +1630,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
     const btnRow = ce("div");
     btnRow.style.cssText = "display:flex;gap:8px;flex-wrap:nowrap;justify-content:center;align-items:center;";
-    // Removed Visualize button; PDF/XML remain and get enabled after a successful render
     btnRow.innerHTML = [
       '<button id="aa-btn-pdf" class="aa-btn" disabled>Download PDF</button>',
       '<button id="aa-btn-xml" class="aa-btn" disabled>Download XML</button>',
@@ -1849,8 +1845,18 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   function safe(name){
     return String(name || "").replace(/[\\\/:*?"<>|]+/g, "_").replace(/\s+/g, " ").trim();
   }
+  function downloadText(text, filename, mimetype){
+    try{
+      const blob = new Blob([text], { type: mimetype || "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename || "download.txt";
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 50);
+    } catch(e){ console.warn("downloadText failed", e); }
+  }
 
-  // --- overlay helpers (arranger/part labels) ---
+  // --- overlay (viewer-only) ------------------------------------------------
   function getArrangerFromXml(xmlString){
     try{
       const p = new DOMParser();
@@ -1871,9 +1877,117 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     } catch(e){ return "Arranged by Auto Arranger"; }
   }
 
-  // Your existing overlayCredits(...) function stays as-is
-  // (uses computed size/zoom to align/scale)
+  function overlayCredits(osmd, host, pickedLabel, arrangerText){
+    try {
+      // Tunables
+      const PART_TOP_PAD_DEFAULT   = 10;
+      const PART_LEFT_PAD_DEFAULT  = 18;
+      const ARR_TOP_PAD_DEFAULT    = 6;
+      const ARR_RIGHT_PAD_DEFAULT  = 20;
+      const ARR_TOP_TWEAK          = 8;
+      const ARR_RIGHT_INSET        = 40;
+      const PART_FONT_PX_DEFAULT   = 11;
+      const ARR_FONT_PX_DEFAULT    = 11;
+
+      // Container
+      let overlay = host.querySelector(".aa-overlay");
+      if (!overlay) {
+        overlay = document.createElement("div");
+        overlay.className = "aa-overlay";
+        overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
+        host.appendChild(overlay);
+      } else {
+        overlay.innerHTML = "";
+      }
+
+      const svg = host.querySelector("svg");
+      if (!svg) return;
+
+      const svgRect  = svg.getBoundingClientRect();
+      const hostRect = host.getBoundingClientRect();
+
+      const absLeft  = (px) => (px - hostRect.left) + "px";
+      const absTop   = (px) => (px - hostRect.top)  + "px";
+      const absRight = (px) => (hostRect.right - px) + "px";
+
+      // Try to match the composer font (closest OSMD style proxy)
+      let composerTextNode = null;
+      for (const t of svg.querySelectorAll("text")) {
+        const txt = (t.textContent || "");
+        if (/compos/i.test(txt)) { composerTextNode = t; break; }
+      }
+      const cs = composerTextNode ? getComputedStyle(composerTextNode) : null;
+      const measuredPx = (cs && cs.fontSize && cs.fontSize.endsWith("px"))
+        ? parseFloat(cs.fontSize) : NaN;
+
+      // Position scale: prefer viewBox; else OSMD zoom; else 1
+      let scalePos = NaN;
+      const vb = svg.viewBox && svg.viewBox.baseVal;
+      if (vb && vb.height) scalePos = svgRect.height / vb.height;
+      if (!scalePos || !isFinite(scalePos)) {
+        const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
+        scalePos = zoom;
+      }
+
+      // Fonts
+      const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
+      const weight = (cs && cs.fontWeight) ? cs.fontWeight : "600";
+      const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
+
+      const partPx = (isFinite(measuredPx) && measuredPx > 0)
+        ? Math.round(measuredPx)
+        : Math.round(PART_FONT_PX_DEFAULT * (scalePos || 1));
+
+      const arrPx  = (isFinite(measuredPx) && measuredPx > 0)
+        ? Math.round(measuredPx)
+        : Math.round(ARR_FONT_PX_DEFAULT * (scalePos || 1));
+
+      // Pinned positions
+      const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scalePos;
+      const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scalePos;
+      const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scalePos;
+      const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scalePos;
+
+      // Part/Score (top-left)
+      if (pickedLabel) {
+        const el = document.createElement("div");
+        el.textContent = pickedLabel;
+        el.style.cssText =
+          "position:absolute;" +
+          "left:" + absLeft(partLeft) + ";" +
+          "top:" + absTop(partTop) + ";" +
+          "font-size:" + partPx + "px;" +
+          "font-weight:" + weight + ";" +
+          "font-style:" + fstyle + ";" +
+          "font-family:" + family + ";" +
+          "color:#111;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
+        overlay.appendChild(el);
+      }
+
+      // Arranger (top-right)
+      if (arrangerText) {
+        const el = document.createElement("div");
+        el.textContent = arrangerText;
+        el.style.cssText =
+          "position:absolute;" +
+          "right:" + absRight(arrRightX) + ";" +
+          "top:" + absTop(arrTop) + ";" +
+          "font-size:" + arrPx + "px;" +
+          "font-weight:" + weight + ";" +
+          "font-style:" + fstyle + ";" +
+          "font-family:" + family + ";" +
+          "color:#111;text-align:right;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
+        overlay.appendChild(el);
+      }
+    } catch (e) {
+      console.warn("[M7 overlay] skipped due to error:", e);
+    }
+  }
+
+  // tiny DOM helper
+  function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
 })();
+
 
 
 
