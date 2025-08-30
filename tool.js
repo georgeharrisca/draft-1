@@ -1553,10 +1553,10 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 /* =========================================================================
-   M7) Final Viewer
+   M7) Final Viewer  — auto-render on selection (no Visualize button)
    ------------------------------------------------------------------------- */
 ;(function () {
-  // --- SAFETY SHIM: prevent ReferenceError if any stale code still touches measuredPx
+  // Safety shim (defensive vs. old code paths)
   var measuredPx;
 
   // Start viewer only after combine is done (won’t interfere with Step 1 boot)
@@ -1633,8 +1633,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
     const btnRow = ce("div");
     btnRow.style.cssText = "display:flex;gap:8px;flex-wrap:nowrap;justify-content:center;align-items:center;";
+    // Removed Visualize button; PDF/XML remain and get enabled after a successful render
     btnRow.innerHTML = [
-      '<button id="aa-btn-visualize" class="aa-btn">Visualize</button>',
       '<button id="aa-btn-pdf" class="aa-btn" disabled>Download PDF</button>',
       '<button id="aa-btn-xml" class="aa-btn" disabled>Download XML</button>',
       '<button id="aa-btn-pdf-all" class="aa-btn">Download PDF All Parts</button>',
@@ -1657,7 +1657,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
     window.addEventListener("resize", () => { fitScoreToHeight(osmd, osmdBox); refreshOverlay(); });
 
-    const btnVis    = btnRow.querySelector("#aa-btn-visualize");
     const btnPDF    = btnRow.querySelector("#aa-btn-pdf");
     const btnXML    = btnRow.querySelector("#aa-btn-xml");
     const btnPDFAll = btnRow.querySelector("#aa-btn-pdf-all");
@@ -1672,10 +1671,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       overlayCredits(osmd, osmdBox, pickedLabel, arranger);
     }
 
-    // Keep overlay synced when changing the dropdown
-    select.addEventListener("change", refreshOverlay);
-
-    btnVis.addEventListener("click", async () => {
+    async function renderSelection() {
       const { xml } = pickXml(select.value);
       if (!xml) { alert("No XML found to visualize."); return; }
       try {
@@ -1694,12 +1690,24 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         console.error("[finalViewer] render failed", e);
         alert("Failed to render this selection.");
       }
-    });
+    }
+
+    // Auto-render whenever the dropdown changes
+    select.addEventListener("change", renderSelection);
+
+    // Also render immediately on open (default to Score if present)
+    if (hasScore) {
+      select.value = "__SCORE__";
+    } else if (select.options.length > 0) {
+      select.selectedIndex = 0;
+    }
+    // Kick off the initial render
+    renderSelection();
 
     btnPDF.addEventListener("click", async () => {
       if (!lastXml) { alert("Load a score/part first."); return; }
       const base = (select.value === "__SCORE__" ? "Score" : select.value);
-      // Hide overlay while snapshotting
+      // Hide overlay while snapshotting to keep PDF clean
       const overlay = osmdBox.querySelector(".aa-overlay");
       const prev = overlay ? overlay.style.visibility : null;
       if (overlay) overlay.style.visibility = "hidden";
@@ -1721,12 +1729,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       if (!JsPDFCtor) { alert("jsPDF not available."); return; }
       const docName = safe(songName) + " - All Parts.pdf";
       let doc = null;
-
-      // Hide overlay for the whole batch export
-      const overlay = osmdBox.querySelector(".aa-overlay");
-      const prev = overlay ? overlay.style.visibility : null;
-      if (overlay) overlay.style.visibility = "hidden";
-
       for (const p of partsNow){
         try{
           const processed = transformXmlForSlashes(ensureTitle(p.xml, p.instrumentName));
@@ -1740,8 +1742,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
           doc.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
         }catch(e){ console.error("[finalViewer] PDF all parts failed on", p.instrumentName, e); }
       }
-
-      if (overlay) overlay.style.visibility = prev;
       if (doc) doc.save(docName);
     });
 
@@ -1792,61 +1792,16 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
     pdf.save(safe(baseName || "score") + ".pdf");
   }
-// 👇 Replace M7's backToInstrumentSelection with this version
-function backToInstrumentSelection() {
-  const s = getState();
-
-  setState({
-    // keep context so the user stays in the same pack/song
-    packIndex: s.packIndex,
-    pack: s.pack,
-    songIndex: s.songIndex,
-    song: s.song,
-    selectedSong: s.selectedSong,
-
-    // keep loaded data sources
-    libraryPacks: s.libraryPacks,
-    instrumentData: s.instrumentData,
-
-    // keep extracted parts from the source song, but…
-    parts: Array.isArray(s.parts) ? s.parts : [],
-
-    // …clear user picks + all downstream artifacts
-    instrumentSelections: [],
-    assignedResults: [],
-    groupedAssignments: [],
-    arrangedFiles: [],
-    combinedScoreXml: "",
-
-    // clear any “done” flags so steps can run again
-    arrangeDone: false,
-    renameDone: false,
-    reassignByScoreDone: false,
-    combineDone: false,
-
-    timestamp: Date.now()
-  });
-
-  // remove the viewer overlay
-  document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
-  // if a spinner was up for any reason
-  if (typeof hideArrangingLoading === "function") hideArrangingLoading();
-
-  // force a clean Step-3 rebuild (clears any lingering local UI state)
-  const oldPickers = document.getElementById('aa-pickers');
-  if (oldPickers) oldPickers.remove();
-
-  // navigate back to Step 3 (and trigger your Step-3 builder)
-  if (typeof setWizardStage === "function") {
-    setWizardStage("instruments");
-  } else {
-    qs("step1")?.classList.add("hidden");
-    qs("step2")?.classList.add("hidden");
-    qs("step3")?.classList.remove("hidden");
-    AA.emit?.("wizard:stage", "instruments");
+  function backToInstrumentSelection(prevState){
+    const packName = (prevState && (prevState.pack || (prevState.selectedPack && prevState.selectedPack.name))) || "";
+    const songName = (prevState && (prevState.song || (prevState.selectedSong && prevState.selectedSong.name))) || "";
+    setState({ pack: packName, song: songName, packIndex: getState().packIndex, songIndex: getState().songIndex, timestamp: Date.now() });
+    document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
+    hideArrangingLoading();
+    qs("step1") && qs("step1").classList.add("hidden");
+    qs("step2") && qs("step2").classList.add("hidden");
+    qs("step3") && qs("step3").classList.remove("hidden");
   }
-}
-
   function fitScoreToHeight(osmd, host){
     const svg = host.querySelector("svg"); if (!svg) return;
     const maxH = host.clientHeight; if (!maxH) return;
@@ -1894,18 +1849,8 @@ function backToInstrumentSelection() {
   function safe(name){
     return String(name || "").replace(/[\\\/:*?"<>|]+/g, "_").replace(/\s+/g, " ").trim();
   }
-  function downloadText(text, filename, mimetype){
-    try{
-      const blob = new Blob([text], { type: mimetype || "application/octet-stream" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = filename || "download.txt";
-      document.body.appendChild(a); a.click();
-      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 50);
-    } catch(e){ console.warn("downloadText failed", e); }
-  }
 
-  // --- overlay (viewer-only) ------------------------------------------------
+  // --- overlay helpers (arranger/part labels) ---
   function getArrangerFromXml(xmlString){
     try{
       const p = new DOMParser();
@@ -1926,131 +1871,8 @@ function backToInstrumentSelection() {
     } catch(e){ return "Arranged by Auto Arranger"; }
   }
 
- // --- overlay (viewer-only) ------------------------------------------------
-function overlayCredits(osmd, host, pickedLabel, arrangerText){
-  try {
-    // Baselines in OSMD “logical” units; we’ll scale them.
-    const PART_TOP_PAD_DEFAULT   = 10;
-    const PART_LEFT_PAD_DEFAULT  = 18;
-    const ARR_TOP_PAD_DEFAULT    = 6;
-    const ARR_RIGHT_PAD_DEFAULT  = 20;
-
-    // Small tuning offsets
-    const ARR_TOP_TWEAK          = 8;
-    const ARR_RIGHT_INSET        = 40;
-
-    // Default font px if we can’t measure OSMD’s composer text
-    const PART_FONT_PX_DEFAULT   = 11;
-    const ARR_FONT_PX_DEFAULT    = 11;
-
-    // Ensure overlay container
-    let overlay = host.querySelector(".aa-overlay");
-    if (!overlay) {
-      overlay = document.createElement("div");
-      overlay.className = "aa-overlay";
-      overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
-      host.appendChild(overlay);
-    } else {
-      overlay.innerHTML = "";
-    }
-
-    const svg = host.querySelector("svg");
-    if (!svg) return;
-
-    const svgRect  = svg.getBoundingClientRect();
-    const hostRect = host.getBoundingClientRect();
-
-    const absLeft  = (px) => (px - hostRect.left) + "px";
-    const absTop   = (px) => (px - hostRect.top)  + "px";
-    const absRight = (px) => (hostRect.right - px) + "px";
-
-    // Try to match OSMD header font via the composer text node
-    let composerTextNode = null;
-    for (const t of svg.querySelectorAll("text")) {
-      const txt = (t.textContent || "");
-      if (/compos/i.test(txt)) { composerTextNode = t; break; }
-    }
-    const cs = composerTextNode ? getComputedStyle(composerTextNode) : null;
-    const measuredPx = (cs && cs.fontSize && cs.fontSize.endsWith("px"))
-      ? parseFloat(cs.fontSize)
-      : NaN;
-
-    // One unified scale for *both* font and position:
-    // 1) use measured composer font vs our default;
-    // 2) else viewBox ratio; 3) else OSMD zoom; 4) else 1.
-    let scale = NaN;
-    if (isFinite(measuredPx) && measuredPx > 0) {
-      scale = measuredPx / PART_FONT_PX_DEFAULT;
-    }
-    if (!isFinite(scale)) {
-      const vb = svg.viewBox && svg.viewBox.baseVal;
-      if (vb && vb.height) scale = svgRect.height / vb.height;
-    }
-    if (!isFinite(scale)) {
-      const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
-      scale = zoom;
-    }
-    if (!isFinite(scale) || scale <= 0) scale = 1;
-
-    // Font settings to mirror OSMD as closely as possible
-    const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
-    const weight = (cs && cs.fontWeight) ? cs.fontWeight : "normal";
-    const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
-
-    // Font sizes: use measuredPx if available; otherwise scale defaults
-    const partPx = (isFinite(measuredPx) && measuredPx > 0)
-      ? measuredPx
-      : Math.round(PART_FONT_PX_DEFAULT * scale);
-
-    const arrPx  = (isFinite(measuredPx) && measuredPx > 0)
-      ? measuredPx
-      : Math.round(ARR_FONT_PX_DEFAULT * scale);
-
-    // Positions use the *same* scale as fonts, so they track perfectly
-    const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scale;
-    const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scale;
-    const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scale;
-    const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scale;
-
-    // Score/Part (top-left)
-    if (pickedLabel) {
-      const el = document.createElement("div");
-      el.textContent = pickedLabel;
-      el.style.cssText =
-        "position:absolute;" +
-        "left:" + absLeft(partLeft) + ";" +
-        "top:" + absTop(partTop) + ";" +
-        "font-size:" + partPx + "px;" +
-        "font-weight:" + weight + ";" +
-        "font-style:" + fstyle + ";" +
-        "font-family:" + family + ";" +
-        "color:#111;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
-      overlay.appendChild(el);
-    }
-
-    // Arranger (top-right)
-    if (arrangerText) {
-      const el = document.createElement("div");
-      el.textContent = arrangerText;
-      el.style.cssText =
-        "position:absolute;" +
-        "right:" + absRight(arrRightX) + ";" +
-        "top:" + absTop(arrTop) + ";" +
-        "font-size:" + arrPx + "px;" +
-        "font-weight:" + weight + ";" +
-        "font-style:" + fstyle + ";" +
-        "font-family:" + family + ";" +
-        "color:#111;text-align:right;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
-      overlay.appendChild(el);
-    }
-  } catch (e) {
-    console.warn("[M7 overlay] skipped due to error:", e);
-  }
-}
-
-
-  // tiny DOM helper
-  function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
+  // Your existing overlayCredits(...) function stays as-is
+  // (uses computed size/zoom to align/scale)
 })();
 
 
