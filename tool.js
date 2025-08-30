@@ -1547,9 +1547,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 
-
-
-
 /* =========================================================================
    M7) Final Viewer
    ------------------------------------------------------------------------- */
@@ -1589,6 +1586,9 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     const hasScore = typeof state.combinedScoreXml === "string" && state.combinedScoreXml.length > 0;
     const parts    = sortPartsEvenIfNoPid(partsRaw);
 
+    // A bucket of cleanups we’ll run on Back
+    const cleanupFns = [];
+
     const wrap = ce("div");
     wrap.id = "aa-viewer";
     wrap.style.cssText = "position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;height:100vh;background:rgba(0,0,0,0.08);padding:28px;box-sizing:border-box;overflow:hidden;";
@@ -1597,7 +1597,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     backBtn.textContent = "← Back";
     backBtn.title = "Back to instrument selection";
     backBtn.style.cssText = "position:absolute;top:16px;left:16px;padding:8px 12px;border-radius:8px;border:none;background:#e5e7eb;color:#111;font:600 13px system-ui;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)";
-    backBtn.addEventListener("click", () => backToInstrumentSelection(state));
+    backBtn.addEventListener("click", () => backToInstrumentSelection(state, { cleanupFns, clearViewerState: true }));
     wrap.appendChild(backBtn);
 
     const card = ce("div");
@@ -1629,7 +1629,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     const btnRow = ce("div");
     btnRow.style.cssText = "display:flex;gap:8px;flex-wrap:nowrap;justify-content:center;align-items:center;";
     btnRow.innerHTML = [
-      // visualize button removed — auto-render on selection
+      // Visualize removed – auto-render on select change
       '<button id="aa-btn-pdf" class="aa-btn" disabled>Download PDF</button>',
       '<button id="aa-btn-xml" class="aa-btn" disabled>Download XML</button>',
       '<button id="aa-btn-pdf-all" class="aa-btn">Download PDF All Parts</button>',
@@ -1656,9 +1656,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     const btnXMLAll = btnRow.querySelector("#aa-btn-xml-all");
 
     let lastXml = "";
-
-    // --- overlay scheduling (debounced) ---
     let overlayRaf = 0;
+
     const scheduleOverlay = () => {
       if (overlayRaf) cancelAnimationFrame(overlayRaf);
       overlayRaf = requestAnimationFrame(() => {
@@ -1667,50 +1666,52 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         const pickedLabel = (select.value === "__SCORE__" ? "Score" : select.value) || "";
         const arranger    = getArrangerFromXml(lastXml);
         overlayCredits(osmd, osmdBox, pickedLabel, arranger);
-        ensureOverlayOnTop();
+        ensureOverlayOnTop(osmdBox);
       });
     };
+    cleanupFns.push(() => { if (overlayRaf) cancelAnimationFrame(overlayRaf); overlayRaf = 0; });
 
-    // Lift overlay to top of stacking order (after OSMD injects SVG)
-    function ensureOverlayOnTop() {
-      const ov = osmdBox.querySelector(".aa-overlay");
-      if (ov && ov.parentNode === osmdBox) {
-        osmdBox.appendChild(ov); // re-append to be the last child → highest in this stacking context
-      }
-    }
+    const onResize = () => { fitScoreToHeight(osmd, osmdBox); scheduleOverlay(); };
+    window.addEventListener("resize", onResize);
+    cleanupFns.push(() => window.removeEventListener("resize", onResize));
 
-    // Keep overlay in sync with size and DOM changes (e.g., DevTools open/close)
+    // Keep overlays when layout/svg changes
     const ro = new ResizeObserver(() => {
       fitScoreToHeight(osmd, osmdBox);
       scheduleOverlay();
     });
     ro.observe(osmdBox);
+    cleanupFns.push(() => ro.disconnect());
 
     const mo = new MutationObserver((mutations) => {
       for (const m of mutations) {
-        // Any new SVG or attribute change -> refresh overlay
-        const added = [...m.addedNodes];
-        if (added.some(n => n.nodeName === "SVG" || (n.querySelector && n.querySelector("svg")))) {
-          scheduleOverlay();
-          return;
+        if (m.type === "childList") {
+          const added = [...m.addedNodes];
+          if (added.some(n => n.nodeName === "SVG" || (n.querySelector && n.querySelector("svg")))) {
+            scheduleOverlay();
+            return;
+          }
         }
-        if (m.target && (m.target.nodeName === "SVG" || (m.target.querySelector && m.target.querySelector("svg")))) {
+        if (m.type === "attributes" && (m.target.nodeName === "svg" || m.target.nodeName === "SVG")) {
           scheduleOverlay();
           return;
         }
       }
     });
     mo.observe(osmdBox, { childList: true, subtree: true, attributes: true });
+    cleanupFns.push(() => mo.disconnect());
 
-    window.addEventListener("resize", () => {
-      fitScoreToHeight(osmd, osmdBox);
-      scheduleOverlay();
-    });
+    // Auto render on selection change
+    select.addEventListener("change", renderSelection);
 
-    // --- selection rendering (auto) ---
-    async function renderSelection(choiceValue){
-      const { xml } = pickXml(choiceValue);
-      if (!xml) { alert("No XML found to visualize."); return; }
+    async function renderSelection(){
+      const { xml } = pickXml(select.value);
+      if (!xml) {
+        btnPDF.disabled = true; btnXML.disabled = true;
+        lastXml = "";
+        overlayCleanup(osmdBox);
+        return;
+      }
       try {
         lastXml = ensureTitle(xml, songName);
         const processed = transformXmlForSlashes(lastXml);
@@ -1723,18 +1724,21 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         btnPDF.disabled = false;
         btnXML.disabled = false;
         scheduleOverlay();
-        ensureOverlayOnTop();
       } catch(e){
         console.error("[finalViewer] render failed", e);
         alert("Failed to render this selection.");
       }
     }
 
-    // Auto-render on dropdown change and once on init
-    select.addEventListener("change", () => renderSelection(select.value));
-    requestAnimationFrame(() => renderSelection(select.value));
+    // Render first item immediately
+    setTimeout(() => {
+      // default to Score if present, else first part
+      if (select.options.length > 0) {
+        select.selectedIndex = 0;
+        renderSelection();
+      }
+    }, 0);
 
-    // --- buttons ---
     btnPDF.addEventListener("click", async () => {
       if (!lastXml) { alert("Load a score/part first."); return; }
       const base = (select.value === "__SCORE__" ? "Score" : select.value);
@@ -1769,6 +1773,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         }catch(e){ console.error("[finalViewer] PDF all parts failed on", p.instrumentName, e); }
       }
       if (doc) doc.save(docName);
+      scheduleOverlay(); // ensure overlay restored after all-parts pass
     });
 
     btnXMLAll.addEventListener("click", async () => {
@@ -1786,6 +1791,16 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       const list = Array.isArray(s.arrangedFiles) ? s.arrangedFiles : [];
       const hit = list.find(f => (f.instrumentName || f.baseName) === choice);
       return { xml: (hit && hit.xml) || "" };
+    }
+
+    // Make sure overlay remains top-most inside osmdBox
+    function ensureOverlayOnTop(host){
+      const ov = host.querySelector(".aa-overlay");
+      if (ov && ov.parentNode === host) host.appendChild(ov);
+    }
+    function overlayCleanup(host){
+      const ov = host.querySelector(".aa-overlay");
+      if (ov) ov.innerHTML = "";
     }
   }
 
@@ -1818,15 +1833,41 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
     pdf.save(safe(baseName || "score") + ".pdf");
   }
-  function backToInstrumentSelection(prevState){
-    const packName = (prevState && (prevState.pack || (prevState.selectedPack && prevState.selectedPack.name))) || "";
-    const songName = (prevState && (prevState.song || (prevState.selectedSong && prevState.selectedSong.name))) || "";
-    setState({ pack: packName, song: songName, packIndex: getState().packIndex, songIndex: getState().songIndex, timestamp: Date.now() });
-    document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
-    hideArrangingLoading();
-    qs("step1") && qs("step1").classList.add("hidden");
-    qs("step2") && qs("step2").classList.add("hidden");
-    qs("step3") && qs("step3").classList.remove("hidden");
+  function backToInstrumentSelection(prevState, opts){
+    try {
+      const cleanup = (opts && opts.cleanupFns) || [];
+      cleanup.forEach(fn => { try { fn(); } catch(_){} });
+
+      // Clear heavy/derived viewer state so earlier steps behave
+      mergeState({
+        arrangedFiles: [],
+        combinedScoreXml: "",
+        assignedResults: [],
+        groupedParts: []
+      });
+
+      // Remove the viewer UI completely
+      document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
+      hideArrangingLoading();
+
+      // Return to Step 3 (instrument picker) cleanly
+      const packName = (prevState && (prevState.pack || (prevState.selectedPack && prevState.selectedPack.name))) || "";
+      const songName = (prevState && (prevState.song || (prevState.selectedSong && prevState.selectedSong.name))) || "";
+      setState({
+        pack: packName,
+        song: songName,
+        packIndex: getState().packIndex,
+        songIndex: getState().songIndex,
+        timestamp: Date.now()
+      });
+
+      qs("step1") && qs("step1").classList.add("hidden");
+      qs("step2") && qs("step2").classList.add("hidden");
+      qs("step3") && qs("step3").classList.remove("hidden");
+      if (typeof setWizardStage === "function") setWizardStage("instruments");
+    } catch(e){
+      console.warn("[finalViewer] back cleanup failed", e);
+    }
   }
   function fitScoreToHeight(osmd, host){
     const svg = host.querySelector("svg"); if (!svg) return;
@@ -1886,7 +1927,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     } catch(e){ console.warn("downloadText failed", e); }
   }
 
-  // --- overlay helpers ------------------------------------------------------
+  // --- overlay (viewer-only) ------------------------------------------------
   function getArrangerFromXml(xmlString){
     try{
       const p = new DOMParser();
@@ -1907,10 +1948,10 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     } catch(e){ return "Arranged by Auto Arranger"; }
   }
 
-  // Viewer-only overlay (part/score at top-left, arranger at top-right)
+  // Robust overlay that scales/positions with OSMD
   function overlayCredits(osmd, host, pickedLabel, arrangerText){
     try {
-      // Tunable baselines
+      // --- Tunable baselines
       const PART_TOP_PAD_DEFAULT   = 10;
       const PART_LEFT_PAD_DEFAULT  = 18;
       const ARR_TOP_PAD_DEFAULT    = 6;
@@ -1920,7 +1961,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       const ARR_TOP_TWEAK          = 8;
       const ARR_RIGHT_INSET        = 40;
 
-      // Default font sizes (if we can't measure)
       const PART_FONT_PX_DEFAULT   = 11;
       const ARR_FONT_PX_DEFAULT    = 11;
 
@@ -1929,8 +1969,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       if (!overlay) {
         overlay = document.createElement("div");
         overlay.className = "aa-overlay";
-        // Huge z-index so it stays visible even after reflows/DevTools
-        overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2147483647;";
+        overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
         host.appendChild(overlay);
       } else {
         overlay.innerHTML = "";
@@ -1946,7 +1985,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       const absTop   = (px) => (px - hostRect.top)  + "px";
       const absRight = (px) => (hostRect.right - px) + "px";
 
-      // Try to match OSMD font from a visible "composer" text node
+      // Try to match an OSMD composer text node (for font metrics)
       let composerTextNode = null;
       for (const t of svg.querySelectorAll("text")) {
         const txt = (t.textContent || "");
@@ -1975,6 +2014,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       const partPx = (isFinite(measuredPx) && measuredPx > 0)
         ? Math.round(measuredPx)
         : Math.round(PART_FONT_PX_DEFAULT * (scalePos || 1));
+
       const arrPx  = (isFinite(measuredPx) && measuredPx > 0)
         ? Math.round(measuredPx)
         : Math.round(ARR_FONT_PX_DEFAULT * (scalePos || 1));
@@ -2024,7 +2064,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   // tiny DOM helper
   function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
 })();
-
 
 
 
