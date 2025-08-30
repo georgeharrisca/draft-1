@@ -1545,8 +1545,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 
-
-
 /* =========================================================================
    M7) Final Viewer
    ------------------------------------------------------------------------- */
@@ -1629,7 +1627,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     const btnRow = ce("div");
     btnRow.style.cssText = "display:flex;gap:8px;flex-wrap:nowrap;justify-content:center;align-items:center;";
     btnRow.innerHTML = [
-      // Visualize removed – auto-render on select change
       '<button id="aa-btn-pdf" class="aa-btn" disabled>Download PDF</button>',
       '<button id="aa-btn-xml" class="aa-btn" disabled>Download XML</button>',
       '<button id="aa-btn-pdf-all" class="aa-btn">Download PDF All Parts</button>',
@@ -1675,7 +1672,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     window.addEventListener("resize", onResize);
     cleanupFns.push(() => window.removeEventListener("resize", onResize));
 
-    // Keep overlays when layout/svg changes
     const ro = new ResizeObserver(() => {
       fitScoreToHeight(osmd, osmdBox);
       scheduleOverlay();
@@ -1701,7 +1697,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     mo.observe(osmdBox, { childList: true, subtree: true, attributes: true });
     cleanupFns.push(() => mo.disconnect());
 
-    // Auto render on selection change
     select.addEventListener("change", renderSelection);
 
     async function renderSelection(){
@@ -1732,7 +1727,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
     // Render first item immediately
     setTimeout(() => {
-      // default to Score if present, else first part
       if (select.options.length > 0) {
         select.selectedIndex = 0;
         renderSelection();
@@ -1773,7 +1767,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         }catch(e){ console.error("[finalViewer] PDF all parts failed on", p.instrumentName, e); }
       }
       if (doc) doc.save(docName);
-      scheduleOverlay(); // ensure overlay restored after all-parts pass
+      scheduleOverlay();
     });
 
     btnXMLAll.addEventListener("click", async () => {
@@ -1793,7 +1787,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       return { xml: (hit && hit.xml) || "" };
     }
 
-    // Make sure overlay remains top-most inside osmdBox
     function ensureOverlayOnTop(host){
       const ov = host.querySelector(".aa-overlay");
       if (ov && ov.parentNode === host) host.appendChild(ov);
@@ -1833,12 +1826,14 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
     pdf.save(safe(baseName || "score") + ".pdf");
   }
+
   function backToInstrumentSelection(prevState, opts){
     try {
       const cleanup = (opts && opts.cleanupFns) || [];
       cleanup.forEach(fn => { try { fn(); } catch(_){} });
 
-      // Clear heavy/derived viewer state so earlier steps behave
+      // Clear heavy/derived viewer state so earlier steps behave,
+      // but DO NOT nuke instrumentData/libraryData.
       mergeState({
         arrangedFiles: [],
         combinedScoreXml: "",
@@ -1850,25 +1845,33 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
       hideArrangingLoading();
 
-      // Return to Step 3 (instrument picker) cleanly
+      // Restore minimal fields without clobbering state (use mergeState, not setState)
       const packName = (prevState && (prevState.pack || (prevState.selectedPack && prevState.selectedPack.name))) || "";
       const songName = (prevState && (prevState.song || (prevState.selectedSong && prevState.selectedSong.name))) || "";
-      setState({
+      mergeState({
         pack: packName,
         song: songName,
-        packIndex: getState().packIndex,
-        songIndex: getState().songIndex,
+        packIndex: getState().packIndex ?? null,
+        songIndex: getState().songIndex ?? null,
         timestamp: Date.now()
       });
 
+      // Show Step 3
       qs("step1") && qs("step1").classList.add("hidden");
       qs("step2") && qs("step2").classList.add("hidden");
       qs("step3") && qs("step3").classList.remove("hidden");
-      if (typeof setWizardStage === "function") setWizardStage("instruments");
+
+      if (typeof setWizardStage === "function") {
+        setWizardStage("instruments");
+      } else {
+        // gentle nudge if the app relies on the wizard:stage signal
+        AA.emit("wizard:stage", "instruments");
+      }
     } catch(e){
       console.warn("[finalViewer] back cleanup failed", e);
     }
   }
+
   function fitScoreToHeight(osmd, host){
     const svg = host.querySelector("svg"); if (!svg) return;
     const maxH = host.clientHeight; if (!maxH) return;
@@ -1948,23 +1951,17 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     } catch(e){ return "Arranged by Auto Arranger"; }
   }
 
-  // Robust overlay that scales/positions with OSMD
   function overlayCredits(osmd, host, pickedLabel, arrangerText){
     try {
-      // --- Tunable baselines
       const PART_TOP_PAD_DEFAULT   = 10;
       const PART_LEFT_PAD_DEFAULT  = 18;
       const ARR_TOP_PAD_DEFAULT    = 6;
       const ARR_RIGHT_PAD_DEFAULT  = 20;
-
-      // Fine-tune
       const ARR_TOP_TWEAK          = 8;
       const ARR_RIGHT_INSET        = 40;
-
       const PART_FONT_PX_DEFAULT   = 11;
       const ARR_FONT_PX_DEFAULT    = 11;
 
-      // Container
       let overlay = host.querySelector(".aa-overlay");
       if (!overlay) {
         overlay = document.createElement("div");
@@ -1985,7 +1982,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       const absTop   = (px) => (px - hostRect.top)  + "px";
       const absRight = (px) => (hostRect.right - px) + "px";
 
-      // Try to match an OSMD composer text node (for font metrics)
       let composerTextNode = null;
       for (const t of svg.querySelectorAll("text")) {
         const txt = (t.textContent || "");
@@ -1995,7 +1991,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       const measuredPx = (cs && cs.fontSize && cs.fontSize.endsWith("px"))
         ? parseFloat(cs.fontSize) : NaN;
 
-      // Position scale: prefer viewBox ratio; else OSMD zoom; else 1
       let scalePos = NaN;
       const vb = svg.viewBox && svg.viewBox.baseVal;
       if (vb && vb.height) {
@@ -2006,7 +2001,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         scalePos = zoom;
       }
 
-      // Font settings
       const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
       const weight = (cs && cs.fontWeight) ? cs.fontWeight : "normal";
       const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
@@ -2019,13 +2013,11 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         ? Math.round(measuredPx)
         : Math.round(ARR_FONT_PX_DEFAULT * (scalePos || 1));
 
-      // Pinned positions
       const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scalePos;
       const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scalePos;
       const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scalePos;
       const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scalePos;
 
-      // Score/Part (top-left)
       if (pickedLabel) {
         const el = document.createElement("div");
         el.textContent = pickedLabel;
@@ -2041,7 +2033,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         overlay.appendChild(el);
       }
 
-      // Arranger (top-right, pinned near top with inset)
       if (arrangerText) {
         const el = document.createElement("div");
         el.textContent = arrangerText;
@@ -2061,10 +2052,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     }
   }
 
-  // tiny DOM helper
   function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
 })();
-
 
 
 
