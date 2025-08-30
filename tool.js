@@ -2459,6 +2459,116 @@ function fitScoreToHeight(osmd, host, shrinkFactor = 1) {
 
 
 
+/* =========================================================================
+   M9) Paged Viewer (Letter frames + horizontal page flow)
+   ------------------------------------------------------------------------- */
+(function(){
+  // Minimal CSS for page frames
+  (function ensurePagerCss(){
+    if (document.getElementById("aa-pager-css")) return;
+    const st = document.createElement("style");
+    st.id = "aa-pager-css";
+    st.textContent = `
+      /* Container already has overflow-x:auto and white-space:nowrap from M7 */
+      #aa-osmd-box .aa-pagewrap{
+        display:inline-block;
+        vertical-align:top;
+        margin-right:16px;
+        background:#fff;
+        border:1px solid #e5e5e5;
+        border-radius:10px;
+        box-shadow:0 6px 20px rgba(0,0,0,.12);
+        overflow:hidden;
+        position:relative;
+      }
+      #aa-osmd-box .aa-pagewrap > svg{
+        display:block;    /* prevent extra whitespace */
+      }
+      /* remove accidental breaks that could stack pages vertically */
+      #aa-osmd-box br { display:none !important; }
+    `;
+    document.head.appendChild(st);
+  })();
+
+  // Wrap each OSMD page <svg> in a page frame (inline block) → horizontal flow
+  function framePagesHorizontally(host){
+    if (!host) return;
+    // OSMD creates one <svg> per page in SVG backend. We wrap each once.
+    const svgs = host.querySelectorAll("svg");
+    svgs.forEach(svg => {
+      if (svg.closest(".aa-pagewrap")) return; // already framed
+      const frame = document.createElement("div");
+      frame.className = "aa-pagewrap";
+      svg.parentNode.insertBefore(frame, svg);
+      frame.appendChild(svg);
+    });
+    // Keep overlay on top if present (M7 helper)
+    const overlay = host.querySelector(".aa-overlay");
+    if (overlay && overlay.parentNode === host) host.appendChild(overlay);
+  }
+
+  // Observe renders and re-wrap automatically
+  function installObserver(host){
+    // Frame once immediately (in case pages already there)
+    framePagesHorizontally(host);
+
+    const mo = new MutationObserver(muts => {
+      let needs = false;
+      for (const m of muts) {
+        if (m.type === "childList") {
+          // new pages (svgs) or containers added — re-frame
+          if ([...m.addedNodes].some(n => n.nodeName === "SVG" || (n.querySelector && n.querySelector("svg")))) {
+            needs = true; break;
+          }
+        }
+      }
+      if (needs) requestAnimationFrame(() => framePagesHorizontally(host));
+    });
+    mo.observe(host, { childList:true, subtree:true });
+
+    // Clean up when viewer is removed
+    const onRemove = () => {
+      if (!document.body.contains(host)) {
+        mo.disconnect();
+        document.removeEventListener("aa:viewer:maybe-removed", onRemove);
+      }
+    };
+    document.addEventListener("aa:viewer:maybe-removed", onRemove);
+  }
+
+  // Try to hook in whenever the viewer is (re)built
+  function attachIfReady(){
+    const box = document.getElementById("aa-osmd-box");
+    if (box && !box.dataset.m9Pager) {
+      box.dataset.m9Pager = "1";
+      // Ensure side-scroll and nowrap are enforced (M7 already sets; this is defensive)
+      box.style.overflowX = "auto";
+      box.style.whiteSpace = "nowrap";
+      installObserver(box);
+    }
+  }
+
+  // When the combined score is ready, M7 builds the viewer — hook in then.
+  AA.on("combine:done", attachIfReady);
+
+  // Also attempt on DOM ready (in case viewer is created later)
+  document.addEventListener("DOMContentLoaded", () => {
+    // poll a couple of frames after layout to be safe
+    let tries = 0;
+    const tick = () => {
+      attachIfReady();
+      if (++tries < 20 && !document.getElementById("aa-osmd-box")) {
+        requestAnimationFrame(tick);
+      }
+    };
+    requestAnimationFrame(tick);
+  });
+
+  // Notify our cleanup listener when viewer is torn down
+  AA.on && AA.on("viewer:destroy", () => {
+    document.dispatchEvent(new Event("aa:viewer:maybe-removed"));
+  });
+})();
 
 
    
