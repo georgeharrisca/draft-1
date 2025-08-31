@@ -2784,94 +2784,87 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M9) Viewer Page Frames (Letter) + Horizontal Pagination
+   M9) Viewer Page Frames (Letter) + Horizontal Pagination + Masking
    ------------------------------------------------------------------------- */
 ;(function () {
   const LETTER_RATIO   = 8.5 / 11; // width / height
   const GAP_BETWEEN    = 28;       // px gap between page frames
   const TOP_BOTTOM_PAD = 12;       // px inset from host top/bottom for frames
+  const CORNER_RAD     = 8;        // page corner radius (matches frame)
 
   function ensureFrames(host) {
     try {
       if (!host) return;
 
-      // make sure the host can layer children
-      const hostCS = getComputedStyle(host);
-      if (hostCS.position === "static") host.style.position = "relative";
+      // host must be a stacking context
+      const cs = getComputedStyle(host);
+      if (cs.position === "static") host.style.position = "relative";
 
       const svg = host.querySelector("svg");
       if (!svg) return;
 
-      // Find the OSMD render wrapper that is a direct child of host and contains the SVG.
-      // This avoids relying on z-index on the <svg> itself (SVG/HTML stacking can be quirky).
+      // find the direct child wrapper that contains the SVG (OSMD render layer)
       let renderLayer = svg;
       let cur = svg;
       while (cur && cur.parentElement && cur.parentElement !== host) {
         cur = cur.parentElement;
       }
-      if (cur && cur.parentElement === host) {
-        renderLayer = cur; // this is the direct-child wrapper that contains the SVG
-      }
+      if (cur && cur.parentElement === host) renderLayer = cur;
 
-      // Layer ordering:
-      // frames (z=0)  <  renderLayer with SVG (z=1)  <  overlay titles (z=3)
       renderLayer.style.position = "relative";
-      renderLayer.style.zIndex   = "1";
+      renderLayer.style.zIndex   = "1"; // above frames
 
-      // Ensure frames container exists and is the FIRST child
+      // frames container as FIRST child (always behind)
       let frames = host.querySelector(".aa-pageframes");
       if (!frames) {
         frames = document.createElement("div");
         frames.className = "aa-pageframes";
         frames.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:0;";
-        host.insertBefore(frames, host.firstChild); // prepend => always behind
+        host.insertBefore(frames, host.firstChild);
       } else if (frames !== host.firstChild) {
-        // If it drifted, put it back at the front to guarantee it's behind
         host.insertBefore(frames, host.firstChild);
       }
 
-      // Keep overlay above everything
+      // overlay stays on top
       const ov = host.querySelector(".aa-overlay");
-      if (ov) {
-        ov.style.position = "absolute";
-        ov.style.zIndex = "3";
-      }
+      if (ov) { ov.style.position = "absolute"; ov.style.zIndex = "3"; }
 
-      // actual drawn size
+      // measure drawing
       const svgRect = svg.getBoundingClientRect();
-      if (!svgRect.height || !svgRect.width) return;
+      if (!svgRect.width || !svgRect.height) return;
 
-      const pageH    = Math.max(1, Math.floor(svgRect.height)); // px
+      const pageH    = Math.max(1, Math.floor(svgRect.height));
       const pageW    = Math.max(1, Math.floor(pageH * LETTER_RATIO));
       const contentW = Math.max(1, Math.floor(svgRect.width));
       const count    = Math.max(1, Math.ceil(contentW / pageW));
 
-      // add/remove frames to match count
-      const current = frames.children.length;
-      if (current < count) {
-        for (let i = current; i < count; i++) {
+      // add/remove frames
+      const curFrames = frames.children.length;
+      if (curFrames < count) {
+        for (let i = curFrames; i < count; i++) {
           const f = document.createElement("div");
           f.className = "aa-pageframe";
           f.style.cssText =
             "position:absolute;" +
-            "border-radius:8px;background:#fff;" +
+            "border-radius:"+CORNER_RAD+"px;background:#fff;" +
             "box-shadow:0 4px 28px rgba(0,0,0,.12);" +
             "outline:1px solid rgba(0,0,0,.06);";
           frames.appendChild(f);
         }
-      } else if (current > count) {
-        for (let i = 0; i < current - count; i++) {
-          frames.lastChild && frames.lastChild.remove();
+      } else if (curFrames > count) {
+        for (let i = 0; i < curFrames - count; i++) {
+          frames.lastChild?.remove();
         }
       }
 
+      // placement consistent with viewer padding
       const leftPad = Math.max(
         14,
         parseInt(getComputedStyle(host).paddingLeft || "0", 10)
       );
       const usableH = Math.max(1, pageH - TOP_BOTTOM_PAD * 2);
 
-      // position frames as a horizontal row
+      // position frames
       [...frames.children].forEach((f, idx) => {
         const x = leftPad + idx * (pageW + GAP_BETWEEN);
         f.style.left   = x + "px";
@@ -2879,12 +2872,46 @@ function ensureXmlHeader(xml) {
         f.style.width  = pageW + "px";
         f.style.height = usableH + "px";
       });
+
+      // ---------- mask the render layer (and overlay) to page rects ----------
+      // Build an SVG mask the size of the host. White = visible, black = hidden.
+      const hostW = host.clientWidth;
+      const hostH = host.clientHeight;
+
+      let maskSVG =
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${hostW}" height="${hostH}" viewBox="0 0 ${hostW} ${hostH}">` +
+        `<rect width="100%" height="100%" fill="black"/>`;
+
+      for (let idx = 0; idx < count; idx++) {
+        const x = leftPad + idx * (pageW + GAP_BETWEEN);
+        maskSVG += `<rect x="${x}" y="${TOP_BOTTOM_PAD}" width="${pageW}" height="${usableH}" rx="${CORNER_RAD}" ry="${CORNER_RAD}" fill="white"/>`;
+      }
+      maskSVG += `</svg>`;
+
+      const url = `url("data:image/svg+xml;utf8,${encodeURIComponent(maskSVG)}")`;
+
+      // apply mask to the OSMD render layer
+      renderLayer.style.maskImage = url;
+      renderLayer.style.maskRepeat = "no-repeat";
+      renderLayer.style.maskSize = "100% 100%";
+      renderLayer.style.webkitMaskImage = url;      // Safari
+      renderLayer.style.webkitMaskRepeat = "no-repeat";
+      renderLayer.style.webkitMaskSize = "100% 100%";
+
+      // also mask overlay so titles don't spill outside pages
+      if (ov) {
+        ov.style.maskImage = url;
+        ov.style.maskRepeat = "no-repeat";
+        ov.style.maskSize = "100% 100%";
+        ov.style.webkitMaskImage = url;
+        ov.style.webkitMaskRepeat = "no-repeat";
+        ov.style.webkitMaskSize = "100% 100%";
+      }
     } catch (e) {
       console.warn("[M9] ensureFrames skipped:", e);
     }
   }
 
-  // observe the viewer box and its content so frames stay in sync
   function hookHost(host) {
     if (!host || host._m9Hooked) return;
     host._m9Hooked = true;
@@ -2894,31 +2921,23 @@ function ensureXmlHeader(xml) {
 
     const mo = new MutationObserver((muts) => {
       for (const m of muts) {
-        if (m.type === "childList") {
-          // new SVG or re-render — refresh frames
-          ensureFrames(host);
-          return;
-        }
+        if (m.type === "childList") { ensureFrames(host); return; }
       }
     });
     mo.observe(host, { childList: true, subtree: true });
 
-    // stash for optional cleanup
     host._m9ro = ro;
     host._m9mo = mo;
 
-    // initial paint
     ensureFrames(host);
   }
 
-  // If the viewer is already present
   function tryHookNow() {
     const host = document.getElementById("aa-osmd-box");
     if (host) hookHost(host);
   }
   document.addEventListener("DOMContentLoaded", tryHookNow);
 
-  // If the viewer appears later, catch it
   const docMO = new MutationObserver((muts) => {
     for (const m of muts) {
       for (const n of m.addedNodes) {
@@ -2933,7 +2952,7 @@ function ensureXmlHeader(xml) {
   });
   docMO.observe(document.documentElement, { childList: true, subtree: true });
 
-  // React after each render (M7 emits this)
+  // after each M7 render, refresh frames/mask
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => ensureFrames(host));
   }
