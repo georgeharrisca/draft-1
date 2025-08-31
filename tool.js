@@ -1867,7 +1867,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     }
   }
 
- /* ===== helper: force bars-per-system by inserting MusicXML system breaks ===== */
+/* ===== helper: force bars-per-system by inserting MusicXML system breaks ===== */
 function forceBarsPerSystem(xmlString, N){
   try{
     const parser = new DOMParser();
@@ -1918,49 +1918,6 @@ function forceBarsPerSystem(xmlString, N){
   }
 }
 
-
-      // Collect measure numbers to break on from the first part
-      const firstMeasures = Array.from(parts[0].getElementsByTagName("measure"));
-      const breakNums = new Set();
-      for (let i = 0; i < firstMeasures.length; i++) {
-        if (i % N === 0) {
-          const num = firstMeasures[i].getAttribute("number") || String(i+1);
-          breakNums.add(num);
-        }
-      }
-
-      // Remove existing new-system/new-page print tags to avoid conflicts
-      parts.forEach(p => {
-        Array.from(p.getElementsByTagName("measure")).forEach(m => {
-          Array.from(m.getElementsByTagName("print")).forEach(pr => {
-            const ns = pr.getAttribute("new-system");
-            const np = pr.getAttribute("new-page");
-            if ((ns && ns.toLowerCase() === "yes") || (np && np.toLowerCase() === "yes")) {
-              pr.parentNode.removeChild(pr);
-            }
-          });
-        });
-      });
-
-      // Insert new-system prints at the chosen measures for every part
-      parts.forEach(p => {
-        const measures = Array.from(p.getElementsByTagName("measure"));
-        measures.forEach((m, idx) => {
-          const num = m.getAttribute("number") || String(idx+1);
-          if (breakNums.has(num)) {
-            const printEl = doc.createElement("print");
-            printEl.setAttribute("new-system","yes");
-            m.insertBefore(printEl, m.firstChild);
-          }
-        });
-      });
-
-      return new XMLSerializer().serializeToString(doc);
-    } catch(e){
-      console.warn("[M7] forceBarsPerSystem failed, returning original XML", e);
-      return xmlString;
-    }
-  }
 
   /* ===== zip helpers ===== */
   async function renderXmlToPdfArrayBuffer(osmdInstance, hostBox, xmlString){
