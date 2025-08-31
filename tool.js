@@ -1799,8 +1799,10 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     mo.observe(osmdBox, { childList: true, subtree: true });
     cleanupFns.push(() => mo.disconnect());
 
-    // Back button (full reset to first screen)
-    backBtn.addEventListener("click", () => backToFreshStart({ cleanupFns }));
+  backBtn.addEventListener("click", () => {
+  // send the current state so we can preserve pack/song
+  backToInstrumentSelection(getState(), { cleanupFns });
+});
 
     // Change selection
     select.addEventListener("change", renderSelection);
@@ -1959,21 +1961,60 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       renderSelection();
     }
 
-    // Back → full app reset to first screen
-    function backToFreshStart({ cleanupFns = [] } = {}) {
-      try { cleanupFns.forEach(fn => { try { fn(); } catch(_){} }); } catch(_) {}
-      try { document.getElementById("aa-viewer")?.remove(); } catch(_) {}
+ function backToInstrumentSelection(prevState, { cleanupFns = [] } = {}) {
+  // 1) tear down viewer safely
+  try { cleanupFns.forEach(fn => { try { fn(); } catch(_){} }); } catch(_) {}
+  try { document.getElementById("aa-viewer")?.remove(); } catch(_) {}
+  try { document.getElementById("aa-osmd-ghost")?.remove(); } catch(_) {}
 
-      setState({
-        packIndex: null, pack: null,
-        songIndex: null, song: null, selectedSong: null,
-        instrumentSelections: [],
-        parts: [], assignedResults: [], groupedAssignments: [],
-        arrangedFiles: [], combinedScoreXml: "",
-        barsPerSystem: 0,
-        arrangeDone: false, renameDone: false, reassignByScoreDone: false, combineDone: false,
-        timestamp: Date.now()
-      });
+  // 2) keep library + song, clear everything else
+  const keep = {
+    packIndex: prevState?.packIndex ?? null,
+    pack:      prevState?.pack ?? null,
+    songIndex: prevState?.songIndex ?? null,
+    song:      prevState?.song ?? null,
+    selectedSong: prevState?.selectedSong ?? null
+  };
+
+  setState({
+    ...keep,
+    // let the user re-pick instruments
+    instrumentSelections: [],
+
+    // nuke pipeline artifacts
+    parts: [],
+    assignedResults: [],
+    groupedAssignments: [],
+    arrangedFiles: [],
+    combinedScoreXml: "",
+
+    // viewer prefs & pipeline flags
+    barsPerSystem: 0,
+    arrangeDone: false,
+    renameDone: false,
+    reassignByScoreDone: false,
+    combineDone: false,
+
+    timestamp: Date.now()
+  });
+
+  // 3) show Step 3 (instrument selection)
+  if (typeof setWizardStage === "function") {
+    setWizardStage("instruments");
+  } else {
+    // fallback: manual show/hide
+    document.getElementById("step1")?.classList.add("hidden");
+    document.getElementById("step2")?.classList.add("hidden");
+    document.getElementById("step3")?.classList.remove("hidden");
+  }
+
+  // 4) let other modules refresh if they listen
+  if (AA && typeof AA.emit === "function") {
+    AA.emit("viewer:closed");
+    AA.emit("viewer:backToInstruments");
+  }
+}
+
 
       try {
         const libSel = typeof libSelectEl === "function" ? libSelectEl() : null;
