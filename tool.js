@@ -1623,7 +1623,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 /* =========================================================================
-   M7) Final Viewer  — with orange “Bars Per System” controls + 90% fit
+   M7) Final Viewer — 90% vertical fit, horizontal scroll, ZIP exports,
+                       orange "Bars Per System" buttons (4/8/12/16)
    ------------------------------------------------------------------------- */
 ;(function () {
   AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
@@ -1650,7 +1651,168 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   function lookupGlobal(name){
     return name.split(".").reduce((o,k)=> (o && o[k]!=null) ? o[k] : null, window);
   }
+  function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
 
+  // ---- local polyfills (only if not already defined globally) ---------------
+  const ensureTitle = (typeof window.ensureTitle === "function")
+    ? window.ensureTitle
+    : function ensureTitleLocal(xmlString, title){
+        try {
+          const doc = new DOMParser().parseFromString(String(xmlString), "application/xml");
+          const hasMovement = !!doc.querySelector("movement-title");
+          const hasWork     = !!doc.querySelector("work > work-title");
+          if (!hasMovement && !hasWork) {
+            const root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
+            const mv = doc.createElement("movement-title");
+            mv.textContent = title || "Auto Arranger Score";
+            root.insertBefore(mv, root.firstChild);
+          }
+          return new XMLSerializer().serializeToString(doc);
+        } catch { return xmlString; }
+      };
+
+  const transformXmlForSlashes = (typeof window.transformXmlForSlashes === "function")
+    ? window.transformXmlForSlashes
+    : function transformXmlForSlashesLocal(xmlString){
+        try {
+          const xmlDoc = new DOMParser().parseFromString(String(xmlString), "application/xml");
+          xmlDoc.querySelectorAll("lyric").forEach(n => n.remove());
+          return new XMLSerializer().serializeToString(xmlDoc);
+        } catch { return xmlString; }
+      };
+
+  const withXmlProlog = (typeof window.withXmlProlog === "function")
+    ? window.withXmlProlog
+    : function withXmlPrologLocal(str){
+        if (!str) return str;
+        let s = String(str).replace(/^\uFEFF/, "").replace(/^\s+/, "");
+        if (!/^\<\?xml/i.test(s)) s = `<?xml version="1.0" encoding="UTF-8"?>\n` + s;
+        return s;
+      };
+
+  // ---- Bars per system (inject MusicXML <print new-system="yes">) -----------
+  function applyBarsPerSystem(xmlString, barsPerSystem){
+    if (!barsPerSystem || !isFinite(barsPerSystem) || barsPerSystem <= 0) return xmlString;
+    try {
+      const doc = new DOMParser().parseFromString(String(xmlString), "application/xml");
+      const ns  = doc.documentElement.namespaceURI || null;
+      // remove existing <print> to avoid conflicts
+      doc.querySelectorAll("measure > print").forEach(n => n.remove());
+
+      doc.querySelectorAll("part").forEach(partEl => {
+        const measures = Array.from(partEl.querySelectorAll(":scope > measure"));
+        for (let i = 0; i < measures.length; i++){
+          if (i === 0) continue; // first system starts naturally
+          if (i % barsPerSystem === 0) {
+            const m = measures[i];
+            const print = doc.createElementNS(ns, "print");
+            print.setAttribute("new-system", "yes");
+            // insert at top of measure (before notes)
+            m.insertBefore(print, m.firstChild);
+          }
+        }
+      });
+      return new XMLSerializer().serializeToString(doc);
+    } catch (e) {
+      console.warn("[M7] applyBarsPerSystem failed", e);
+      return xmlString;
+    }
+  }
+
+  // ---- overlay (viewer-only, non-destructive) --------------------------------
+  function getArrangerFromXml(xmlString){
+    try{
+      const doc = new DOMParser().parseFromString(xmlString || "", "application/xml");
+      let arr = "";
+      doc.querySelectorAll("credit").forEach(c => {
+        const t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
+        if (!arr && t === "arranger") {
+          const w = c.querySelector("credit-words");
+          arr = (w && w.textContent || "").trim();
+        }
+      });
+      if (!arr) {
+        const fallback = doc.querySelector('identification > creator[type="arranger"]');
+        if (fallback) arr = (fallback.textContent || "").trim();
+      }
+      return arr || "Arranged by Auto Arranger";
+    } catch(e){ return "Arranged by Auto Arranger"; }
+  }
+
+  function overlayCredits(osmd, host, pickedLabel, arrangerText){
+    try{
+      const PART_TOP_PAD_DEFAULT   = 10;
+      const PART_LEFT_PAD_DEFAULT  = 18;
+      const ARR_TOP_PAD_DEFAULT    = 6;
+      const ARR_RIGHT_PAD_DEFAULT  = 20;
+      const ARR_TOP_TWEAK          = 8;
+      const ARR_RIGHT_INSET        = 40;
+      const PART_FONT_PX_DEFAULT   = 11;
+      const ARR_FONT_PX_DEFAULT    = 11;
+
+      // container
+      let overlay = host.querySelector(".aa-overlay");
+      if (!overlay) {
+        overlay = document.createElement("div");
+        overlay.className = "aa-overlay";
+        overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
+        host.appendChild(overlay);
+      } else {
+        overlay.innerHTML = "";
+      }
+
+      const svg = host.querySelector("svg");
+      if (!svg) return;
+
+      const svgRect  = svg.getBoundingClientRect();
+      const hostRect = host.getBoundingClientRect();
+
+      let scalePos = NaN;
+      const vb = svg.viewBox && svg.viewBox.baseVal;
+      if (vb && vb.height) { scalePos = svgRect.height / vb.height; }
+      if (!scalePos || !isFinite(scalePos)) {
+        const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
+        scalePos = zoom;
+      }
+
+      // try to infer font
+      let compNode = null;
+      for (const t of svg.querySelectorAll("text")) {
+        const txt = (t.textContent||"");
+        if (/compos/i.test(txt)) { compNode = t; break; }
+      }
+      const cs = compNode ? getComputedStyle(compNode) : null;
+      const measuredPx = (cs && cs.fontSize && cs.fontSize.endsWith("px")) ? parseFloat(cs.fontSize) : NaN;
+
+      const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
+      const weight = (cs && cs.fontWeight) ? cs.fontWeight : "600";
+
+      const partPx = (isFinite(measuredPx) && measuredPx > 0) ? Math.round(measuredPx) : Math.round(PART_FONT_PX_DEFAULT * (scalePos || 1));
+      const arrPx  = (isFinite(measuredPx) && measuredPx > 0) ? Math.round(measuredPx) : Math.round(ARR_FONT_PX_DEFAULT  * (scalePos || 1));
+
+      const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scalePos;
+      const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scalePos;
+      const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scalePos;
+      const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scalePos;
+
+      const makeLabel = (txt, style) => {
+        const d = document.createElement("div");
+        d.textContent = txt;
+        d.style.cssText = style;
+        overlay.appendChild(d);
+        return d;
+      };
+
+      makeLabel(pickedLabel || "Part", `
+        position:absolute; left:${(partLeft - hostRect.left)}px; top:${(partTop - hostRect.top)}px;
+        font:${weight} ${partPx}px/1.1 ${family}; color:#111;`);
+      makeLabel(arrangerText || "Arranged by Auto Arranger", `
+        position:absolute; right:${(hostRect.right - arrRightX)}px; top:${(arrTop - hostRect.top)}px;
+        font:${weight} ${arrPx}px/1.1 ${family}; color:#111; text-align:right;`);
+    } catch(e){ /* swallow */ }
+  }
+
+  // ---- viewer UI -------------------------------------------------------------
   function buildViewerUI(){
     document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
 
@@ -1661,6 +1823,9 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     const parts    = sortPartsEvenIfNoPid(partsRaw);
 
     const cleanupFns = [];
+    let barsPerSystemChoice = 0; // 0 = auto; else 4/8/12/16
+    let lastXml = "";
+    let overlayRaf = 0;
 
     const wrap = ce("div");
     wrap.id = "aa-viewer";
@@ -1699,9 +1864,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     }
     controls.appendChild(select);
 
-    // --- Row 1: download buttons
     const btnRow = ce("div");
-    btnRow.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;justify-content:center;align-items:center;";
+    btnRow.style.cssText = "display:flex;gap:8px;flex-wrap:nowrap;justify-content:center;align-items:center;";
     btnRow.innerHTML = [
       '<button id="aa-btn-pdf" class="aa-btn" disabled>Download PDF</button>',
       '<button id="aa-btn-xml" class="aa-btn" disabled>Download XML</button>',
@@ -1710,29 +1874,40 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     ].join("");
     controls.appendChild(btnRow);
 
-    // --- Row 2: Bars-per-system (orange)
-    const barsRow = ce("div");
-    barsRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:center;margin-top:2px;";
-    barsRow.innerHTML = `
-      <div style="font:600 13px system-ui;color:#000;">Bars Per System:</div>
-      <button class="aa-btn aa-btn-orange" data-bars="4"  type="button">4 Bars</button>
-      <button class="aa-btn aa-btn-orange" data-bars="8"  type="button">8 Bars</button>
-      <button class="aa-btn aa-btn-orange" data-bars="12" type="button">12 Bars</button>
-      <button class="aa-btn aa-btn-orange" data-bars="16" type="button">16 Bars</button>
-    `;
-    controls.appendChild(barsRow);
-
-    // Styles (blue base; orange for bars controls)
     const styleBtn = ce("style");
-    styleBtn.textContent =
-      ".aa-btn{padding:8px 12px;border-radius:8px;background:#0f62fe;color:#fff;border:none;cursor:pointer;font:600 13px system-ui}" +
-      ".aa-btn[disabled]{opacity:.5;cursor:not-allowed}" +
-      ".aa-btn:hover:not([disabled]){filter:brightness(0.92)}" +
-      ".aa-btn-orange{background:#f97316}" +
-      ".aa-btn-orange.active{outline:2px solid rgba(249,115,22,.3)}";
+    styleBtn.textContent = `
+      .aa-btn{padding:8px 12px;border-radius:8px;background:#0f62fe;color:#fff;border:none;cursor:pointer;font:600 13px system-ui}
+      .aa-btn[disabled]{opacity:.5;cursor:not-allowed}
+      .aa-btn:hover:not([disabled]){filter:brightness(0.92)}
+      .aa-btn-orange{background:#f97316}
+      .aa-btn-orange:hover{filter:brightness(0.95)}
+      .aa-toggle-selected{box-shadow:0 0 0 2px rgba(0,0,0,.15) inset}
+    `;
     card.appendChild(styleBtn);
 
-    // OSMD host (horizontal scroll)
+    // Orange bars-per-system row
+    const barRow = ce("div");
+    barRow.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;justify-content:center;align-items:center;";
+    const barTitle = ce("div", { textContent: "Bars Per System:" });
+    barTitle.style.cssText = "color:#000;font:600 13px/1 system-ui;margin-right:6px;";
+    barRow.appendChild(barTitle);
+
+    const makeBarBtn = (n) => {
+      const b = ce("button", { textContent: `${n} Bars` });
+      b.className = "aa-btn aa-btn-orange";
+      b.addEventListener("click", () => {
+        barsPerSystemChoice = n;
+        // visual toggle (optional)
+        barRow.querySelectorAll("button").forEach(x=>x.classList.remove("aa-toggle-selected"));
+        b.classList.add("aa-toggle-selected");
+        console.log("[M7] Bars per system set to", n);
+        renderSelection();
+      });
+      return b;
+    };
+    [4,8,12,16].forEach(n => barRow.appendChild(makeBarBtn(n)));
+    controls.appendChild(barRow);
+
     const osmdBox = ce("div");
     osmdBox.id = "aa-osmd-box";
     osmdBox.style.cssText = "margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;position:relative;";
@@ -1747,39 +1922,25 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     const btnPDFAll = btnRow.querySelector("#aa-btn-pdf-all");
     const btnXMLAll = btnRow.querySelector("#aa-btn-xml-all");
 
-    let lastXml = "";
-    let overlayRaf = 0;
-    let barsPerSystem = 0; // 0 = auto (no forced breaks)
-
-// Overlay scheduler (never throws if helpers are missing)
-const scheduleOverlay = () => {
-  if (overlayRaf) cancelAnimationFrame(overlayRaf);
-  overlayRaf = requestAnimationFrame(() => {
-    overlayRaf = 0;
-    if (!lastXml) return;
-
-    const pickedLabel = (select.value === "__SCORE__" ? "Score" : select.value) || "";
-    const arranger = (typeof getArrangerFromXml === "function")
-      ? getArrangerFromXml(lastXml)
-      : "Arranged by Auto Arranger";
-
-    if (typeof overlayCredits === "function") {
-      overlayCredits(osmd, osmdBox, pickedLabel, arranger);
-      // keep overlay on top of the SVG
-      const ov = osmdBox.querySelector(".aa-overlay");
-      if (ov && ov.parentNode === osmdBox) osmdBox.appendChild(ov);
-    }
-  });
-};
-
+    const scheduleOverlay = () => {
+      if (overlayRaf) cancelAnimationFrame(overlayRaf);
+      overlayRaf = requestAnimationFrame(() => {
+        overlayRaf = 0;
+        if (!lastXml) return;
+        const pickedLabel = (select.value === "__SCORE__" ? "Score" : select.value) || "";
+        const arranger    = getArrangerFromXml(lastXml);
+        overlayCredits(osmd, osmdBox, pickedLabel, arranger);
+        ensureOverlayOnTop(osmdBox);
+      });
+    };
     cleanupFns.push(() => { if (overlayRaf) cancelAnimationFrame(overlayRaf); overlayRaf = 0; });
 
-    const onResize = () => { fitScoreToHeight(osmd, osmdBox); scheduleOverlay(); };
+    const onResize = () => { fitScoreToHeight90(osmd, osmdBox); scheduleOverlay(); };
     window.addEventListener("resize", onResize);
     cleanupFns.push(() => window.removeEventListener("resize", onResize));
 
     const ro = new ResizeObserver(() => {
-      fitScoreToHeight(osmd, osmdBox);
+      fitScoreToHeight90(osmd, osmdBox);
       scheduleOverlay();
     });
     ro.observe(osmdBox);
@@ -1790,7 +1951,7 @@ const scheduleOverlay = () => {
         if (m.type === "childList") {
           const added = [...m.addedNodes];
           if (added.some(n => n.nodeName === "SVG" || (n.querySelector && n.querySelector("svg")))) {
-            forceIntrinsicSvgWidth(osmdBox);
+            forceIntrinsicSvgWidth(osmd, osmdBox);
             scheduleOverlay();
             return;
           }
@@ -1802,17 +1963,6 @@ const scheduleOverlay = () => {
 
     select.addEventListener("change", renderSelection);
 
-    // Bars Per System clicks
-    barsRow.addEventListener("click", (e) => {
-      const btn = e.target.closest(".aa-btn-orange");
-      if (!btn) return;
-      barsRow.querySelectorAll(".aa-btn-orange").forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
-      barsPerSystem = parseInt(btn.dataset.bars,10) || 0;
-      console.log("[M7] Bars per system set to", barsPerSystem);
-      renderSelection(); // re-render current selection with new breaks
-    });
-
     async function renderSelection(){
       const { xml } = pickXml(select.value);
       if (!xml) {
@@ -1822,42 +1972,25 @@ const scheduleOverlay = () => {
         return;
       }
       try {
-        // Prep XML
-        let xmlWork = ensureTitle(xml, songName);
-        xmlWork = transformXmlForSlashes(xmlWork);
-        xmlWork = withXmlProlog(xmlWork);
+        // base xml (title + cleanup)
+        let work = ensureTitle(xml, songName);
+        work = transformXmlForSlashes(work);
+        // enforce bars/system if selected
+        work = applyBarsPerSystem(work, barsPerSystemChoice);
+        work = withXmlProlog(work);
 
-        // Bars-per-system (M9)
-        if (barsPerSystem > 0 && window.AA_M9 && typeof AA_M9.alterBarsPerSystem === "function") {
-          xmlWork = AA_M9.alterBarsPerSystem(xmlWork, barsPerSystem);
-        }
-
-        // Load
         if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
-        await osmd.load(xmlWork);
-
-        // Lock to Letter page format (M9) BEFORE render
-        if (window.AA_M9 && typeof AA_M9.setPageFormatLetter === "function") {
-          AA_M9.setPageFormatLetter(osmd);
-        }
-
-        // Render, compute 90% vertical fit, render again if changed
+        await osmd.load(work);
         await osmd.render();
-        const zoom = computeZoomToFitHeight(osmd, osmdBox, 0.90);
-        if (isFinite(zoom) && Math.abs(zoom - (osmd.zoom||1)) > 0.01) {
-          osmd.zoom = zoom;
-          await osmd.render();
-        }
 
-        // Multi-page horizontal presentation (M9)
-        forceIntrinsicSvgWidth(osmdBox);
-        if (window.AA_M9 && typeof AA_M9.afterRenderPagesHorizontal === "function") {
-          AA_M9.afterRenderPagesHorizontal(osmdBox);
-        }
+        // 90% vertical fit + keep intrinsic width (horizontal scroll)
+        await fitScoreToHeight90(osmd, osmdBox, /*reRenderIfNeeded*/true);
+        forceIntrinsicSvgWidth(osmd, osmdBox);
 
-        lastXml = xmlWork;
         btnPDF.disabled = false;
         btnXML.disabled = false;
+
+        lastXml = work; // store processed xml (includes bars-per-system)
         scheduleOverlay();
       } catch(e){
         console.error("[finalViewer] render failed", e);
@@ -1865,7 +1998,7 @@ const scheduleOverlay = () => {
       }
     }
 
-    // Initial render
+    // First render
     requestAnimationFrame(() => {
       if (select.options.length > 0) {
         select.selectedIndex = 0;
@@ -1873,20 +2006,21 @@ const scheduleOverlay = () => {
       }
     });
 
-    // Single exports
+    // ---- single PDF/XML for current view ------------------------------------
     btnPDF.addEventListener("click", async () => {
       if (!lastXml) { alert("Load a score/part first."); return; }
       const base = (select.value === "__SCORE__" ? "Score" : select.value);
       await exportCurrentViewToPdf(osmdBox, base);
       scheduleOverlay();
     });
+
     btnXML.addEventListener("click", () => {
       if (!lastXml) { alert("Load a score/part first."); return; }
       const name = (select.value === "__SCORE__" ? "Score" : select.value) || "part";
       downloadText(lastXml, safe(name) + ".musicxml", "application/xml");
     });
 
-    // ZIP: PDFs for Score + Parts (ghost OSMD, avoids flicker)
+    // ---------- ZIP: PDFs for Score + all Parts (ghost renderer, no flicker) ----------
     btnPDFAll.addEventListener("click", async () => {
       const s = getState();
       const items = [];
@@ -1898,19 +2032,24 @@ const scheduleOverlay = () => {
 
       try {
         const zip = new JSZip();
+        // ghost renderer setup
         const { ghost, ghostBox, cleanup } = createGhostOSMD(osmdBox);
+
         for (const it of items) {
-          // bars-per-system applies here too for consistent look
-          let xmlWork = withXmlProlog(transformXmlForSlashes(ensureTitle(it.xml, songName)));
-          if (barsPerSystem > 0 && window.AA_M9?.alterBarsPerSystem) {
-            xmlWork = AA_M9.alterBarsPerSystem(xmlWork, barsPerSystem);
-          }
-          const ab = await renderXmlToPdfArrayBuffer(ghost, ghostBox, xmlWork, 0.90);
+          // match viewer: title + slashes + bars/system + prolog, then 90% fit
+          let xmlWork = ensureTitle(it.xml, songName);
+          xmlWork = transformXmlForSlashes(xmlWork);
+          xmlWork = applyBarsPerSystem(xmlWork, barsPerSystemChoice);
+          xmlWork = withXmlProlog(xmlWork);
+
+          const ab = await renderXmlToPdfArrayBuffer(ghost, ghostBox, xmlWork);
           zip.file(`${safe(songName)} - ${safe(it.label)}.pdf`, ab);
         }
         cleanup();
+
         const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
-        triggerBlobDownload(blob, `${safe(songName)} - PDFs (Score & Parts).zip`);
+        const zipName = `${safe(songName)} - PDFs (Score & Parts).zip`;
+        triggerBlobDownload(blob, zipName);
       } catch (e) {
         console.error("[finalViewer] ZIP PDFs failed", e);
         alert("Failed to export PDFs.");
@@ -1919,7 +2058,7 @@ const scheduleOverlay = () => {
       }
     });
 
-    // ZIP: XMLs for Score + Parts
+    // ---------- ZIP: XMLs for Score + all Parts ----------
     btnXMLAll.addEventListener("click", async () => {
       const s = getState();
       const items = [];
@@ -1932,14 +2071,16 @@ const scheduleOverlay = () => {
       try {
         const zip = new JSZip();
         for (const it of items) {
-          let xmlWork = withXmlProlog(transformXmlForSlashes(ensureTitle(it.xml, songName)));
-          if (barsPerSystem > 0 && window.AA_M9?.alterBarsPerSystem) {
-            xmlWork = AA_M9.alterBarsPerSystem(xmlWork, barsPerSystem);
-          }
+          // keep consistent with viewer: include bars-per-system injection
+          let xmlWork = ensureTitle(it.xml, songName);
+          xmlWork = transformXmlForSlashes(xmlWork);
+          xmlWork = applyBarsPerSystem(xmlWork, barsPerSystemChoice);
+          xmlWork = withXmlProlog(xmlWork);
           zip.file(`${safe(songName)} - ${safe(it.label)}.musicxml`, xmlWork);
         }
         const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
-        triggerBlobDownload(blob, `${safe(songName)} - XMLs (Score & Parts).zip`);
+        const zipName = `${safe(songName)} - XMLs (Score & Parts).zip`;
+        triggerBlobDownload(blob, zipName);
       } catch (e) {
         console.error("[finalViewer] ZIP XMLs failed", e);
         alert("Failed to export XMLs.");
@@ -1948,7 +2089,7 @@ const scheduleOverlay = () => {
       }
     });
 
-    // Helpers scoped to M7
+    // ---------- helpers tied to viewer ---------------------------------------
     function pickXml(choice){
       const s = getState();
       if (choice === "__SCORE__") return { xml: s.combinedScoreXml || "" };
@@ -1956,6 +2097,7 @@ const scheduleOverlay = () => {
       const hit = list.find(f => (f.instrumentName || f.baseName) === choice);
       return { xml: (hit && hit.xml) || "" };
     }
+
     function ensureOverlayOnTop(host){
       const ov = host.querySelector(".aa-overlay");
       if (ov && ov.parentNode === host) host.appendChild(ov);
@@ -1964,6 +2106,7 @@ const scheduleOverlay = () => {
       const ov = host.querySelector(".aa-overlay");
       if (ov) ov.innerHTML = "";
     }
+
     function resetViewerToDefault(){
       if (!select || select.options.length === 0) return;
       select.selectedIndex = 0;
@@ -1973,7 +2116,7 @@ const scheduleOverlay = () => {
     }
   } // buildViewerUI
 
-  /* ===== ghost renderer (prevents flicker) ===== */
+  // ===== ghost renderer (prevents flicker for batch PDF) =====
   function createGhostOSMD(referenceBox){
     const dims = referenceBox.getBoundingClientRect();
     const ghostBox = document.createElement("div");
@@ -1988,34 +2131,101 @@ const scheduleOverlay = () => {
     return { ghost, ghostBox, cleanup };
   }
 
-  // Render XML → PDF (ArrayBuffer) with Letter format + 90% vertical fit
-  async function renderXmlToPdfArrayBuffer(osmdInstance, host, xml, shrink=0.90){
-    const jspdfNS = window.jspdf || window.jspdf || window;
-    const JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
-    if (!JsPDFCtor) throw new Error("jsPDF not available");
-
-    if (typeof osmdInstance.zoom === "number") osmdInstance.zoom = 1.0;
-    await osmdInstance.load(xml);
-    if (window.AA_M9?.setPageFormatLetter) AA_M9.setPageFormatLetter(osmdInstance);
+  async function renderXmlToPdfArrayBuffer(osmdInstance, host, xmlReady){
+    await osmdInstance.load(xmlReady);
     await osmdInstance.render();
+    await fitScoreToHeight90(osmdInstance, host, /*reRenderIfNeeded*/true);
+    forceIntrinsicSvgWidth(osmdInstance, host);
 
-    const zoom = computeZoomToFitHeight(osmdInstance, host, shrink);
-    if (isFinite(zoom) && Math.abs(zoom - (osmdInstance.zoom||1)) > 0.01) {
-      osmdInstance.zoom = zoom;
-      await osmdInstance.render();
-    }
+    const { canvas, w, h } = await snapshotCanvas(host);
+    const jspdfNS = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
+    const JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
+    if (!JsPDFCtor) throw new Error("jsPDF not available in ghost");
 
-    const snap = await snapshotCanvas(host);
-    const { w, h, canvas } = snap;
-    const doc = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
-    doc.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
-    return doc.output("arraybuffer");
+    const pdf = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
+    pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
+    return pdf.output("arraybuffer");
   }
 
-  // ---------- shared helpers ----------
+  // ===== layout / export helpers =============================================
+  function forceIntrinsicSvgWidth(osmd, host){
+    const svg = host.querySelector("svg");
+    if (!svg) return;
+    const vb = svg.viewBox && svg.viewBox.baseVal;
+    const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
+    if (vb && vb.width) {
+      svg.style.width = (vb.width * zoom) + "px";
+      svg.style.height = "auto";
+    } else {
+      // fallback to bounding box
+      const r = svg.getBoundingClientRect();
+      if (r.width) svg.style.width = r.width + "px";
+    }
+  }
+
+  // 90% vertical fit (set osmd.zoom and optionally re-render)
+  async function fitScoreToHeight90(osmd, host, reRenderIfNeeded){
+    const svg = host.querySelector("svg");
+    if (!svg) return;
+
+    const hostH = host.clientHeight || host.getBoundingClientRect().height || 800;
+    let baseHeight = NaN;
+
+    const vb = svg.viewBox && svg.viewBox.baseVal;
+    if (vb && vb.height) {
+      // estimate baseHeight as current vb height
+      baseHeight = vb.height;
+      // if already zoomed, try to normalize
+      const rectH = svg.getBoundingClientRect().height;
+      if (rectH && osmd.zoom) baseHeight = rectH / osmd.zoom;
+    } else {
+      const rectH = svg.getBoundingClientRect().height;
+      baseHeight = rectH / (osmd.zoom || 1);
+    }
+
+    const targetZoom = Math.max(0.1, (hostH * 0.90) / baseHeight);
+    if (Math.abs((osmd.zoom || 1) - targetZoom) > 0.01) {
+      osmd.zoom = targetZoom;
+      if (reRenderIfNeeded) {
+        await osmd.render();
+      }
+    }
+  }
+
+  function snapshotCanvas(container){
+    return html2canvas(container, { scale:2, backgroundColor:"#fff" })
+           .then(canvas => ({canvas, w:canvas.width, h:canvas.height}));
+  }
+
+  async function exportCurrentViewToPdf(container, baseName){
+    const snap = await snapshotCanvas(container);
+    const { w, h, canvas } = snap;
+    const jspdfNS = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
+    const JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
+    if (!JsPDFCtor) { alert("jsPDF not loaded."); return; }
+    const pdf = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
+    pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
+    pdf.save(safe(baseName || "score") + ".pdf");
+  }
+
+  // === small utils used here ===
+  function safe(s){ return String(s||"").replace(/[\\/:*?"<>|]+/g,"_"); }
+  function downloadText(text, filename, mime){
+    const blob = new Blob([text], {type: mime || "text/plain"});
+    triggerBlobDownload(blob, filename || "file.txt");
+  }
+  function triggerBlobDownload(blob, filename){
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename || "download";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  }
+
+  // ===== external helpers expected from earlier modules ======================
   function sortPartsEvenIfNoPid(files){
     const out = [];
-    for (const f of files){
+    for (const f of files||[]){
       const pid = f.newPartId || extractPidFromXml(f.xml) || "";
       const n = parseInt(String(pid).replace(/^P/i,""), 10);
       out.push(Object.assign({}, f, { _pnum: (isFinite(n)?n:999) }));
@@ -2027,47 +2237,7 @@ const scheduleOverlay = () => {
     const m = String(xml||"").match(/<score-part\s+id="([^"]+)"/i);
     return m ? m[1] : null;
   }
-  function snapshotCanvas(container){
-    return html2canvas(container, { scale:2, backgroundColor:"#fff" })
-           .then(canvas => ({canvas, w:canvas.width, h:canvas.height}));
-  }
-  async function exportCurrentViewToPdf(container, baseName){
-    const snap = await snapshotCanvas(container);
-    const { w, h, canvas } = snap;
-    const jspdfNS = window.jspdf || window.jspdf || window;
-    const JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
-    if (!JsPDFCtor) { alert("jsPDF not loaded."); return; }
-    const pdf = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
-    pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
-    pdf.save(safe(baseName || "score") + ".pdf");
-  }
-  // Vertical-fit with optional shrink factor (default 0.90)
-  function computeZoomToFitHeight(osmd, host, factor=0.90){
-    const svg = host.querySelector("svg"); if (!svg) return 1;
-    const rect = host.getBoundingClientRect();
-    const bbox = svg.getBBox();
-    if (!bbox || bbox.height <= 0) return 1;
-    const avail = Math.max(100, rect.height - 16);
-    return Math.max(0.1, (avail / bbox.height) * (factor || 1));
-  }
-  function fitScoreToHeight(osmd, host){
-    const z = computeZoomToFitHeight(osmd, host, 0.90);
-    if (isFinite(z)) osmd.zoom = z;
-  }
-  function forceIntrinsicSvgWidth(host){
-    const svg = host.querySelector("svg"); if (!svg) return;
-    const vb  = svg.viewBox && svg.viewBox.baseVal;
-    if (vb && vb.width) {
-      svg.style.width = (vb.width) + "px";
-      svg.style.height = (vb.height) + "px";
-    }
-  }
-  function withXmlProlog(xml){
-    const s = String(xml||"").trimStart();
-    return s.startsWith("<?xml") ? s : `<?xml version="1.0" encoding="UTF-8"?>\n${s}`;
-  }
 })();
-
 
 
 /* =========================================================================
