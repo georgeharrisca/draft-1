@@ -874,6 +874,14 @@ function extractPartsFromScore(xmlText){
 
 
 
+
+
+
+
+
+
+
+
 /* =============================================================================
    AUTO ARRANGER • Pipeline Modules (Append after core Draft-1 JS)
    Sections:
@@ -2784,163 +2792,213 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M9) Force Letter Pages in XML + Fit-to-Height after render
+   M9) Viewer Page Frames (Letter) + Horizontal Pagination (clipped pages)
    ------------------------------------------------------------------------- */
 ;(function () {
-  const FIT_SHRINK = 0.90;     // show whole page a bit smaller
-  const LETTER_MM  = { w: 215.9, h: 279.4 }; // 8.5" x 11" in mm
-  const MARGINS_MM = { l: 12, r: 12, t: 12, b: 14 }; // pleasant white space
+  const LETTER_RATIO = 8.5 / 11;   // width / height
+  const GAP_BETWEEN = 28;          // px gap between page frames
+  const TOP_BOTTOM_PAD = 12;       // px inset from host top/bottom for frames
 
-  // Public: rewrite XML to include a Letter page-layout (in tenths)
-  // Uses the XML's own <scaling><millimeters>/<tenths> so units are consistent.
-  window.AA_forceLetterLayoutXML = function (xmlString) {
+  function ensurePages(host) {
     try {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(String(xmlString), "application/xml");
-      const root = doc.documentElement;
-      const ns   = root.namespaceURI || null;
+      if (!host) return;
+      const svg = host.querySelector("svg");
+      if (!svg) return;
 
-      // --- ensure <defaults> and <scaling> exist ---
-      let defaults = doc.querySelector("defaults");
-      if (!defaults) {
-        defaults = ns ? doc.createElementNS(ns, "defaults") : doc.createElement("defaults");
-        root.insertBefore(defaults, root.firstChild);
-      }
-      let scaling = defaults.querySelector("scaling");
-      if (!scaling) {
-        scaling = ns ? doc.createElementNS(ns, "scaling") : doc.createElement("scaling");
-        defaults.appendChild(scaling);
-      }
-      let mmNode = scaling.querySelector("millimeters");
-      let tnNode = scaling.querySelector("tenths");
-      if (!mmNode) {
-        mmNode = ns ? doc.createElementNS(ns, "millimeters") : doc.createElement("millimeters");
-        mmNode.textContent = "7.0"; // common default
-        scaling.appendChild(mmNode);
-      }
-      if (!tnNode) {
-        tnNode = ns ? doc.createElementNS(ns, "tenths") : doc.createElement("tenths");
-        tnNode.textContent = "40";
-        scaling.appendChild(tnNode);
-      }
-      const mm = Math.max(0.001, parseFloat(mmNode.textContent) || 7.0);
-      const tn = Math.max(0.001, parseFloat(tnNode.textContent) || 40.0);
+      // Base SVG stays in DOM for metrics and overlays, but is hidden visually.
+      svg.style.position = "absolute";
+      svg.style.left = "0";
+      svg.style.top = "0";
+      svg.style.opacity = "0";      // hide the original strip
+      svg.style.pointerEvents = "none";
+      svg.style.zIndex = "0";
 
-      // Convert desired mm values -> tenths
-      // tenthsPerMm = tenths / millimeters
-      const tPerMm = tn / mm;
-      const pageW_t = Math.round(LETTER_MM.w * tPerMm);
-      const pageH_t = Math.round(LETTER_MM.h * tPerMm);
-      const L_t = Math.round(MARGINS_MM.l * tPerMm);
-      const R_t = Math.round(MARGINS_MM.r * tPerMm);
-      const T_t = Math.round(MARGINS_MM.t * tPerMm);
-      const B_t = Math.round(MARGINS_MM.b * tPerMm);
+      // Ensure layering for frames (0), clipped pages (1), overlays (2)
+      let frames = host.querySelector(".aa-pageframes");
+      if (!frames) {
+        frames = document.createElement("div");
+        frames.className = "aa-pageframes";
+        frames.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:0;";
+        host.appendChild(frames);
+      }
 
-      // --- ensure <page-layout> with margins (both) ---
-      let layout = defaults.querySelector("page-layout");
-      if (!layout) {
-        layout = ns ? doc.createElementNS(ns, "page-layout") : doc.createElement("page-layout");
-        defaults.appendChild(layout);
+      let clips = host.querySelector(".aa-pageclips");
+      if (!clips) {
+        clips = document.createElement("div");
+        clips.className = "aa-pageclips";
+        clips.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:1;";
+        host.appendChild(clips);
       }
-      function ensureChild(tag, value){
-        let n = layout.querySelector(tag);
-        if (!n) { n = ns ? doc.createElementNS(ns, tag) : doc.createElement(tag); layout.appendChild(n); }
-        if (value != null) n.textContent = String(value);
-        return n;
-      }
-      ensureChild("page-height", pageH_t);
-      ensureChild("page-width",  pageW_t);
 
-      let margins = layout.querySelector('page-margins[type="both"]')
-                 ||  layout.querySelector("page-margins");
-      if (!margins) {
-        margins = ns ? doc.createElementNS(ns, "page-margins") : doc.createElement("page-margins");
-        margins.setAttribute("type", "both");
-        layout.appendChild(margins);
-      } else {
-        margins.setAttribute("type", "both");
-      }
-      function ensureMargin(tag, val){
-        let m = margins.querySelector(tag);
-        if (!m) { m = ns ? doc.createElementNS(ns, tag) : doc.createElement(tag); margins.appendChild(m); }
-        m.textContent = String(val);
-      }
-      ensureMargin("left-margin",   L_t);
-      ensureMargin("right-margin",  R_t);
-      ensureMargin("top-margin",    T_t);
-      ensureMargin("bottom-margin", B_t);
+      const ov = host.querySelector(".aa-overlay");
+      if (ov) ov.style.zIndex = "2";
 
-      // --- encourage full-width systems inside those margins ---
-      // Some XMLs carry a <system-layout> with extra left/right margins;
-      // normalize them to zero so systems can stretch to the page content width.
-      let sysLayout = defaults.querySelector("system-layout");
-      if (!sysLayout) {
-        sysLayout = ns ? doc.createElementNS(ns, "system-layout") : doc.createElement("system-layout");
-        defaults.appendChild(sysLayout);
-      }
-      let sysMargins = sysLayout.querySelector("system-margins");
-      if (!sysMargins) {
-        sysMargins = ns ? doc.createElementNS(ns, "system-margins") : doc.createElement("system-margins");
-        sysLayout.appendChild(sysMargins);
-      }
-      function ensureSysMargin(tag){
-        let m = sysMargins.querySelector(tag);
-        if (!m) { m = ns ? doc.createElementNS(ns, tag) : doc.createElement(tag); sysMargins.appendChild(m); }
-        m.textContent = "0";
-      }
-      ensureSysMargin("left-margin");
-      ensureSysMargin("right-margin");
+      // live pixel size of the OSMD SVG
+      const svgRect = svg.getBoundingClientRect();
+      if (!svgRect.height || !svgRect.width) return;
 
-      return new XMLSerializer().serializeToString(doc);
+      const pageH = Math.max(1, Math.floor(svgRect.height)); // px (we’re doing vertical fit elsewhere)
+      const pageW = Math.max(1, Math.floor(pageH * LETTER_RATIO));
+      const contentW = Math.max(1, Math.floor(svgRect.width));
+      const pageCount = Math.max(1, Math.ceil(contentW / pageW));
+
+      // add/remove FRAMES to match pageCount
+      syncChildren(frames, pageCount, () => {
+        const f = document.createElement("div");
+        f.className = "aa-pageframe";
+        f.style.cssText = [
+          "position:absolute",
+          "border-radius:8px",
+          "background:#fff",
+          "box-shadow:0 4px 28px rgba(0,0,0,.12)",
+          "outline:1px solid rgba(0,0,0,.06)"
+        ].join(";");
+        return f;
+      });
+
+      // add/remove CLIPS to match pageCount
+      syncChildren(clips, pageCount, () => {
+        const c = document.createElement("div");
+        c.className = "aa-pageclip";
+        c.style.cssText = [
+          "position:absolute",
+          "overflow:hidden",
+          "border-radius:8px",
+          "pointer-events:none" // let scrolling pass through
+        ].join(";");
+        return c;
+      });
+
+      const leftPad = Math.max(
+        14,
+        parseInt(getComputedStyle(host).paddingLeft || "0", 10)
+      );
+      const usableH = Math.max(1, pageH - TOP_BOTTOM_PAD * 2);
+
+      // Prepare a normalized clone template of the SVG (right size in CSS px)
+      // We’ll clone this for each page and offset it horizontally.
+      const normalizedWidth  = Math.ceil(svgRect.width);
+      const normalizedHeight = Math.ceil(svgRect.height);
+      function makeSvgClone() {
+        const clone = svg.cloneNode(true);
+        clone.style.cssText = [
+          "position:absolute",
+          "left:0",
+          "top:0",
+          "opacity:1",
+          "pointer-events:none",
+          `width:${normalizedWidth}px`,
+          `height:${normalizedHeight}px`
+        ].join(";");
+        return clone;
+      }
+
+      // position frames and clips; insert/replace clones inside clips
+      for (let i = 0; i < pageCount; i++) {
+        const x = leftPad + i * (pageW + GAP_BETWEEN);
+
+        const frame = frames.children[i];
+        frame.style.left   = x + "px";
+        frame.style.top    = TOP_BOTTOM_PAD + "px";
+        frame.style.width  = pageW + "px";
+        frame.style.height = usableH + "px";
+
+        const clip = clips.children[i];
+        clip.style.left   = x + "px";
+        clip.style.top    = TOP_BOTTOM_PAD + "px";
+        clip.style.width  = pageW + "px";
+        clip.style.height = usableH + "px";
+
+        // ensure each clip contains exactly one up-to-date clone,
+        // shifted so the i-th page region is visible.
+        const desiredOffset = -i * pageW;
+        const currentClone = clip.firstElementChild;
+        if (!currentClone || currentClone.tagName.toLowerCase() !== "svg") {
+          clip.innerHTML = "";
+          const cl = makeSvgClone();
+          cl.style.left = desiredOffset + "px";
+          clip.appendChild(cl);
+        } else {
+          // update size/offset if zoom changed
+          currentClone.style.width  = normalizedWidth  + "px";
+          currentClone.style.height = normalizedHeight + "px";
+          currentClone.style.left   = desiredOffset + "px";
+        }
+      }
+
+      // Remove any extra clones in clips (already handled by syncChildren)
+
     } catch (e) {
-      console.warn("[M9] AA_forceLetterLayoutXML failed, using original XML", e);
-      return xmlString;
+      console.warn("[M9] ensurePages skipped:", e);
     }
-  };
+  }
 
-  // After each render, fit vertically to show whole page(s)
-  function fitToHeight(osmd, host){
-    try{
-      const svg = host.querySelector("svg"); if (!svg) return;
-      const maxH = host.clientHeight; if (!maxH) return;
-
-      let svgH = 0;
-      try { svgH = svg.getBBox().height; } catch(_) {}
-      if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
-      if (!svgH) return;
-
-      const current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
-      let target = (maxH * FIT_SHRINK) / svgH;
-      if (!isFinite(target) || target <= 0) target = 1;
-      target = Math.max(0.3, Math.min(1.5, target));
-
-      if (Math.abs(target - current) > 0.01) {
-        osmd.zoom = target;
-        osmd.render();
+  function syncChildren(container, wantedCount, createNode) {
+    const cur = container.children.length;
+    if (cur < wantedCount) {
+      for (let i = cur; i < wantedCount; i++) {
+        container.appendChild(createNode());
       }
-    } catch(e) {
-      console.warn("[M9] fitToHeight skipped:", e);
+    } else if (cur > wantedCount) {
+      for (let i = 0; i < cur - wantedCount; i++) {
+        container.lastChild && container.removeChild(container.lastChild);
+      }
     }
   }
 
-  // Nudge OSMD rules toward stretching systems to the page width
-  function encourageJustification(osmd){
-    try{
-      const r = osmd && osmd.rules;
-      if (!r) return;
-      if ("JustifySystemLines"     in r) r.JustifySystemLines     = true;
-      if ("StretchLastSystemLine"  in r) r.StretchLastSystemLine  = true;
-      if ("SystemFillFactor"       in r && isFinite(r.SystemFillFactor)) r.SystemFillFactor = 1.0;
-    }catch(e){}
+  // observe the viewer box and its content so pages stay in sync
+  function hookHost(host) {
+    if (!host || host._m9Hooked) return;
+    host._m9Hooked = true;
+
+    // Recompute on host resize (zoom from M7 changes SVG rect too)
+    const ro = new ResizeObserver(() => ensurePages(host));
+    ro.observe(host);
+
+    // Recompute when OSMD re-renders (new SVG node)
+    const mo = new MutationObserver((muts) => {
+      for (const m of muts) {
+        if (m.type === "childList") {
+          // new SVG or re-render — refresh pages next frame
+          requestAnimationFrame(() => ensurePages(host));
+          return;
+        }
+      }
+    });
+    mo.observe(host, { childList: true, subtree: true });
+
+    host._m9ro = ro;
+    host._m9mo = mo;
+
+    // initial paint
+    ensurePages(host);
   }
 
-  // Hook: after M7 renders, we re-fit and make sure justification is on
+  // If the viewer is already present
+  function tryHookNow() {
+    const host = document.getElementById("aa-osmd-box");
+    if (host) hookHost(host);
+  }
+  document.addEventListener("DOMContentLoaded", tryHookNow);
+
+  // If the viewer appears later, catch it
+  const docMO = new MutationObserver((muts) => {
+    for (const m of muts) {
+      for (const n of m.addedNodes) {
+        if (!(n instanceof HTMLElement)) continue;
+        if (n.id === "aa-osmd-box") hookHost(n);
+        else {
+          const h = n.querySelector && n.querySelector("#aa-osmd-box");
+          if (h) hookHost(h);
+        }
+      }
+    }
+  });
+  docMO.observe(document.documentElement, { childList: true, subtree: true });
+
+  // React to M7 emit after each render
   if (typeof AA !== "undefined" && AA.on) {
-    AA.on("viewer:rendered", ({ osmd, host }) => {
-      if (!osmd || !host) return;
-      encourageJustification(osmd);
-      requestAnimationFrame(() => fitToHeight(osmd, host));
-    });
+    AA.on("viewer:rendered", ({ host }) => ensurePages(host));
   }
 })();
 
