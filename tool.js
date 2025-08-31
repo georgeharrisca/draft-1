@@ -2784,19 +2784,13 @@ function ensureXmlHeader(xml) {
 
 
 
-
 /* =========================================================================
-   M9) Viewer Page Frames (Letter) + Horizontal Pagination + Fit & Stretch
-   (event-driven; no global observers; waits for M7's "viewer:rendered")
+   M9) OSMD Page Layout (Letter) + Full-Width Systems + Fit-to-Height
    ------------------------------------------------------------------------- */
 ;(function () {
-  const LETTER_RATIO   = 8.5 / 11; // width / height
-  const GAP_BETWEEN    = 28;       // px gap between page frames
-  const TOP_BOTTOM_PAD = 12;       // px inset from host top/bottom
-  const FIT_SHRINK     = 0.90;     // match your vertical-fit aesthetic
+  const FIT_SHRINK = 0.90; // match your “slightly smaller” look
 
-  // --- helpers -------------------------------------------------------------
-
+  // Fit vertically (like your M7 helper, but local here so we can call it too)
   function fitToHeight(osmd, host){
     try{
       const svg = host.querySelector("svg"); if (!svg) return;
@@ -2821,168 +2815,54 @@ function ensureXmlHeader(xml) {
     }
   }
 
-  function applyStretchRules(osmd){
+  // Make OSMD do proper paged layout and stretch systems to page width
+  function enforceLetterAndStretch(osmd){
     try {
-      // Stretch all systems to page width; also stretch the *last* system line.
-      if (osmd && osmd.rules) {
-        // common flag in OSMD
-        if ("StretchLastSystemLine" in osmd.rules) osmd.rules.StretchLastSystemLine = true;
-        // some builds expose a generic justify toggle; set if present
-        if ("JustifySystemLines" in osmd.rules)     osmd.rules.JustifySystemLines   = true;
-      }
-    } catch(e) {
-      console.warn("[M9] applyStretchRules skipped:", e);
-    }
-  }
-
-  // Draw/update frames + white covers that visually clip the score into pages
-  function paintFrames(host){
-    try{
-      if (!host) return;
-      const svg = host.querySelector("svg");
-      if (!svg) return;
-
-      // Layer order: frames (0) < SVG (1) < covers (2) < overlay (3)
-      svg.style.position = "relative";
-      svg.style.zIndex   = "1";
-
-      // --- page frames behind the score ---
-      let frames = host.querySelector(".aa-pageframes");
-      if (!frames) {
-        frames = document.createElement("div");
-        frames.className = "aa-pageframes";
-        frames.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:0;";
-        host.appendChild(frames);
+      // Prefer official API if present
+      if (typeof osmd.setOptions === "function") {
+        osmd.setOptions({
+          // keep your existing backend etc.; these are safe repeats
+          backend: "svg",
+          // force paged layout on Letter
+          pageFormat: "Letter",          // OSMD >= 1.6
+          // for some versions: pageBackgroundColor makes pages opaque
+          pageBackgroundColor: "#ffffff",
+          // respect page/system hints from MusicXML (you already use these)
+          newPageFromXML: true,
+          newSystemFromXML: true
+        });
       }
 
-      // --- white covers in front to hide bleed between pages/edges ---
-      let covers = host.querySelector(".aa-pagecovers");
-      if (!covers) {
-        covers = document.createElement("div");
-        covers.className = "aa-pagecovers";
-        covers.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
-        host.appendChild(covers);
-      } else {
-        covers.innerHTML = ""; // rebuild cheaply each time
-      }
-
-      // Keep overlay on top
-      const ov = host.querySelector(".aa-overlay");
-      if (ov) ov.style.zIndex = "3";
-
-      const svgRect = svg.getBoundingClientRect();
-      if (!svgRect.width || !svgRect.height) return;
-
-      const pageH    = Math.max(1, Math.floor(svgRect.height));         // page height = score height
-      const pageW    = Math.max(1, Math.floor(pageH * LETTER_RATIO));   // letter ratio
-      const contentW = Math.max(1, Math.floor(svgRect.width));
-      const count    = Math.max(1, Math.ceil(contentW / pageW));
-
-      // Ensure we have exactly `count` frames
-      const cur = frames.children.length;
-      if (cur < count) {
-        for (let i = cur; i < count; i++) {
-          const f = document.createElement("div");
-          f.className = "aa-pageframe";
-          f.style.cssText =
-            "position:absolute;border-radius:8px;background:#fff;" +
-            "box-shadow:0 4px 28px rgba(0,0,0,.12);" +
-            "outline:1px solid rgba(0,0,0,.06);";
-          frames.appendChild(f);
-        }
-      } else if (cur > count) {
-        for (let i = 0; i < cur - count; i++) frames.lastChild?.remove();
-      }
-
-      const leftPad = Math.max(14, parseInt(getComputedStyle(host).paddingLeft || "0", 10));
-      const usableH = Math.max(1, pageH - TOP_BOTTOM_PAD * 2);
-
-      // Position frames and create gutters/top/bottom covers
-      for (let idx = 0; idx < count; idx++) {
-        const x = leftPad + idx * (pageW + GAP_BETWEEN);
-
-        // frame rect
-        const f = frames.children[idx];
-        f.style.left   = x + "px";
-        f.style.top    = TOP_BOTTOM_PAD + "px";
-        f.style.width  = pageW + "px";
-        f.style.height = usableH + "px";
-
-        // gutter cover to the right of the page
-        if (idx < count - 1) {
-          const g = document.createElement("div");
-          g.style.cssText =
-            "position:absolute;background:#fff;" +
-            `top:${TOP_BOTTOM_PAD}px;left:${x + pageW}px;` +
-            `width:${GAP_BETWEEN}px;height:${usableH}px;`;
-          covers.appendChild(g);
+      // Nudge engraving rules that many builds expose:
+      const r = osmd.rules;
+      if (r) {
+        // stretch every system, including the last one
+        if ("JustifySystemLines"   in r) r.JustifySystemLines   = true;
+        if ("StretchLastSystemLine" in r) r.StretchLastSystemLine = true;
+        // if available, ensure we really fill width
+        if ("SystemFillFactor" in r && isFinite(r.SystemFillFactor)) {
+          r.SystemFillFactor = 1.0;
         }
       }
-
-      // left edge cover
-      const leftCover = document.createElement("div");
-      leftCover.style.cssText =
-        "position:absolute;background:#fff;" +
-        `top:${TOP_BOTTOM_PAD}px;left:0px;` +
-        `width:${leftPad}px;height:${usableH}px;`;
-      covers.appendChild(leftCover);
-
-      // right edge cover
-      const lastX = leftPad + (count - 1) * (pageW + GAP_BETWEEN);
-      const rightCover = document.createElement("div");
-      rightCover.style.cssText =
-        "position:absolute;background:#fff;" +
-        `top:${TOP_BOTTOM_PAD}px;left:${lastX + pageW}px;right:0;` +
-        `height:${usableH}px;`;
-      covers.appendChild(rightCover);
-
-      // top/bottom strips to clamp vertical bleed
-      const topStrip = document.createElement("div");
-      topStrip.style.cssText = "position:absolute;left:0;right:0;top:0;" +
-                               `height:${TOP_BOTTOM_PAD}px;background:#fff;`;
-      covers.appendChild(topStrip);
-
-      const bottomStrip = document.createElement("div");
-      bottomStrip.style.cssText = "position:absolute;left:0;right:0;bottom:0;" +
-                                  `height:${TOP_BOTTOM_PAD}px;background:#fff;`;
-      covers.appendChild(bottomStrip);
     } catch (e) {
-      console.warn("[M9] paintFrames skipped:", e);
+      console.warn("[M9] enforceLetterAndStretch skipped:", e);
     }
   }
 
-  function hookHost(osmd, host) {
-    if (!host || host._m9Hooked) return;
-    host._m9Hooked = true;
-
-    // Apply stretch rules once per OSMD instance
-    applyStretchRules(osmd);
-
-    const schedule = () => requestAnimationFrame(() => {
-      // paint frames, then ensure vertical fit of the whole page
-      paintFrames(host);
-      fitToHeight(osmd, host);
-    });
-
-    const ro = new ResizeObserver(schedule);
-    ro.observe(host);
-
-    const mo = new MutationObserver((muts) => {
-      for (const m of muts) {
-        if (m.type === "childList") { schedule(); return; }
-      }
-    });
-    mo.observe(host, { childList: true, subtree: true });
-
-    host._m9ro = ro;
-    host._m9mo = mo;
-
-    schedule(); // initial pass
-  }
-
-  // Wait for M7 to finish rendering; then hook the viewer
+  // After every viewer render, apply rules and fit vertically
   if (typeof AA !== "undefined" && AA.on) {
-    AA.on("viewer:rendered", ({ osmd, host }) => hookHost(osmd, host));
+    AA.on("viewer:rendered", ({ osmd, host }) => {
+      if (!osmd || !host) return;
+
+      // 1) enforce paging + justification
+      enforceLetterAndStretch(osmd);
+
+      // 2) re-render once with new rules/options
+      try { osmd.render(); } catch(_) {}
+
+      // 3) fit vertically to ~90% so whole pages are visible
+      requestAnimationFrame(() => fitToHeight(osmd, host));
+    });
   }
 })();
 
