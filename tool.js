@@ -2786,13 +2786,54 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M9) Viewer Page Frames (Letter) + Horizontal Pagination + Visual Clipping
-   (event-driven; no global observers)
+   M9) Viewer Page Frames (Letter) + Horizontal Pagination + Fit & Stretch
+   (event-driven; no global observers; waits for M7's "viewer:rendered")
    ------------------------------------------------------------------------- */
 ;(function () {
   const LETTER_RATIO   = 8.5 / 11; // width / height
   const GAP_BETWEEN    = 28;       // px gap between page frames
   const TOP_BOTTOM_PAD = 12;       // px inset from host top/bottom
+  const FIT_SHRINK     = 0.90;     // match your vertical-fit aesthetic
+
+  // --- helpers -------------------------------------------------------------
+
+  function fitToHeight(osmd, host){
+    try{
+      const svg = host.querySelector("svg"); if (!svg) return;
+      const maxH = host.clientHeight; if (!maxH) return;
+
+      let svgH = 0;
+      try { svgH = svg.getBBox().height; } catch(_) {}
+      if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
+      if (!svgH) return;
+
+      const current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
+      let target = (maxH * FIT_SHRINK) / svgH;
+      if (!isFinite(target) || target <= 0) target = 1;
+      target = Math.max(0.3, Math.min(1.5, target));
+
+      if (Math.abs(target - current) > 0.01) {
+        osmd.zoom = target;
+        osmd.render(); // re-render at the new zoom
+      }
+    } catch(e) {
+      console.warn("[M9] fitToHeight skipped:", e);
+    }
+  }
+
+  function applyStretchRules(osmd){
+    try {
+      // Stretch all systems to page width; also stretch the *last* system line.
+      if (osmd && osmd.rules) {
+        // common flag in OSMD
+        if ("StretchLastSystemLine" in osmd.rules) osmd.rules.StretchLastSystemLine = true;
+        // some builds expose a generic justify toggle; set if present
+        if ("JustifySystemLines" in osmd.rules)     osmd.rules.JustifySystemLines   = true;
+      }
+    } catch(e) {
+      console.warn("[M9] applyStretchRules skipped:", e);
+    }
+  }
 
   // Draw/update frames + white covers that visually clip the score into pages
   function paintFrames(host){
@@ -2801,11 +2842,11 @@ function ensureXmlHeader(xml) {
       const svg = host.querySelector("svg");
       if (!svg) return;
 
-      // Layering: frames (0) < SVG (1) < covers (2) < overlay (3)
+      // Layer order: frames (0) < SVG (1) < covers (2) < overlay (3)
       svg.style.position = "relative";
       svg.style.zIndex   = "1";
 
-      // --- page frames (behind the score) ---
+      // --- page frames behind the score ---
       let frames = host.querySelector(".aa-pageframes");
       if (!frames) {
         frames = document.createElement("div");
@@ -2814,7 +2855,7 @@ function ensureXmlHeader(xml) {
         host.appendChild(frames);
       }
 
-      // --- white covers (in front of the score to hide bleed) ---
+      // --- white covers in front to hide bleed between pages/edges ---
       let covers = host.querySelector(".aa-pagecovers");
       if (!covers) {
         covers = document.createElement("div");
@@ -2910,20 +2951,25 @@ function ensureXmlHeader(xml) {
     }
   }
 
-  // Hook a single viewer host; listens only after M7 emits "viewer:rendered"
-  function hookHost(host) {
+  function hookHost(osmd, host) {
     if (!host || host._m9Hooked) return;
     host._m9Hooked = true;
 
-    const doPaint = () => requestAnimationFrame(() => paintFrames(host));
+    // Apply stretch rules once per OSMD instance
+    applyStretchRules(osmd);
 
-    // keep in sync with later renders/resize
-    const ro = new ResizeObserver(doPaint);
+    const schedule = () => requestAnimationFrame(() => {
+      // paint frames, then ensure vertical fit of the whole page
+      paintFrames(host);
+      fitToHeight(osmd, host);
+    });
+
+    const ro = new ResizeObserver(schedule);
     ro.observe(host);
 
     const mo = new MutationObserver((muts) => {
       for (const m of muts) {
-        if (m.type === "childList") { doPaint(); return; }
+        if (m.type === "childList") { schedule(); return; }
       }
     });
     mo.observe(host, { childList: true, subtree: true });
@@ -2931,11 +2977,12 @@ function ensureXmlHeader(xml) {
     host._m9ro = ro;
     host._m9mo = mo;
 
-    doPaint(); // initial
+    schedule(); // initial pass
   }
 
-  // Only act when the viewer finishes rendering
+  // Wait for M7 to finish rendering; then hook the viewer
   if (typeof AA !== "undefined" && AA.on) {
-    AA.on("viewer:rendered", ({ host }) => hookHost(host));
+    AA.on("viewer:rendered", ({ osmd, host }) => hookHost(osmd, host));
   }
 })();
+
