@@ -1620,12 +1620,10 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 
-
 /* =========================================================================
    M7) Final Viewer
    ------------------------------------------------------------------------- */
 ;(function () {
-  // Start viewer only after combine is done
   AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
 
   async function bootWhenReady() {
@@ -1633,7 +1631,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     await ensureLib("opensheetmusicdisplay", "./opensheetmusicdisplay.min.js");
     await ensureLib("html2canvas", "./html2canvas.min.js");
     await ensureLib("jspdf", "./jspdf.umd.min.js");
-    await ensureLib("JSZip", "./jszip.min.js"); // NEW: zip support
+    await ensureLib("JSZip", "./jszip.min.js");
     buildViewerUI();
   }
 
@@ -1652,7 +1650,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   }
 
   function buildViewerUI(){
-    // nuke any existing viewer
     document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
 
     const state    = getState();
@@ -1705,13 +1702,12 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     btnRow.innerHTML = [
       '<button id="aa-btn-pdf" class="aa-btn" disabled>Download PDF</button>',
       '<button id="aa-btn-xml" class="aa-btn" disabled>Download XML</button>',
-      // NEW labels (+ Score) and will ZIP
       '<button id="aa-btn-pdf-all" class="aa-btn">Download PDF All Parts &amp; Score</button>',
       '<button id="aa-btn-xml-all" class="aa-btn">Download XML All Parts &amp; Score</button>'
     ].join("");
     controls.appendChild(btnRow);
 
-    // NEW: Bars-per-system row (orange)
+    // Bars-per-system row (orange)
     const barRow = ce("div");
     barRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:center;margin-top:4px;";
     barRow.innerHTML = [
@@ -1736,13 +1732,19 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
     const osmdBox = ce("div");
     osmdBox.id = "aa-osmd-box";
-    // horizontal scroll enabled; vertical fit only
     osmdBox.style.cssText = "margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;position:relative;";
     card.appendChild(osmdBox);
     document.body.appendChild(wrap);
 
     const OSMD = lookupGlobal("opensheetmusicdisplay");
-    const osmd = new OSMD.OpenSheetMusicDisplay(osmdBox, { autoResize:true, backend:"svg", drawingParameters:"default" });
+    // IMPORTANT: respect XML system/page breaks
+    const osmd = new OSMD.OpenSheetMusicDisplay(osmdBox, {
+      autoResize: true,
+      backend: "svg",
+      drawingParameters: "default",
+      newSystemFromXML: true,
+      newPageFromXML: true
+    });
 
     const btnPDF    = btnRow.querySelector("#aa-btn-pdf");
     const btnXML    = btnRow.querySelector("#aa-btn-xml");
@@ -1751,7 +1753,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
     let lastXml = "";
     let overlayRaf = 0;
-    let barsPerSystemChoice = 0; // 0 = auto (no forced breaks)
+    let barsPerSystemChoice = 0; // 0 = Auto
 
     function setBarsActive(n){
       barsPerSystemChoice = Number(n)||0;
@@ -1799,13 +1801,12 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
     select.addEventListener("change", renderSelection);
 
-    // Bars per system buttons
     barRow.addEventListener("click", (ev) => {
       const b = ev.target.closest(".aa-btn-orange");
       if (!b) return;
       const n = Number(b.getAttribute("data-bars"))||0;
       setBarsActive(n);
-      renderSelection(); // re-render current choice with new bars-per-system
+      renderSelection();
     });
 
     async function renderSelection(){
@@ -1827,7 +1828,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         await osmd.load(work);
         await osmd.render();
         await new Promise(r => requestAnimationFrame(r));
-        fitScoreToHeight(osmd, osmdBox);   // vertical fit only (90%)
+        fitScoreToHeight(osmd, osmdBox);   // vertical fit (90%)
         forceIntrinsicSvgWidth(osmdBox);   // keep intrinsic width → horizontal scroll
         lastXml = work;
         btnPDF.disabled = false;
@@ -1839,11 +1840,10 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       }
     }
 
-    // Render first item immediately
     requestAnimationFrame(() => {
       if (select.options.length > 0) {
         select.selectedIndex = 0;
-        setBarsActive(0); // default Auto
+        setBarsActive(0);
         renderSelection();
       }
     });
@@ -1888,8 +1888,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         cleanup();
 
         const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
-        const zipName = `${safe(songName)} - PDFs (Score & Parts).zip`;
-        triggerBlobDownload(blob, zipName);
+        triggerBlobDownload(blob, `${safe(songName)} - PDFs (Score & Parts).zip`);
       } catch (e) {
         console.error("[finalViewer] ZIP PDFs failed", e);
         alert("Failed to export PDFs.");
@@ -1919,8 +1918,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
           zip.file(`${safe(songName)} - ${safe(it.label)}.musicxml`, xmlWork);
         }
         const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
-        const zipName = `${safe(songName)} - XMLs (Score & Parts).zip`;
-        triggerBlobDownload(blob, zipName);
+        triggerBlobDownload(blob, `${safe(songName)} - XMLs (Score & Parts).zip`);
       } catch (e) {
         console.error("[finalViewer] ZIP XMLs failed", e);
         alert("Failed to export XMLs.");
@@ -1946,7 +1944,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       if (ov) ov.innerHTML = "";
     }
 
-    // reset to first option and rerender (as if just loaded)
     function resetViewerToDefault(){
       if (!select || select.options.length === 0) return;
       select.selectedIndex = 0;
@@ -1954,7 +1951,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       osmdBox.scrollLeft = 0;
       renderSelection();
     }
-
   } // buildViewerUI
 
   /* ===== ghost renderer (prevents flicker) ===== */
@@ -1966,7 +1962,13 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     document.body.appendChild(ghostBox);
 
     const OSMD = lookupGlobal("opensheetmusicdisplay");
-    const ghost = new OSMD.OpenSheetMusicDisplay(ghostBox, { autoResize:false, backend:"svg", drawingParameters:"default" });
+    const ghost = new OSMD.OpenSheetMusicDisplay(ghostBox, {
+      autoResize: false,
+      backend: "svg",
+      drawingParameters: "default",
+      newSystemFromXML: true,
+      newPageFromXML: true
+    });
 
     const cleanup = () => { try { ghostBox.remove(); } catch(_) {} };
     return { ghost, ghostBox, cleanup };
@@ -1984,7 +1986,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     forceIntrinsicSvgWidth(ghostBox);
 
     const { canvas, w, h } = await snapshotCanvas(ghostBox);
-    const PDF_DOWNSCALE = 0.9; // match on-screen 90% feel
+    const PDF_DOWNSCALE = 0.9;
     const pageW = Math.floor(w * PDF_DOWNSCALE);
     const pageH = Math.floor(h * PDF_DOWNSCALE);
 
@@ -2040,7 +2042,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
     if (!svgH) return;
     const current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
-    const SHRINK = 0.90; // extra 10% shrink
+    const SHRINK = 0.90;
     let target = Math.min(current, (maxH * SHRINK) / svgH);
     if (!isFinite(target) || target <= 0) target = 1;
     target = Math.max(0.3, Math.min(1.5, target));
@@ -2048,21 +2050,18 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   }
   function forceIntrinsicSvgWidth(host){
     const svg = host.querySelector("svg"); if (!svg) return;
-    // try viewBox width first
     let vbw = 0;
     const vb = svg.viewBox && svg.viewBox.baseVal;
     if (vb && vb.width) vbw = vb.width;
     if (!vbw) {
       try { vbw = svg.getBBox().width; } catch(e){}
     }
-    if (vbw) {
-      svg.style.width = Math.ceil(vbw) + "px";
-    } else {
-      svg.style.removeProperty("width");
-    }
+    if (vbw) svg.style.width = Math.ceil(vbw) + "px";
+    else svg.style.removeProperty("width");
   }
 
-  // --- MusicXML helpers ---
+  // --- MusicXML helpers -------------------------------------------------
+
   function ensureTitle(xmlString, title){
     try {
       const parser = new DOMParser();
@@ -2077,6 +2076,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       return new XMLSerializer().serializeToString(doc);
     } catch (e) { return xmlString; }
   }
+
   function transformXmlForSlashes(xmlString) {
     try {
       const parser = new DOMParser();
@@ -2085,15 +2085,18 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       return new XMLSerializer().serializeToString(xmlDoc);
     } catch (e) { return xmlString; }
   }
+
   function withXmlProlog(str){
     if (!str) return str;
     let s = String(str).replace(/^\uFEFF/, "").replace(/^\s+/, "");
     if (!/^\<\?xml/i.test(s)) s = '<?xml version="1.0" encoding="UTF-8"?>\n' + s;
     return s;
   }
+
   function safe(name){
     return String(name || "").replace(/[\\\/:*?"<>|]+/g, "_").replace(/\s+/g, " ").trim();
   }
+
   function downloadText(text, filename, mimetype){
     try{
       const blob = new Blob([text], { type: mimetype || "application/octet-stream" });
@@ -2105,42 +2108,68 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     } catch(e){ console.warn("downloadText failed", e); }
   }
 
-  // Insert forced system breaks every N measures, both partwise and (best-effort) timewise
+  // remove ALL <print> elements (so we can reapply cleanly or return to Auto)
+  function stripAllPrints(doc){
+    const prints = Array.from(doc.getElementsByTagName("print"));
+    prints.forEach(n => n.parentNode && n.parentNode.removeChild(n));
+  }
+
+  // Insert forced system breaks every N measures.
+  // Strategy:
+  //  - strip all existing <print>
+  //  - insert <print new-system="yes"> into the FIRST PART ONLY
+  //    at measures i where i % N === 0 (i>0)
   function applyBarsPerSystem(xmlString, barsPerSystem){
     const N = Number(barsPerSystem)||0;
-    if (!N) return xmlString;
     try{
-      const doc = new DOMParser().parseFromString(String(xmlString), "application/xml");
+      const doc  = new DOMParser().parseFromString(String(xmlString), "application/xml");
       const root = doc.documentElement;
-      const ns = root.namespaceURI || null;
+      const ns   = root.namespaceURI || null;
 
-      function ensurePrint(measureEl){
-        let p = measureEl.querySelector("print");
-        if (!p) {
-          p = ns ? doc.createElementNS(ns,"print") : doc.createElement("print");
-          measureEl.insertBefore(p, measureEl.firstChild);
-        }
+      // clean slate
+      stripAllPrints(doc);
+      if (!N) return new XMLSerializer().serializeToString(doc);
+
+      function mkPrint(){
+        const p = ns ? doc.createElementNS(ns,"print") : doc.createElement("print");
         p.setAttribute("new-system","yes");
+        return p;
       }
 
       let inserted = 0;
+
       if (/score-partwise/i.test(root.nodeName)) {
-        const parts = Array.from(doc.querySelectorAll("part"));
-        parts.forEach(part => {
-          const measures = Array.from(part.querySelectorAll(":scope > measure"));
+        const parts = Array.from(doc.getElementsByTagName("part"));
+        if (parts.length) {
+          const firstPart = parts[0];
+          const measures = Array.from(firstPart.getElementsByTagName("measure"));
           for (let i=0;i<measures.length;i++){
-            if (i>0 && (i % N)===0) { ensurePrint(measures[i]); inserted++; }
+            if (i>0 && (i % N)===0) {
+              const m = measures[i];
+              const p = mkPrint();
+              m.insertBefore(p, m.firstChild);
+              inserted++;
+            }
           }
-        });
-        console.log(`[M7] applyBarsPerSystem: inserted ${inserted} system breaks (partwise)`);
-      } else if (/score-timewise/i.test(root.nodeName)) {
-        // timewise: measures are global; put breaks at target measure indices
-        const measures = Array.from(doc.querySelectorAll(":scope > measure"));
-        for (let i=0;i<measures.length;i++){
-          if (i>0 && (i % N)===0) { ensurePrint(measures[i]); inserted++; }
         }
-        console.log(`[M7] applyBarsPerSystem: inserted ${inserted} system breaks (timewise)`);
+        console.log(`[M7] applyBarsPerSystem(partwise): inserted ${inserted} system breaks into first part`);
+      } else if (/score-timewise/i.test(root.nodeName)) {
+        const measures = Array.from(root.getElementsByTagName("measure"));
+        for (let i=0;i<measures.length;i++){
+          if (i>0 && (i % N)===0) {
+            const m = measures[i];
+            // insert into the FIRST <part> of the measure
+            const firstPart = m.getElementsByTagName("part")[0];
+            if (firstPart) {
+              const p = mkPrint();
+              firstPart.insertBefore(p, firstPart.firstChild);
+              inserted++;
+            }
+          }
+        }
+        console.log(`[M7] applyBarsPerSystem(timewise): inserted ${inserted} system breaks into first-part-per-measure`);
       }
+
       return new XMLSerializer().serializeToString(doc);
     }catch(e){
       console.warn("[M7] applyBarsPerSystem failed", e);
@@ -2152,6 +2181,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   function applyScalingForBars(xmlString, barsPerSystem){
     const N = Number(barsPerSystem)||0;
     if (!N) return xmlString;
+    // tweak multipliers if you want even stronger packing
     const kMap = { 4: 1.00, 8: 1.15, 12: 1.30, 16: 1.50 };
     const k = kMap[N] || 1.00;
     try {
@@ -2201,7 +2231,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       song: songName,
       packIndex: getState().packIndex,
       songIndex: getState().songIndex,
-      // clear viewer-specific results so earlier stages behave
       arrangedFiles: [],
       combinedScoreXml: "",
       timestamp: Date.now()
@@ -2214,7 +2243,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     AA.emit("wizard:stage", "instruments");
   }
 
-  // --- overlay helpers ------------------------------------------------
+  // --- overlay (viewer-only) -------------------------------------------
   function getArrangerFromXml(xmlString){
     try{
       const p = new DOMParser();
@@ -2268,7 +2297,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       const absTop   = (px) => (px - hostRect.top)  + "px";
       const absRight = (px) => (hostRect.right - px) + "px";
 
-      // find any composer text to steal font metrics
       let composerTextNode = null;
       for (const t of svg.querySelectorAll("text")) {
         const txt = (t.textContent || "");
@@ -2337,7 +2365,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     }
   }
 
-  // tiny DOM helper
   function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
 })();
 
