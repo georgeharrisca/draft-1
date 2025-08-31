@@ -2780,26 +2780,27 @@ function ensureXmlHeader(xml) {
 
 
 
-
 /* =========================================================================
    M9) Viewer Page Frames (Letter) + Horizontal Pagination + Visual Clipping
+   (event-driven; no global observers)
    ------------------------------------------------------------------------- */
 ;(function () {
   const LETTER_RATIO   = 8.5 / 11; // width / height
   const GAP_BETWEEN    = 28;       // px gap between page frames
   const TOP_BOTTOM_PAD = 12;       // px inset from host top/bottom
 
-  function ensureFrames(host) {
-    try {
+  // Draw/update frames + white covers that visually clip the score into pages
+  function paintFrames(host){
+    try{
       if (!host) return;
       const svg = host.querySelector("svg");
       if (!svg) return;
 
       // Layering: frames (0) < SVG (1) < covers (2) < overlay (3)
       svg.style.position = "relative";
-      svg.style.zIndex = "1";
+      svg.style.zIndex   = "1";
 
-      // ---- frames (behind the score) ----
+      // --- page frames (behind the score) ---
       let frames = host.querySelector(".aa-pageframes");
       if (!frames) {
         frames = document.createElement("div");
@@ -2808,29 +2809,30 @@ function ensureXmlHeader(xml) {
         host.appendChild(frames);
       }
 
-      // ---- white covers (in front of the score to hide bleed) ----
+      // --- white covers (in front of the score to hide bleed) ---
       let covers = host.querySelector(".aa-pagecovers");
       if (!covers) {
         covers = document.createElement("div");
         covers.className = "aa-pagecovers";
         covers.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
         host.appendChild(covers);
+      } else {
+        covers.innerHTML = ""; // rebuild cheaply each time
       }
 
-      // keep overlay titles on top
+      // Keep overlay on top
       const ov = host.querySelector(".aa-overlay");
       if (ov) ov.style.zIndex = "3";
 
-      // actual drawn size of the score
       const svgRect = svg.getBoundingClientRect();
-      if (!svgRect.height || !svgRect.width) return;
+      if (!svgRect.width || !svgRect.height) return;
 
-      const pageH    = Math.max(1, Math.floor(svgRect.height));
-      const pageW    = Math.max(1, Math.floor(pageH * LETTER_RATIO));
+      const pageH    = Math.max(1, Math.floor(svgRect.height));         // page height = score height
+      const pageW    = Math.max(1, Math.floor(pageH * LETTER_RATIO));   // letter ratio
       const contentW = Math.max(1, Math.floor(svgRect.width));
       const count    = Math.max(1, Math.ceil(contentW / pageW));
 
-      // add/remove frames to match count
+      // Ensure we have exactly `count` frames
       const cur = frames.children.length;
       if (cur < count) {
         for (let i = cur; i < count; i++) {
@@ -2846,86 +2848,77 @@ function ensureXmlHeader(xml) {
         for (let i = 0; i < cur - count; i++) frames.lastChild?.remove();
       }
 
-      // rebuild covers every time (cheap + simple)
-      covers.innerHTML = "";
-
-      // compute geometry
       const leftPad = Math.max(14, parseInt(getComputedStyle(host).paddingLeft || "0", 10));
       const usableH = Math.max(1, pageH - TOP_BOTTOM_PAD * 2);
 
-      // place frames + build white “gutters” & top/bottom strips
+      // Position frames and create gutters/top/bottom covers
       for (let idx = 0; idx < count; idx++) {
         const x = leftPad + idx * (pageW + GAP_BETWEEN);
 
-        // frame
+        // frame rect
         const f = frames.children[idx];
-        f.style.left = x + "px";
-        f.style.top = TOP_BOTTOM_PAD + "px";
-        f.style.width = pageW + "px";
+        f.style.left   = x + "px";
+        f.style.top    = TOP_BOTTOM_PAD + "px";
+        f.style.width  = pageW + "px";
         f.style.height = usableH + "px";
 
-        // gutter to the right of the frame (hide anything spilling into the gap)
+        // gutter cover to the right of the page
         if (idx < count - 1) {
           const g = document.createElement("div");
-          g.className = "aa-cover-gutter";
           g.style.cssText =
             "position:absolute;background:#fff;" +
-            "top:" + TOP_BOTTOM_PAD + "px;" +
-            "left:" + (x + pageW) + "px;" +
-            "width:" + GAP_BETWEEN + "px;" +
-            "height:" + usableH + "px;";
+            `top:${TOP_BOTTOM_PAD}px;left:${x + pageW}px;` +
+            `width:${GAP_BETWEEN}px;height:${usableH}px;`;
           covers.appendChild(g);
         }
       }
 
-      // left edge cover (from host left to first page)
+      // left edge cover
       const leftCover = document.createElement("div");
       leftCover.style.cssText =
         "position:absolute;background:#fff;" +
-        "top:" + TOP_BOTTOM_PAD + "px;" +
-        "left:0px;" +
-        "width:" + leftPad + "px;" +
-        "height:" + usableH + "px;";
+        `top:${TOP_BOTTOM_PAD}px;left:0px;` +
+        `width:${leftPad}px;height:${usableH}px;`;
       covers.appendChild(leftCover);
 
-      // right edge cover (after last page until host right)
+      // right edge cover
       const lastX = leftPad + (count - 1) * (pageW + GAP_BETWEEN);
       const rightCover = document.createElement("div");
       rightCover.style.cssText =
         "position:absolute;background:#fff;" +
-        "top:" + TOP_BOTTOM_PAD + "px;" +
-        "left:" + (lastX + pageW) + "px;" +
-        "right:0;" +
-        "height:" + usableH + "px;";
+        `top:${TOP_BOTTOM_PAD}px;left:${lastX + pageW}px;right:0;` +
+        `height:${usableH}px;`;
       covers.appendChild(rightCover);
 
-      // top & bottom margin covers (clip vertically to the page window)
+      // top/bottom strips to clamp vertical bleed
       const topStrip = document.createElement("div");
-      topStrip.style.cssText =
-        "position:absolute;left:0;right:0;top:0;" +
-        "height:" + TOP_BOTTOM_PAD + "px;background:#fff;";
+      topStrip.style.cssText = "position:absolute;left:0;right:0;top:0;" +
+                               `height:${TOP_BOTTOM_PAD}px;background:#fff;`;
       covers.appendChild(topStrip);
 
       const bottomStrip = document.createElement("div");
-      bottomStrip.style.cssText =
-        "position:absolute;left:0;right:0;" +
-        "bottom:0;height:" + TOP_BOTTOM_PAD + "px;background:#fff;";
+      bottomStrip.style.cssText = "position:absolute;left:0;right:0;bottom:0;" +
+                                  `height:${TOP_BOTTOM_PAD}px;background:#fff;`;
       covers.appendChild(bottomStrip);
     } catch (e) {
-      console.warn("[M9] ensureFrames skipped:", e);
+      console.warn("[M9] paintFrames skipped:", e);
     }
   }
 
+  // Hook a single viewer host; listens only after M7 emits "viewer:rendered"
   function hookHost(host) {
     if (!host || host._m9Hooked) return;
     host._m9Hooked = true;
 
-    const ro = new ResizeObserver(() => ensureFrames(host));
+    const doPaint = () => requestAnimationFrame(() => paintFrames(host));
+
+    // keep in sync with later renders/resize
+    const ro = new ResizeObserver(doPaint);
     ro.observe(host);
 
     const mo = new MutationObserver((muts) => {
       for (const m of muts) {
-        if (m.type === "childList") { ensureFrames(host); return; }
+        if (m.type === "childList") { doPaint(); return; }
       }
     });
     mo.observe(host, { childList: true, subtree: true });
@@ -2933,32 +2926,11 @@ function ensureXmlHeader(xml) {
     host._m9ro = ro;
     host._m9mo = mo;
 
-    ensureFrames(host);
+    doPaint(); // initial
   }
 
-  function tryHookNow() {
-    const host = document.getElementById("aa-osmd-box");
-    if (host) hookHost(host);
-  }
-  document.addEventListener("DOMContentLoaded", tryHookNow);
-
-  const docMO = new MutationObserver((muts) => {
-    for (const m of muts) {
-      for (const n of m.addedNodes) {
-        if (!(n instanceof HTMLElement)) continue;
-        if (n.id === "aa-osmd-box") hookHost(n);
-        else {
-          const h = n.querySelector && n.querySelector("#aa-osmd-box");
-          if (h) hookHost(h);
-        }
-      }
-    }
-  });
-  docMO.observe(document.documentElement, { childList: true, subtree: true });
-
-  // after each viewer render (M7 emits this)
+  // Only act when the viewer finishes rendering
   if (typeof AA !== "undefined" && AA.on) {
-    AA.on("viewer:rendered", ({ host }) => ensureFrames(host));
+    AA.on("viewer:rendered", ({ host }) => hookHost(host));
   }
 })();
-
