@@ -2781,132 +2781,136 @@ function ensureXmlHeader(xml) {
 
 
 
-
-
 /* =========================================================================
-   M9) Viewer Page Frames (Letter) + Horizontal Pagination + Masking
+   M9) Viewer Page Frames (Letter) + Horizontal Pagination + Visual Clipping
    ------------------------------------------------------------------------- */
 ;(function () {
   const LETTER_RATIO   = 8.5 / 11; // width / height
   const GAP_BETWEEN    = 28;       // px gap between page frames
-  const TOP_BOTTOM_PAD = 12;       // px inset from host top/bottom for frames
-  const CORNER_RAD     = 8;        // page corner radius (matches frame)
+  const TOP_BOTTOM_PAD = 12;       // px inset from host top/bottom
 
   function ensureFrames(host) {
     try {
       if (!host) return;
-
-      // host must be a stacking context
-      const cs = getComputedStyle(host);
-      if (cs.position === "static") host.style.position = "relative";
-
       const svg = host.querySelector("svg");
       if (!svg) return;
 
-      // find the direct child wrapper that contains the SVG (OSMD render layer)
-      let renderLayer = svg;
-      let cur = svg;
-      while (cur && cur.parentElement && cur.parentElement !== host) {
-        cur = cur.parentElement;
-      }
-      if (cur && cur.parentElement === host) renderLayer = cur;
+      // Layering: frames (0) < SVG (1) < covers (2) < overlay (3)
+      svg.style.position = "relative";
+      svg.style.zIndex = "1";
 
-      renderLayer.style.position = "relative";
-      renderLayer.style.zIndex   = "1"; // above frames
-
-      // frames container as FIRST child (always behind)
+      // ---- frames (behind the score) ----
       let frames = host.querySelector(".aa-pageframes");
       if (!frames) {
         frames = document.createElement("div");
         frames.className = "aa-pageframes";
         frames.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:0;";
-        host.insertBefore(frames, host.firstChild);
-      } else if (frames !== host.firstChild) {
-        host.insertBefore(frames, host.firstChild);
+        host.appendChild(frames);
       }
 
-      // overlay stays on top
-      const ov = host.querySelector(".aa-overlay");
-      if (ov) { ov.style.position = "absolute"; ov.style.zIndex = "3"; }
+      // ---- white covers (in front of the score to hide bleed) ----
+      let covers = host.querySelector(".aa-pagecovers");
+      if (!covers) {
+        covers = document.createElement("div");
+        covers.className = "aa-pagecovers";
+        covers.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
+        host.appendChild(covers);
+      }
 
-      // measure drawing
+      // keep overlay titles on top
+      const ov = host.querySelector(".aa-overlay");
+      if (ov) ov.style.zIndex = "3";
+
+      // actual drawn size of the score
       const svgRect = svg.getBoundingClientRect();
-      if (!svgRect.width || !svgRect.height) return;
+      if (!svgRect.height || !svgRect.width) return;
 
       const pageH    = Math.max(1, Math.floor(svgRect.height));
       const pageW    = Math.max(1, Math.floor(pageH * LETTER_RATIO));
       const contentW = Math.max(1, Math.floor(svgRect.width));
       const count    = Math.max(1, Math.ceil(contentW / pageW));
 
-      // add/remove frames
-      const curFrames = frames.children.length;
-      if (curFrames < count) {
-        for (let i = curFrames; i < count; i++) {
+      // add/remove frames to match count
+      const cur = frames.children.length;
+      if (cur < count) {
+        for (let i = cur; i < count; i++) {
           const f = document.createElement("div");
           f.className = "aa-pageframe";
           f.style.cssText =
-            "position:absolute;" +
-            "border-radius:"+CORNER_RAD+"px;background:#fff;" +
+            "position:absolute;border-radius:8px;background:#fff;" +
             "box-shadow:0 4px 28px rgba(0,0,0,.12);" +
             "outline:1px solid rgba(0,0,0,.06);";
           frames.appendChild(f);
         }
-      } else if (curFrames > count) {
-        for (let i = 0; i < curFrames - count; i++) {
-          frames.lastChild?.remove();
+      } else if (cur > count) {
+        for (let i = 0; i < cur - count; i++) frames.lastChild?.remove();
+      }
+
+      // rebuild covers every time (cheap + simple)
+      covers.innerHTML = "";
+
+      // compute geometry
+      const leftPad = Math.max(14, parseInt(getComputedStyle(host).paddingLeft || "0", 10));
+      const usableH = Math.max(1, pageH - TOP_BOTTOM_PAD * 2);
+
+      // place frames + build white “gutters” & top/bottom strips
+      for (let idx = 0; idx < count; idx++) {
+        const x = leftPad + idx * (pageW + GAP_BETWEEN);
+
+        // frame
+        const f = frames.children[idx];
+        f.style.left = x + "px";
+        f.style.top = TOP_BOTTOM_PAD + "px";
+        f.style.width = pageW + "px";
+        f.style.height = usableH + "px";
+
+        // gutter to the right of the frame (hide anything spilling into the gap)
+        if (idx < count - 1) {
+          const g = document.createElement("div");
+          g.className = "aa-cover-gutter";
+          g.style.cssText =
+            "position:absolute;background:#fff;" +
+            "top:" + TOP_BOTTOM_PAD + "px;" +
+            "left:" + (x + pageW) + "px;" +
+            "width:" + GAP_BETWEEN + "px;" +
+            "height:" + usableH + "px;";
+          covers.appendChild(g);
         }
       }
 
-      // placement consistent with viewer padding
-      const leftPad = Math.max(
-        14,
-        parseInt(getComputedStyle(host).paddingLeft || "0", 10)
-      );
-      const usableH = Math.max(1, pageH - TOP_BOTTOM_PAD * 2);
+      // left edge cover (from host left to first page)
+      const leftCover = document.createElement("div");
+      leftCover.style.cssText =
+        "position:absolute;background:#fff;" +
+        "top:" + TOP_BOTTOM_PAD + "px;" +
+        "left:0px;" +
+        "width:" + leftPad + "px;" +
+        "height:" + usableH + "px;";
+      covers.appendChild(leftCover);
 
-      // position frames
-      [...frames.children].forEach((f, idx) => {
-        const x = leftPad + idx * (pageW + GAP_BETWEEN);
-        f.style.left   = x + "px";
-        f.style.top    = TOP_BOTTOM_PAD + "px";
-        f.style.width  = pageW + "px";
-        f.style.height = usableH + "px";
-      });
+      // right edge cover (after last page until host right)
+      const lastX = leftPad + (count - 1) * (pageW + GAP_BETWEEN);
+      const rightCover = document.createElement("div");
+      rightCover.style.cssText =
+        "position:absolute;background:#fff;" +
+        "top:" + TOP_BOTTOM_PAD + "px;" +
+        "left:" + (lastX + pageW) + "px;" +
+        "right:0;" +
+        "height:" + usableH + "px;";
+      covers.appendChild(rightCover);
 
-      // ---------- mask the render layer (and overlay) to page rects ----------
-      // Build an SVG mask the size of the host. White = visible, black = hidden.
-      const hostW = host.clientWidth;
-      const hostH = host.clientHeight;
+      // top & bottom margin covers (clip vertically to the page window)
+      const topStrip = document.createElement("div");
+      topStrip.style.cssText =
+        "position:absolute;left:0;right:0;top:0;" +
+        "height:" + TOP_BOTTOM_PAD + "px;background:#fff;";
+      covers.appendChild(topStrip);
 
-      let maskSVG =
-        `<svg xmlns="http://www.w3.org/2000/svg" width="${hostW}" height="${hostH}" viewBox="0 0 ${hostW} ${hostH}">` +
-        `<rect width="100%" height="100%" fill="black"/>`;
-
-      for (let idx = 0; idx < count; idx++) {
-        const x = leftPad + idx * (pageW + GAP_BETWEEN);
-        maskSVG += `<rect x="${x}" y="${TOP_BOTTOM_PAD}" width="${pageW}" height="${usableH}" rx="${CORNER_RAD}" ry="${CORNER_RAD}" fill="white"/>`;
-      }
-      maskSVG += `</svg>`;
-
-      const url = `url("data:image/svg+xml;utf8,${encodeURIComponent(maskSVG)}")`;
-
-      // apply mask to the OSMD render layer
-      renderLayer.style.maskImage = url;
-      renderLayer.style.maskRepeat = "no-repeat";
-      renderLayer.style.maskSize = "100% 100%";
-      renderLayer.style.webkitMaskImage = url;      // Safari
-      renderLayer.style.webkitMaskRepeat = "no-repeat";
-      renderLayer.style.webkitMaskSize = "100% 100%";
-
-      // also mask overlay so titles don't spill outside pages
-      if (ov) {
-        ov.style.maskImage = url;
-        ov.style.maskRepeat = "no-repeat";
-        ov.style.maskSize = "100% 100%";
-        ov.style.webkitMaskImage = url;
-        ov.style.webkitMaskRepeat = "no-repeat";
-        ov.style.webkitMaskSize = "100% 100%";
-      }
+      const bottomStrip = document.createElement("div");
+      bottomStrip.style.cssText =
+        "position:absolute;left:0;right:0;" +
+        "bottom:0;height:" + TOP_BOTTOM_PAD + "px;background:#fff;";
+      covers.appendChild(bottomStrip);
     } catch (e) {
       console.warn("[M9] ensureFrames skipped:", e);
     }
@@ -2952,8 +2956,9 @@ function ensureXmlHeader(xml) {
   });
   docMO.observe(document.documentElement, { childList: true, subtree: true });
 
-  // after each M7 render, refresh frames/mask
+  // after each viewer render (M7 emits this)
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => ensureFrames(host));
   }
 })();
+
