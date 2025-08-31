@@ -1546,6 +1546,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
    M7) Final Viewer
    ------------------------------------------------------------------------- */
 ;(function () {
+  // Boot viewer after combine is finished
   AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
 
   async function bootWhenReady() {
@@ -1553,7 +1554,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     await ensureLib("opensheetmusicdisplay", "./opensheetmusicdisplay.min.js");
     await ensureLib("html2canvas", "./html2canvas.min.js");
     await ensureLib("jspdf", "./jspdf.umd.min.js");
-    await ensureLib("JSZip", "./jszip.min.js"); // for ZIP export
+    await ensureLib("JSZip", "./jszip.min.js"); // host locally (jszip.min.js)
     buildViewerUI();
   }
 
@@ -1576,13 +1577,14 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
 
     const state    = getState();
-    const songName = (state && state.selectedSong && state.selectedSong.name) || state.song || "Auto Arranger Result";
+    const songName = (state?.selectedSong?.name) || state?.song || "Auto Arranger Result";
     const partsRaw = Array.isArray(state.arrangedFiles) ? state.arrangedFiles : [];
     const hasScore = typeof state.combinedScoreXml === "string" && state.combinedScoreXml.length > 0;
     const parts    = sortPartsEvenIfNoPid(partsRaw);
 
     const cleanupFns = [];
 
+    // ---------- Outer chrome ----------
     const wrap = ce("div");
     wrap.id = "aa-viewer";
     wrap.style.cssText = "position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;height:100vh;background:rgba(0,0,0,0.08);padding:28px;box-sizing:border-box;overflow:hidden;";
@@ -1606,6 +1608,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     controls.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:2px;";
     card.appendChild(controls);
 
+    // ---------- Selection ----------
     const label = ce("div", { textContent: "Select Score or Part" });
     label.style.cssText = "color:#000;font:600 13px/1 system-ui;";
     controls.appendChild(label);
@@ -1620,40 +1623,42 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     }
     controls.appendChild(select);
 
+    // ---------- Button rows ----------
     const btnRow = ce("div");
-    btnRow.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;justify-content:center;align-items:center;";
+    btnRow.style.cssText = "display:flex;gap:8px;flex-wrap:nowrap;justify-content:center;align-items:center;";
     btnRow.innerHTML = [
       '<button id="aa-btn-pdf" class="aa-btn" disabled>Download PDF</button>',
       '<button id="aa-btn-xml" class="aa-btn" disabled>Download XML</button>',
-      '<button id="aa-btn-pdf-all" class="aa-btn">Download PDF All Parts &amp; Score</button>',
-      '<button id="aa-btn-xml-all" class="aa-btn">Download XML All Parts &amp; Score</button>'
+      '<button id="aa-btn-pdf-all" class="aa-btn">Download PDF All Parts & Score</button>',
+      '<button id="aa-btn-xml-all" class="aa-btn">Download XML All Parts & Score</button>'
     ].join("");
     controls.appendChild(btnRow);
 
-    // --- NEW: Bars Per System row (orange) ---
-    const barsRow = ce("div");
-    barsRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:center;margin-top:2px;";
-    barsRow.innerHTML = `
-      <div style="font:600 13px system-ui;color:#000;">Bars Per System:</div>
-      <button class="aa-btn aa-btn-orange" data-bars="4"  type="button">4 Bars</button>
-      <button class="aa-btn aa-btn-orange" data-bars="8"  type="button">8 Bars</button>
-      <button class="aa-btn aa-btn-orange" data-bars="12" type="button">12 Bars</button>
-      <button class="aa-btn aa-btn-orange" data-bars="16" type="button">16 Bars</button>
+    // Bars per system row (orange)
+    const barRow = ce("div");
+    barRow.style.cssText = "display:flex;gap:8px;flex-wrap:nowrap;justify-content:center;align-items:center;margin-top:4px;";
+    barRow.innerHTML = `
+      <span style="font:600 13px system-ui;color:#111;margin-right:6px;">Bars Per System:</span>
+      <button class="aa-btn aa-bars" data-bars="4">4 Bars</button>
+      <button class="aa-btn aa-bars" data-bars="8">8 Bars</button>
+      <button class="aa-btn aa-bars" data-bars="12">12 Bars</button>
+      <button class="aa-btn aa-bars" data-bars="16">16 Bars</button>
     `;
-    controls.appendChild(barsRow);
+    controls.appendChild(barRow);
 
     const styleBtn = ce("style");
-    styleBtn.textContent =
-      ".aa-btn{padding:8px 12px;border-radius:8px;background:#0f62fe;color:#fff;border:none;cursor:pointer;font:600 13px system-ui}" +
-      ".aa-btn[disabled]{opacity:.5;cursor:not-allowed}" +
-      ".aa-btn:hover:not([disabled]){filter:brightness(0.92)}" +
-      ".aa-btn-orange{background:#f97316}" +
-      ".aa-btn-orange.active{outline:2px solid rgba(249,115,22,.3)}";
+    styleBtn.textContent = `
+      .aa-btn{padding:8px 12px;border-radius:8px;background:#0f62fe;color:#fff;border:none;cursor:pointer;font:600 13px system-ui}
+      .aa-btn[disabled]{opacity:.5;cursor:not-allowed}
+      .aa-btn:hover:not([disabled]){filter:brightness(0.92)}
+      .aa-btn.aa-bars{background:#ff7a00;} /* orange */
+      #aa-osmd-box svg{display:inline-block;margin-right:24px}
+    `;
     card.appendChild(styleBtn);
 
+    // ---------- OSMD host ----------
     const osmdBox = ce("div");
     osmdBox.id = "aa-osmd-box";
-    // horizontal scroll enabled
     osmdBox.style.cssText = "margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;position:relative;";
     card.appendChild(osmdBox);
     document.body.appendChild(wrap);
@@ -1668,8 +1673,9 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
     let lastXml = "";
     let overlayRaf = 0;
-    let barsPerSystem = 0; // 0 = auto (no forced breaks), else 4/8/12/16
+    let currentBarsPerSystem = 0; // 0 = original
 
+    // Overlay scheduler
     const scheduleOverlay = () => {
       if (overlayRaf) cancelAnimationFrame(overlayRaf);
       overlayRaf = requestAnimationFrame(() => {
@@ -1711,20 +1717,19 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
     select.addEventListener("change", renderSelection);
 
-    // Handle Bars Per System clicks
-  barsRow.addEventListener("click", (e) => {
-  const btn = e.target.closest(".aa-btn-orange");
-  if (!btn) return;
-  barsRow.querySelectorAll(".aa-btn-orange").forEach(b => b.classList.remove("active"));
-  btn.classList.add("active");
-  barsPerSystem = parseInt(btn.dataset.bars,10) || 0;
-  console.log("[M7] Bars per system set to", barsPerSystem);
-  renderSelection(); // re-render current selection with new breaks
-});
-
+    // Bars buttons
+    barRow.querySelectorAll(".aa-bars").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const bars = parseInt(btn.dataset.bars, 10) || 0;
+        currentBarsPerSystem = bars;
+        console.log("[M7] Bars per system set to", bars);
+        await renderSelection(); // re-render with new bars constraint
+      });
+    });
 
     async function renderSelection(){
-      const { xml } = pickXml(select.value);
+      const picked = select.value;
+      const { xml } = pickXml(picked);
       if (!xml) {
         btnPDF.disabled = true; btnXML.disabled = true;
         lastXml = "";
@@ -1732,23 +1737,43 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         return;
       }
       try {
+        // 1) Title + safety
         let xmlWork = ensureTitle(xml, songName);
         xmlWork = transformXmlForSlashes(xmlWork);
-        if (barsPerSystem > 0) {
-          xmlWork = forceBarsPerSystem(xmlWork, barsPerSystem);
-        } else {
-          // (no override) you could optionally strip only previously inserted breaks here.
+        xmlWork = withXmlProlog(xmlWork);
+
+        // 2) Bars-per-system transformation (M9)
+        if (currentBarsPerSystem > 0 && window.AA_M9 && typeof AA_M9.alterBarsPerSystem === "function") {
+          xmlWork = AA_M9.alterBarsPerSystem(xmlWork, currentBarsPerSystem);
         }
-        const xmlToLoad = withXmlProlog(xmlWork);
+
+        // 3) Load
         if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
-        await osmd.load(xmlToLoad);
+        await osmd.load(xmlWork);
+
+        // 4) Page format = Letter (M9)
+        if (window.AA_M9 && typeof AA_M9.setPageFormatLetter === "function") {
+          AA_M9.setPageFormatLetter(osmd); // before render
+        }
+
+        // 5) Render once, then fit vertically (90%), render again
         await osmd.render();
-        await new Promise(r => requestAnimationFrame(r));
-        fitScoreToHeight(osmd, osmdBox);   // vertical fit (90%)
-        forceIntrinsicSvgWidth(osmdBox);   // keep intrinsic width → horizontal scroll
-        lastXml = xmlWork;
+        const zoom = computeZoomToFitHeight(osmd, osmdBox, 0.90);
+        if (isFinite(zoom) && Math.abs(zoom - (osmd.zoom||1)) > 0.01) {
+          osmd.zoom = zoom;
+          await osmd.render();
+        }
+
+        // 6) Horizontal flow and page cosmetics (M9)
+        forceIntrinsicSvgWidth(osmdBox);
+        if (window.AA_M9 && typeof AA_M9.afterRenderPagesHorizontal === "function") {
+          AA_M9.afterRenderPagesHorizontal(osmdBox);
+        }
+
         btnPDF.disabled = false;
         btnXML.disabled = false;
+        lastXml = xmlWork;
+
         scheduleOverlay();
       } catch(e){
         console.error("[finalViewer] render failed", e);
@@ -1756,7 +1781,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       }
     }
 
-    // Render first item immediately
+    // Initial render
     requestAnimationFrame(() => {
       if (select.options.length > 0) {
         select.selectedIndex = 0;
@@ -1764,13 +1789,13 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       }
     });
 
+    // Single exports
     btnPDF.addEventListener("click", async () => {
       if (!lastXml) { alert("Load a score/part first."); return; }
       const base = (select.value === "__SCORE__" ? "Score" : select.value);
       await exportCurrentViewToPdf(osmdBox, base);
       scheduleOverlay();
     });
-
     btnXML.addEventListener("click", () => {
       if (!lastXml) { alert("Load a score/part first."); return; }
       const name = (select.value === "__SCORE__" ? "Score" : select.value) || "part";
@@ -1789,13 +1814,17 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
       try {
         const zip = new JSZip();
+        // ghost renderer setup
         const { ghost, ghostBox, cleanup } = createGhostOSMD(osmdBox);
 
         for (const it of items) {
           let xmlWork = ensureTitle(it.xml, songName);
           xmlWork = transformXmlForSlashes(xmlWork);
-          if (barsPerSystem > 0) xmlWork = forceBarsPerSystem(xmlWork, barsPerSystem);
-          const ab = await renderXmlToPdfArrayBuffer(ghost, ghostBox, xmlWork);
+          xmlWork = withXmlProlog(xmlWork);
+          if (currentBarsPerSystem > 0 && window.AA_M9?.alterBarsPerSystem) {
+            xmlWork = AA_M9.alterBarsPerSystem(xmlWork, currentBarsPerSystem);
+          }
+          const ab = await renderXmlToPdfArrayBuffer(ghost, ghostBox, xmlWork, /*pageLetter*/true, /*targetZoom*/0.90);
           zip.file(`${safe(songName)} - ${safe(it.label)}.pdf`, ab);
         }
         cleanup();
@@ -1826,8 +1855,11 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         for (const it of items) {
           let xmlWork = ensureTitle(it.xml, songName);
           xmlWork = transformXmlForSlashes(xmlWork);
-          if (barsPerSystem > 0) xmlWork = forceBarsPerSystem(xmlWork, barsPerSystem);
-          zip.file(`${safe(songName)} - ${safe(it.label)}.musicxml`, withXmlProlog(xmlWork));
+          xmlWork = withXmlProlog(xmlWork);
+          if (currentBarsPerSystem > 0 && window.AA_M9?.alterBarsPerSystem) {
+            xmlWork = AA_M9.alterBarsPerSystem(xmlWork, currentBarsPerSystem);
+          }
+          zip.file(`${safe(songName)} - ${safe(it.label)}.musicxml`, xmlWork);
         }
         const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
         const zipName = `${safe(songName)} - XMLs (Score & Parts).zip`;
@@ -1840,6 +1872,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       }
     });
 
+    // ---------- helpers bound to this viewer ----------
     function pickXml(choice){
       const s = getState();
       if (choice === "__SCORE__") return { xml: s.combinedScoreXml || "" };
@@ -1847,7 +1880,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       const hit = list.find(f => (f.instrumentName || f.baseName) === choice);
       return { xml: (hit && hit.xml) || "" };
     }
-
     function ensureOverlayOnTop(host){
       const ov = host.querySelector(".aa-overlay");
       if (ov && ov.parentNode === host) host.appendChild(ov);
@@ -1856,8 +1888,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       const ov = host.querySelector(".aa-overlay");
       if (ov) ov.innerHTML = "";
     }
-
-    // reset to first option and rerender (as if just loaded)
     function resetViewerToDefault(){
       if (!select || select.options.length === 0) return;
       select.selectedIndex = 0;
@@ -1865,85 +1895,42 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       osmdBox.scrollLeft = 0;
       renderSelection();
     }
+  } // buildViewerUI
+
+  /* ===== ghost renderer (prevents flicker) ===== */
+  function createGhostOSMD(referenceBox){
+    const dims = referenceBox.getBoundingClientRect();
+    const ghostBox = document.createElement("div");
+    ghostBox.id = "aa-osmd-ghost";
+    ghostBox.style.cssText = `position:fixed;left:0;top:0;width:${Math.max(900, Math.floor(dims.width))}px;height:${Math.max(900, Math.floor(dims.height))}px;opacity:0;pointer-events:none;z-index:-1;background:#fff;`;
+    document.body.appendChild(ghostBox);
+
+    const OSMD = lookupGlobal("opensheetmusicdisplay");
+    const ghost = new OSMD.OpenSheetMusicDisplay(ghostBox, { autoResize:false, backend:"svg", drawingParameters:"default" });
+
+    const cleanup = () => { try { ghostBox.remove(); } catch(_) {} };
+    return { ghost, ghostBox, cleanup };
   }
 
-/* ===== helper: force bars-per-system by inserting MusicXML system breaks ===== */
-function forceBarsPerSystem(xmlString, N){
-  try{
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(xmlString, "application/xml");
+  async function renderXmlToPdfArrayBuffer(ghost, ghostBox, xml, pageLetter, targetZoom){
+    await ghost.load(xml);
+    if (window.AA_M9?.setPageFormatLetter && pageLetter) AA_M9.setPageFormatLetter(ghost);
+    ghost.zoom = (isFinite(targetZoom) ? targetZoom : 1.0);
+    await ghost.render();
 
-    const parts = Array.from(doc.getElementsByTagName("part"));
-    if (!parts.length) return xmlString;
+    const snap = await snapshotCanvas(ghostBox);
+    const { w, h, canvas } = snap;
 
-    // Gather measure counts from the first part
-    const firstMeasures = Array.from(parts[0].getElementsByTagName("measure"));
-    if (!firstMeasures.length) return xmlString;
-
-    // We want breaks at measures N+1, 2N+1, ... (skip index 0)
-    const breakIdx = new Set();
-    for (let i = 0; i < firstMeasures.length; i++) {
-      if (i !== 0 && (i % N) === 0) breakIdx.add(i); // i= N, 2N, 3N...
-    }
-
-    // Clean any existing print new-system/new-page
-    parts.forEach(p => {
-      Array.from(p.getElementsByTagName("measure")).forEach(m => {
-        Array.from(m.getElementsByTagName("print")).forEach(pr => {
-          const ns = (pr.getAttribute("new-system")||"").toLowerCase();
-          const np = (pr.getAttribute("new-page")||"").toLowerCase();
-          if (ns === "yes" || np === "yes") {
-            pr.parentNode.removeChild(pr);
-          }
-        });
-      });
-    });
-
-    // Insert <print new-system="yes"/> at targeted measures for every part
-    parts.forEach(p => {
-      const measures = Array.from(p.getElementsByTagName("measure"));
-      measures.forEach((m, idx) => {
-        if (!breakIdx.has(idx)) return;
-        const printEl = doc.createElement("print");
-        printEl.setAttribute("new-system","yes");
-        // Put print as very first child so it precedes attributes/clefs etc.
-        m.insertBefore(printEl, m.firstChild);
-      });
-    });
-
-    return new XMLSerializer().serializeToString(doc);
-  } catch(e){
-    console.warn("[M7] forceBarsPerSystem failed, returning original XML", e);
-    return xmlString;
-  }
-}
-
-
-  /* ===== zip helpers ===== */
-  async function renderXmlToPdfArrayBuffer(osmdInstance, hostBox, xmlString){
-    const processed = withXmlProlog(xmlString);
-    if (typeof osmdInstance.zoom === "number") osmdInstance.zoom = 1.0;
-    await osmdInstance.load(processed);
-    await osmdInstance.render();
-    await new Promise(r => requestAnimationFrame(r));
-    fitScoreToHeight(osmdInstance, hostBox); // 90% vertical fit to match screen
-    forceIntrinsicSvgWidth(hostBox);
-    const { w, h, canvas } = await snapshotCanvas(hostBox);
     const jspdfNS = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
     const JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
-    const pdf = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
-    pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
-    return pdf.output("arraybuffer");
-  }
-  function triggerBlobDownload(blob, filename){
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = filename;
-    document.body.appendChild(a); a.click();
-    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 80);
+    if (!JsPDFCtor) throw new Error("jsPDF not loaded");
+
+    const doc = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
+    doc.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
+    return doc.output("arraybuffer");
   }
 
-  /* ===== layout helpers ===== */
+  // ----- generic viewer helpers (local) -----
   function sortPartsEvenIfNoPid(files){
     const out = [];
     for (const f of files){
@@ -1973,206 +1960,42 @@ function forceBarsPerSystem(xmlString, N){
     pdf.save(safe(baseName || "score") + ".pdf");
   }
 
-  // 90% vertical-fit only; keep intrinsic width for horizontal scroll
+  // Vertical-fit only; keep intrinsic width for horizontal scroll
+  function computeZoomToFitHeight(osmd, host, extraShrink){
+    const svg = host.querySelector("svg"); if (!svg) return 1;
+    const vb = svg.viewBox && svg.viewBox.baseVal;
+    if (!vb || !vb.height) return 1;
+    const h = Math.max(64, host.clientHeight - 20);
+    const z = h / vb.height;
+    const factor = (isFinite(extraShrink) && extraShrink>0 && extraShrink<1) ? extraShrink : 1;
+    return z * factor;
+  }
   function fitScoreToHeight(osmd, host){
-    const svg = host.querySelector("svg"); if (!svg) return;
-    const maxH = host.clientHeight; if (!maxH) return;
-    let svgH = 0; try { svgH = svg.getBBox().height; } catch(e){}
-    if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
-    if (!svgH) return;
-    const current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
-    let target = Math.min(current, (maxH / svgH) * 0.9); // extra 10% shrink
-    if (!isFinite(target) || target <= 0) target = 1;
-    target = Math.max(0.3, Math.min(2.0, target));
-    if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
+    const z = computeZoomToFitHeight(osmd, host, 0.90);
+    if (isFinite(z) && Math.abs(z - (osmd.zoom||1)) > 0.01) {
+      osmd.zoom = z;
+      osmd.render();
+    }
   }
-
   function forceIntrinsicSvgWidth(host){
-    const svg = host.querySelector("svg");
-    if (!svg) return;
-    svg.style.width = ""; // let intrinsic width drive horizontal scroll
-    svg.removeAttribute("width");
-    // ensure container scroll
-    host.style.overflowX = "auto";
-    host.style.whiteSpace = "nowrap";
-  }
-
-  // --- XML utilities for OSMD ---
-  function ensureTitle(xmlString, title){
-    try {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(xmlString, "application/xml");
-      const hasMovement = !!doc.querySelector("movement-title");
-      const hasWork     = !!doc.querySelector("work > work-title");
-      if (!hasMovement && !hasWork) {
-        const root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
-        const mv = doc.createElement("movement-title"); mv.textContent = title || "Auto Arranger Score";
-        root.insertBefore(mv, root.firstChild);
-      }
-      return new XMLSerializer().serializeToString(doc);
-    } catch (e) { return xmlString; }
-  }
-  function transformXmlForSlashes(xmlString) {
-    try {
-      const parser = new DOMParser();
-      const xmlDoc = parser.parseFromString(xmlString, "application/xml");
-      xmlDoc.querySelectorAll("lyric").forEach(n => n.remove());
-      return new XMLSerializer().serializeToString(xmlDoc);
-    } catch (e) { return xmlString; }
-  }
-  function withXmlProlog(str){
-    if (!str) return str;
-    let s = String(str).replace(/^\uFEFF/, "").replace(/^\s+/, "");
-    if (!/^\<\?xml/i.test(s)) s = '<?xml version="1.0" encoding="UTF-8"?>\n' + s;
-    return s;
-  }
-
-  // --- file helpers ---
-  function safe(name){
-    return String(name || "").replace(/[\\\/:*?"<>|]+/g, "_").replace(/\s+/g, " ").trim();
-  }
-  function downloadText(text, filename, mimetype){
-    try{
-      const blob = new Blob([text], { type: mimetype || "application/octet-stream" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = filename || "download.txt";
-      document.body.appendChild(a); a.click();
-      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 50);
-    } catch(e){ console.warn("downloadText failed", e); }
-  }
-
-  // --- overlay (viewer-only) ------------------------------------------------
-  function getArrangerFromXml(xmlString){
-    try{
-      const p = new DOMParser();
-      const doc = p.parseFromString(xmlString || "", "application/xml");
-      let arr = "";
-      doc.querySelectorAll("credit").forEach(c => {
-        const t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
-        if (!arr && t === "arranger") {
-          const w = c.querySelector("credit-words");
-          arr = (w && w.textContent || "").trim();
-        }
-      });
-      if (!arr) {
-        const fallback = doc.querySelector('identification > creator[type="arranger"]');
-        if (fallback) arr = (fallback.textContent || "").trim();
-      }
-      return arr || "Arranged by Auto Arranger";
-    } catch(e){ return "Arranged by Auto Arranger"; }
-  }
-
-  function overlayCredits(osmd, host, pickedLabel, arrangerText){
-    try{
-      const PART_TOP_PAD_DEFAULT   = 10;
-      const PART_LEFT_PAD_DEFAULT  = 18;
-      const ARR_TOP_PAD_DEFAULT    = 6;
-      const ARR_RIGHT_PAD_DEFAULT  = 20;
-      const ARR_TOP_TWEAK          = 8;
-      const ARR_RIGHT_INSET        = 40;
-      const PART_FONT_PX_DEFAULT   = 11;
-      const ARR_FONT_PX_DEFAULT    = 11;
-
-      let overlay = host.querySelector(".aa-overlay");
-      if (!overlay) {
-        overlay = document.createElement("div");
-        overlay.className = "aa-overlay";
-        overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
-        host.appendChild(overlay);
-      } else {
-        overlay.innerHTML = "";
-      }
-
-      const svg = host.querySelector("svg");
-      if (!svg) return;
-      const svgRect  = svg.getBoundingClientRect();
-      const hostRect = host.getBoundingClientRect();
-
-      const absLeft  = (px) => (px - hostRect.left) + "px";
-      const absTop   = (px) => (px - hostRect.top)  + "px";
-      const absRight = (px) => (hostRect.right - px) + "px";
-
-      // try to match OSMD font
-      let compNode = null;
-      for (const t of svg.querySelectorAll("text")) { const txt = (t.textContent||""); if (/compos/i.test(txt)) { compNode = t; break; } }
-      const cs = compNode ? getComputedStyle(compNode) : null;
-      const measuredPx = (cs && cs.fontSize && cs.fontSize.endsWith("px")) ? parseFloat(cs.fontSize) : NaN;
-
-      // scale for positions: prefer viewBox ratio; else OSMD zoom; else 1
-      let scalePos = NaN;
-      const vb = svg.viewBox && svg.viewBox.baseVal;
-      if (vb && vb.height) { scalePos = svgRect.height / vb.height; }
-      if (!scalePos || !isFinite(scalePos)) {
-        const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
-        scalePos = zoom;
-      }
-
-      const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
-      const weight = (cs && cs.fontWeight) ? cs.fontWeight : "600";
-      const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
-
-      const partPx = (isFinite(measuredPx) && measuredPx > 0) ? Math.round(measuredPx) : Math.round(PART_FONT_PX_DEFAULT * (scalePos || 1));
-      const arrPx  = (isFinite(measuredPx) && measuredPx > 0) ? Math.round(measuredPx) : Math.round(ARR_FONT_PX_DEFAULT  * (scalePos || 1));
-
-      const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scalePos;
-      const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scalePos;
-      const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scalePos;
-      const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scalePos;
-
-      if (pickedLabel) {
-        const el = document.createElement("div");
-        el.textContent = pickedLabel;
-        el.style.cssText =
-          "position:absolute;" +
-          "left:" + absLeft(partLeft) + ";" +
-          "top:" + absTop(partTop) + ";" +
-          "font-size:" + partPx + "px;" +
-          "font-weight:" + weight + ";" +
-          "font-style:" + fstyle + ";" +
-          "font-family:" + family + ";" +
-          "color:#111;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
-        overlay.appendChild(el);
-      }
-
-      if (arrangerText) {
-        const el = document.createElement("div");
-        el.textContent = arrangerText;
-        el.style.cssText =
-          "position:absolute;" +
-          "right:" + absRight(arrRightX) + ";" +
-          "top:" + absTop(arrTop) + ";" +
-          "font-size:" + arrPx + "px;" +
-          "font-weight:" + weight + ";" +
-          "font-style:" + fstyle + ";" +
-          "font-family:" + family + ";" +
-          "color:#111;text-align:right;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
-        overlay.appendChild(el);
-      }
-    } catch(e){
-      console.warn("[M7 overlay] skipped due to error:", e);
+    const svg = host.querySelector("svg"); if (!svg) return;
+    const vb = svg.viewBox && svg.viewBox.baseVal;
+    if (vb && vb.width) {
+      svg.style.width  = (vb.width  * (window.devicePixelRatio ? 1 : 1) * (typeof opensheetmusicdisplay !== "undefined" ? (host.__osmdZoom||1) : 1)) + "px";
     }
   }
 
-  // tiny DOM helper
-  function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
-
-  /* ===== ghost renderer (prevents flicker for batch PDF) ===== */
-  function createGhostOSMD(referenceBox){
-    const dims = referenceBox.getBoundingClientRect();
-    const ghostBox = document.createElement("div");
-    ghostBox.id = "aa-osmd-ghost";
-    ghostBox.style.cssText = `position:fixed;left:0;top:0;width:${Math.max(800, Math.floor(dims.width))}px;height:${Math.max(600, Math.floor(dims.height))}px;opacity:0;pointer-events:none;z-index:-1;background:#fff;`;
-    document.body.appendChild(ghostBox);
-
-    const OSMD = lookupGlobal("opensheetmusicdisplay");
-    const ghost = new OSMD.OpenSheetMusicDisplay(ghostBox, { autoResize:false, backend:"svg", drawingParameters:"default" });
-
-    const cleanup = () => { try { ghostBox.remove(); } catch(_) {} };
-    return { ghost, ghostBox, cleanup };
+  // tiny utils borrowed from your codebase
+  function withXmlProlog(xml){ return /^\s*<\?xml/.test(xml) ? xml : `<?xml version="1.0" encoding="UTF-8"?>\n${xml}`; }
+  function downloadText(str, filename, mime){
+    const blob = new Blob([str], {type: mime||"text/plain"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 0);
   }
+  function triggerBlobDownload(blob, name){
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 0);
+  }
+  function safe(s){ return String(s||"").replace(/[\\/:*?"<>|]+/g,"_"); }
 })();
-
 
 
 
@@ -2510,115 +2333,88 @@ function forceBarsPerSystem(xmlString, N){
 
 
 /* =========================================================================
-   M9) Paged Viewer (Letter frames + horizontal page flow)
+   M9) Viewer Enhancers: Letter page format + horizontal pages + bars/system
    ------------------------------------------------------------------------- */
-(function(){
-  // Minimal CSS for page frames
-  (function ensurePagerCss(){
-    if (document.getElementById("aa-pager-css")) return;
-    const st = document.createElement("style");
-    st.id = "aa-pager-css";
-    st.textContent = `
-      /* Container already has overflow-x:auto and white-space:nowrap from M7 */
-      #aa-osmd-box .aa-pagewrap{
-        display:inline-block;
-        vertical-align:top;
-        margin-right:16px;
-        background:#fff;
-        border:1px solid #e5e5e5;
-        border-radius:10px;
-        box-shadow:0 6px 20px rgba(0,0,0,.12);
-        overflow:hidden;
-        position:relative;
-      }
-      #aa-osmd-box .aa-pagewrap > svg{
-        display:block;    /* prevent extra whitespace */
-      }
-      /* remove accidental breaks that could stack pages vertically */
-      #aa-osmd-box br { display:none !important; }
-    `;
-    document.head.appendChild(st);
-  })();
+;(function(){
+  const INCH_TO_MM = 25.4;
+  const LETTER_W_MM = 8.5 * INCH_TO_MM; // 215.9 mm
+  const LETTER_H_MM = 11   * INCH_TO_MM; // 279.4 mm
 
-  // Wrap each OSMD page <svg> in a page frame (inline block) → horizontal flow
-  function framePagesHorizontally(host){
-    if (!host) return;
-    // OSMD creates one <svg> per page in SVG backend. We wrap each once.
-    const svgs = host.querySelectorAll("svg");
-    svgs.forEach(svg => {
-      if (svg.closest(".aa-pagewrap")) return; // already framed
-      const frame = document.createElement("div");
-      frame.className = "aa-pagewrap";
-      svg.parentNode.insertBefore(frame, svg);
-      frame.appendChild(svg);
-    });
-    // Keep overlay on top if present (M7 helper)
-    const overlay = host.querySelector(".aa-overlay");
-    if (overlay && overlay.parentNode === host) host.appendChild(overlay);
+  // Set OSMD engraving page format to US Letter, multi-page (vertical stacking in SVGs)
+  function setPageFormatLetter(osmd){
+    try {
+      if (osmd?.EngravingRules?.PageFormat) {
+        const pf = osmd.EngravingRules.PageFormat;
+        if (pf.size) {
+          pf.size.width = LETTER_W_MM;
+          pf.size.height = LETTER_H_MM;
+        } else {
+          // older builds
+          osmd.EngravingRules.PageFormat.width = LETTER_W_MM;
+          osmd.EngravingRules.PageFormat.height = LETTER_H_MM;
+        }
+        if (typeof osmd.EngravingRules.RenderSingleHorizontalStaffline !== "undefined") {
+          osmd.EngravingRules.RenderSingleHorizontalStaffline = false;
+        }
+      }
+    } catch(e){ console.warn("[M9] setPageFormatLetter failed", e); }
   }
 
-  // Observe renders and re-wrap automatically
-  function installObserver(host){
-    // Frame once immediately (in case pages already there)
-    framePagesHorizontally(host);
+  // After render, show pages horizontally with whitespace scrolling
+  function afterRenderPagesHorizontal(host){
+    // OSMD creates one <svg> per page. Lay them out inline horizontally.
+    host.style.whiteSpace = "nowrap";
+    host.querySelectorAll("svg").forEach(svg => {
+      svg.style.display = "inline-block";
+      svg.style.verticalAlign = "top";
+      svg.style.marginRight = "24px";
+      svg.style.background = "#fff"; // page canvas feel
+    });
+  }
 
-    const mo = new MutationObserver(muts => {
-      let needs = false;
-      for (const m of muts) {
-        if (m.type === "childList") {
-          // new pages (svgs) or containers added — re-frame
-          if ([...m.addedNodes].some(n => n.nodeName === "SVG" || (n.querySelector && n.querySelector("svg")))) {
-            needs = true; break;
+  // Alter MusicXML to enforce N bars per system with <print new-system="yes">
+  function alterBarsPerSystem(xmlString, n){
+    if (!n || !isFinite(n) || n<=0) return xmlString;
+    try{
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(xmlString, "application/xml");
+      const ns = doc.documentElement.namespaceURI || null;
+
+      const parts = Array.from(doc.getElementsByTagName("part"));
+      if (!parts.length) return xmlString;
+
+      for (const part of parts) {
+        const measures = Array.from(part.getElementsByTagName("measure"));
+        let idx = 0;
+        for (const m of measures) {
+          idx++;
+          // remove existing <print new-system="yes"> in this measure
+          Array.from(m.getElementsByTagName("print")).forEach(p => {
+            if (p.getAttribute("new-system") === "yes") p.parentNode.removeChild(p);
+          });
+          // Insert new-system before measure content at measure 1+n, 1+2n, ...
+          if (idx>1 && ((idx-1) % n) === 0) {
+            const pr = doc.createElementNS(ns, "print");
+            pr.setAttribute("new-system","yes");
+            m.insertBefore(pr, m.firstChild);
           }
         }
       }
-      if (needs) requestAnimationFrame(() => framePagesHorizontally(host));
-    });
-    mo.observe(host, { childList:true, subtree:true });
-
-    // Clean up when viewer is removed
-    const onRemove = () => {
-      if (!document.body.contains(host)) {
-        mo.disconnect();
-        document.removeEventListener("aa:viewer:maybe-removed", onRemove);
-      }
-    };
-    document.addEventListener("aa:viewer:maybe-removed", onRemove);
-  }
-
-  // Try to hook in whenever the viewer is (re)built
-  function attachIfReady(){
-    const box = document.getElementById("aa-osmd-box");
-    if (box && !box.dataset.m9Pager) {
-      box.dataset.m9Pager = "1";
-      // Ensure side-scroll and nowrap are enforced (M7 already sets; this is defensive)
-      box.style.overflowX = "auto";
-      box.style.whiteSpace = "nowrap";
-      installObserver(box);
+      return new XMLSerializer().serializeToString(doc);
+    } catch(e){
+      console.warn("[M9] alterBarsPerSystem failed", e);
+      return xmlString;
     }
   }
 
-  // When the combined score is ready, M7 builds the viewer — hook in then.
-  AA.on("combine:done", attachIfReady);
-
-  // Also attempt on DOM ready (in case viewer is created later)
-  document.addEventListener("DOMContentLoaded", () => {
-    // poll a couple of frames after layout to be safe
-    let tries = 0;
-    const tick = () => {
-      attachIfReady();
-      if (++tries < 20 && !document.getElementById("aa-osmd-box")) {
-        requestAnimationFrame(tick);
-      }
-    };
-    requestAnimationFrame(tick);
-  });
-
-  // Notify our cleanup listener when viewer is torn down
-  AA.on && AA.on("viewer:destroy", () => {
-    document.dispatchEvent(new Event("aa:viewer:maybe-removed"));
-  });
+  // expose
+  window.AA_M9 = {
+    setPageFormatLetter,
+    afterRenderPagesHorizontal,
+    alterBarsPerSystem
+  };
 })();
+
 
 
    
