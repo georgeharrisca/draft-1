@@ -1542,6 +1542,57 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 })();
 
 
+
+/* === H: XML helpers used by M7/M9 (idempotent) === */
+(() => {
+  // Only define if missing to avoid duplicates
+  if (typeof window.ensureTitle !== "function") {
+    window.ensureTitle = function ensureTitle(xmlString, title){
+      try {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(xmlString, "application/xml");
+        const hasMovement = !!doc.querySelector("movement-title");
+        const hasWork = !!doc.querySelector("work > work-title");
+        if (!hasMovement && !hasWork) {
+          const root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
+          const mv = doc.createElement("movement-title");
+          mv.textContent = title || "Auto Arranger Score";
+          root.insertBefore(mv, root.firstChild);
+        }
+        return new XMLSerializer().serializeToString(doc);
+      } catch {
+        return xmlString;
+      }
+    };
+  }
+
+  if (typeof window.transformXmlForSlashes !== "function") {
+    window.transformXmlForSlashes = function transformXmlForSlashes(xmlString) {
+      try {
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(xmlString, "application/xml");
+        // (keep your current behavior: strip <lyric> to avoid OSMD lyric collisions)
+        xmlDoc.querySelectorAll("lyric").forEach(n => n.remove());
+        return new XMLSerializer().serializeToString(xmlDoc);
+      } catch {
+        return xmlString;
+      }
+    };
+  }
+
+  if (typeof window.withXmlProlog !== "function") {
+    window.withXmlProlog = function withXmlProlog(str){
+      if (!str) return str;
+      let s = String(str).replace(/^\uFEFF/, "").replace(/^\s+/, "");
+      if (!/^\<\?xml/i.test(s)) s = `<?xml version="1.0" encoding="UTF-8"?>\n` + s;
+      return s;
+    };
+  }
+})();
+
+
+
+
 /* =========================================================================
    M7) Final Viewer  — with orange “Bars Per System” controls + 90% fit
    ------------------------------------------------------------------------- */
