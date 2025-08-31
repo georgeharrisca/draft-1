@@ -1822,11 +1822,13 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         return;
       }
       try {
-        let work = ensureTitle(xml, songName);
-        work = transformXmlForSlashes(work);
-        work = applyBarsPerSystem(work, barsPerSystemChoice);
-        work = applyScalingForBars(work, barsPerSystemChoice);
-        work = withXmlProlog(work);
+     let work = ensureTitle(xml, songName);
+work = transformXmlForSlashes(work);
+work = applyBarsPerSystem(work, barsPerSystemChoice);
+work = applyScalingForBars(work, barsPerSystemChoice);
+**if (window.AA_forceLetterLayoutXML) work = AA_forceLetterLayoutXML(work);**
+work = withXmlProlog(work);
+
 
         if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
         await osmd.load(work);
@@ -1890,6 +1892,11 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
           xmlWork = transformXmlForSlashes(xmlWork);
           xmlWork = applyBarsPerSystem(xmlWork, barsPerSystemChoice);
           xmlWork = applyScalingForBars(xmlWork, barsPerSystemChoice);
+           xmlWork = applyBarsPerSystem(xmlWork, barsPerSystemChoice);
+xmlWork = applyScalingForBars(xmlWork, barsPerSystemChoice);
+**if (window.AA_forceLetterLayoutXML) xmlWork = AA_forceLetterLayoutXML(xmlWork);**
+xmlWork = withXmlProlog(xmlWork);
+
           xmlWork = withXmlProlog(xmlWork);
 
           const ab = await renderXmlToPdfArrayBuffer(ghost, ghostBox, xmlWork);
@@ -1925,6 +1932,11 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
           xmlWork = transformXmlForSlashes(xmlWork);
           xmlWork = applyBarsPerSystem(xmlWork, barsPerSystemChoice);
           xmlWork = applyScalingForBars(xmlWork, barsPerSystemChoice);
+           xmlWork = applyBarsPerSystem(xmlWork, barsPerSystemChoice);
+xmlWork = applyScalingForBars(xmlWork, barsPerSystemChoice);
+**if (window.AA_forceLetterLayoutXML) xmlWork = AA_forceLetterLayoutXML(xmlWork);**
+xmlWork = withXmlProlog(xmlWork);
+
           xmlWork = withXmlProlog(xmlWork);
           zip.file(`${safe(songName)} - ${safe(it.label)}.musicxml`, xmlWork);
         }
@@ -2785,12 +2797,121 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M9) OSMD Page Layout (Letter) + Full-Width Systems + Fit-to-Height
+   M9) Force Letter Pages in XML + Fit-to-Height after render
    ------------------------------------------------------------------------- */
 ;(function () {
-  const FIT_SHRINK = 0.90; // match your “slightly smaller” look
+  const FIT_SHRINK = 0.90;     // show whole page a bit smaller
+  const LETTER_MM  = { w: 215.9, h: 279.4 }; // 8.5" x 11" in mm
+  const MARGINS_MM = { l: 12, r: 12, t: 12, b: 14 }; // pleasant white space
 
-  // Fit vertically (like your M7 helper, but local here so we can call it too)
+  // Public: rewrite XML to include a Letter page-layout (in tenths)
+  // Uses the XML's own <scaling><millimeters>/<tenths> so units are consistent.
+  window.AA_forceLetterLayoutXML = function (xmlString) {
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(String(xmlString), "application/xml");
+      const root = doc.documentElement;
+      const ns   = root.namespaceURI || null;
+
+      // --- ensure <defaults> and <scaling> exist ---
+      let defaults = doc.querySelector("defaults");
+      if (!defaults) {
+        defaults = ns ? doc.createElementNS(ns, "defaults") : doc.createElement("defaults");
+        root.insertBefore(defaults, root.firstChild);
+      }
+      let scaling = defaults.querySelector("scaling");
+      if (!scaling) {
+        scaling = ns ? doc.createElementNS(ns, "scaling") : doc.createElement("scaling");
+        defaults.appendChild(scaling);
+      }
+      let mmNode = scaling.querySelector("millimeters");
+      let tnNode = scaling.querySelector("tenths");
+      if (!mmNode) {
+        mmNode = ns ? doc.createElementNS(ns, "millimeters") : doc.createElement("millimeters");
+        mmNode.textContent = "7.0"; // common default
+        scaling.appendChild(mmNode);
+      }
+      if (!tnNode) {
+        tnNode = ns ? doc.createElementNS(ns, "tenths") : doc.createElement("tenths");
+        tnNode.textContent = "40";
+        scaling.appendChild(tnNode);
+      }
+      const mm = Math.max(0.001, parseFloat(mmNode.textContent) || 7.0);
+      const tn = Math.max(0.001, parseFloat(tnNode.textContent) || 40.0);
+
+      // Convert desired mm values -> tenths
+      // tenthsPerMm = tenths / millimeters
+      const tPerMm = tn / mm;
+      const pageW_t = Math.round(LETTER_MM.w * tPerMm);
+      const pageH_t = Math.round(LETTER_MM.h * tPerMm);
+      const L_t = Math.round(MARGINS_MM.l * tPerMm);
+      const R_t = Math.round(MARGINS_MM.r * tPerMm);
+      const T_t = Math.round(MARGINS_MM.t * tPerMm);
+      const B_t = Math.round(MARGINS_MM.b * tPerMm);
+
+      // --- ensure <page-layout> with margins (both) ---
+      let layout = defaults.querySelector("page-layout");
+      if (!layout) {
+        layout = ns ? doc.createElementNS(ns, "page-layout") : doc.createElement("page-layout");
+        defaults.appendChild(layout);
+      }
+      function ensureChild(tag, value){
+        let n = layout.querySelector(tag);
+        if (!n) { n = ns ? doc.createElementNS(ns, tag) : doc.createElement(tag); layout.appendChild(n); }
+        if (value != null) n.textContent = String(value);
+        return n;
+      }
+      ensureChild("page-height", pageH_t);
+      ensureChild("page-width",  pageW_t);
+
+      let margins = layout.querySelector('page-margins[type="both"]')
+                 ||  layout.querySelector("page-margins");
+      if (!margins) {
+        margins = ns ? doc.createElementNS(ns, "page-margins") : doc.createElement("page-margins");
+        margins.setAttribute("type", "both");
+        layout.appendChild(margins);
+      } else {
+        margins.setAttribute("type", "both");
+      }
+      function ensureMargin(tag, val){
+        let m = margins.querySelector(tag);
+        if (!m) { m = ns ? doc.createElementNS(ns, tag) : doc.createElement(tag); margins.appendChild(m); }
+        m.textContent = String(val);
+      }
+      ensureMargin("left-margin",   L_t);
+      ensureMargin("right-margin",  R_t);
+      ensureMargin("top-margin",    T_t);
+      ensureMargin("bottom-margin", B_t);
+
+      // --- encourage full-width systems inside those margins ---
+      // Some XMLs carry a <system-layout> with extra left/right margins;
+      // normalize them to zero so systems can stretch to the page content width.
+      let sysLayout = defaults.querySelector("system-layout");
+      if (!sysLayout) {
+        sysLayout = ns ? doc.createElementNS(ns, "system-layout") : doc.createElement("system-layout");
+        defaults.appendChild(sysLayout);
+      }
+      let sysMargins = sysLayout.querySelector("system-margins");
+      if (!sysMargins) {
+        sysMargins = ns ? doc.createElementNS(ns, "system-margins") : doc.createElement("system-margins");
+        sysLayout.appendChild(sysMargins);
+      }
+      function ensureSysMargin(tag){
+        let m = sysMargins.querySelector(tag);
+        if (!m) { m = ns ? doc.createElementNS(ns, tag) : doc.createElement(tag); sysMargins.appendChild(m); }
+        m.textContent = "0";
+      }
+      ensureSysMargin("left-margin");
+      ensureSysMargin("right-margin");
+
+      return new XMLSerializer().serializeToString(doc);
+    } catch (e) {
+      console.warn("[M9] AA_forceLetterLayoutXML failed, using original XML", e);
+      return xmlString;
+    }
+  };
+
+  // After each render, fit vertically to show whole page(s)
   function fitToHeight(osmd, host){
     try{
       const svg = host.querySelector("svg"); if (!svg) return;
@@ -2808,61 +2929,32 @@ function ensureXmlHeader(xml) {
 
       if (Math.abs(target - current) > 0.01) {
         osmd.zoom = target;
-        osmd.render(); // re-render at the new zoom
+        osmd.render();
       }
     } catch(e) {
       console.warn("[M9] fitToHeight skipped:", e);
     }
   }
 
-  // Make OSMD do proper paged layout and stretch systems to page width
-  function enforceLetterAndStretch(osmd){
-    try {
-      // Prefer official API if present
-      if (typeof osmd.setOptions === "function") {
-        osmd.setOptions({
-          // keep your existing backend etc.; these are safe repeats
-          backend: "svg",
-          // force paged layout on Letter
-          pageFormat: "Letter",          // OSMD >= 1.6
-          // for some versions: pageBackgroundColor makes pages opaque
-          pageBackgroundColor: "#ffffff",
-          // respect page/system hints from MusicXML (you already use these)
-          newPageFromXML: true,
-          newSystemFromXML: true
-        });
-      }
-
-      // Nudge engraving rules that many builds expose:
-      const r = osmd.rules;
-      if (r) {
-        // stretch every system, including the last one
-        if ("JustifySystemLines"   in r) r.JustifySystemLines   = true;
-        if ("StretchLastSystemLine" in r) r.StretchLastSystemLine = true;
-        // if available, ensure we really fill width
-        if ("SystemFillFactor" in r && isFinite(r.SystemFillFactor)) {
-          r.SystemFillFactor = 1.0;
-        }
-      }
-    } catch (e) {
-      console.warn("[M9] enforceLetterAndStretch skipped:", e);
-    }
+  // Nudge OSMD rules toward stretching systems to the page width
+  function encourageJustification(osmd){
+    try{
+      const r = osmd && osmd.rules;
+      if (!r) return;
+      if ("JustifySystemLines"     in r) r.JustifySystemLines     = true;
+      if ("StretchLastSystemLine"  in r) r.StretchLastSystemLine  = true;
+      if ("SystemFillFactor"       in r && isFinite(r.SystemFillFactor)) r.SystemFillFactor = 1.0;
+    }catch(e){}
   }
 
-  // After every viewer render, apply rules and fit vertically
+  // Hook: after M7 renders, we re-fit and make sure justification is on
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ osmd, host }) => {
       if (!osmd || !host) return;
-
-      // 1) enforce paging + justification
-      enforceLetterAndStretch(osmd);
-
-      // 2) re-render once with new rules/options
-      try { osmd.render(); } catch(_) {}
-
-      // 3) fit vertically to ~90% so whole pages are visible
+      encourageJustification(osmd);
       requestAnimationFrame(() => fitToHeight(osmd, host));
     });
   }
 })();
+
 
