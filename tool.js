@@ -2332,89 +2332,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 
-/* =========================================================================
-   M9) Viewer Enhancers: Letter page format + horizontal pages + bars/system
-   ------------------------------------------------------------------------- */
-;(function(){
-  const INCH_TO_MM = 25.4;
-  const LETTER_W_MM = 8.5 * INCH_TO_MM; // 215.9 mm
-  const LETTER_H_MM = 11   * INCH_TO_MM; // 279.4 mm
-
-  // Set OSMD engraving page format to US Letter, multi-page (vertical stacking in SVGs)
-  function setPageFormatLetter(osmd){
-    try {
-      if (osmd?.EngravingRules?.PageFormat) {
-        const pf = osmd.EngravingRules.PageFormat;
-        if (pf.size) {
-          pf.size.width = LETTER_W_MM;
-          pf.size.height = LETTER_H_MM;
-        } else {
-          // older builds
-          osmd.EngravingRules.PageFormat.width = LETTER_W_MM;
-          osmd.EngravingRules.PageFormat.height = LETTER_H_MM;
-        }
-        if (typeof osmd.EngravingRules.RenderSingleHorizontalStaffline !== "undefined") {
-          osmd.EngravingRules.RenderSingleHorizontalStaffline = false;
-        }
-      }
-    } catch(e){ console.warn("[M9] setPageFormatLetter failed", e); }
-  }
-
-  // After render, show pages horizontally with whitespace scrolling
-  function afterRenderPagesHorizontal(host){
-    // OSMD creates one <svg> per page. Lay them out inline horizontally.
-    host.style.whiteSpace = "nowrap";
-    host.querySelectorAll("svg").forEach(svg => {
-      svg.style.display = "inline-block";
-      svg.style.verticalAlign = "top";
-      svg.style.marginRight = "24px";
-      svg.style.background = "#fff"; // page canvas feel
-    });
-  }
-
-  // Alter MusicXML to enforce N bars per system with <print new-system="yes">
-  function alterBarsPerSystem(xmlString, n){
-    if (!n || !isFinite(n) || n<=0) return xmlString;
-    try{
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(xmlString, "application/xml");
-      const ns = doc.documentElement.namespaceURI || null;
-
-      const parts = Array.from(doc.getElementsByTagName("part"));
-      if (!parts.length) return xmlString;
-
-      for (const part of parts) {
-        const measures = Array.from(part.getElementsByTagName("measure"));
-        let idx = 0;
-        for (const m of measures) {
-          idx++;
-          // remove existing <print new-system="yes"> in this measure
-          Array.from(m.getElementsByTagName("print")).forEach(p => {
-            if (p.getAttribute("new-system") === "yes") p.parentNode.removeChild(p);
-          });
-          // Insert new-system before measure content at measure 1+n, 1+2n, ...
-          if (idx>1 && ((idx-1) % n) === 0) {
-            const pr = doc.createElementNS(ns, "print");
-            pr.setAttribute("new-system","yes");
-            m.insertBefore(pr, m.firstChild);
-          }
-        }
-      }
-      return new XMLSerializer().serializeToString(doc);
-    } catch(e){
-      console.warn("[M9] alterBarsPerSystem failed", e);
-      return xmlString;
-    }
-  }
-
-  // expose
-  window.AA_M9 = {
-    setPageFormatLetter,
-    afterRenderPagesHorizontal,
-    alterBarsPerSystem
-  };
-})();
-
 
 
    
@@ -2426,3 +2343,112 @@ function ensureXmlHeader(xml) {
   const s = String(xml || "").trimStart();
   return s.startsWith("<?xml") ? s : `<?xml version="1.0" encoding="UTF-8"?>\n${s}`;
 }
+
+
+
+
+
+/* =========================================================================
+   M9) Viewer Enhancers: Letter page format + horizontal pages + bars/system
+   ------------------------------------------------------------------------- */
+;(function(){
+  const INCH_TO_MM = 25.4;
+  const LETTER_W_MM = 8.5 * INCH_TO_MM;  // 215.9 mm
+  const LETTER_H_MM = 11   * INCH_TO_MM; // 279.4 mm
+
+  /**
+   * Force OSMD to use US Letter pages (8.5x11"). Call AFTER osmd.load(...) but BEFORE osmd.render().
+   */
+  function setPageFormatLetter(osmd){
+    try {
+      if (osmd?.EngravingRules?.PageFormat) {
+        const pf = osmd.EngravingRules.PageFormat;
+        if (pf.size) {
+          // newer OSMD builds
+          pf.size.width  = LETTER_W_MM;
+          pf.size.height = LETTER_H_MM;
+        } else {
+          // older OSMD builds
+          osmd.EngravingRules.PageFormat.width  = LETTER_W_MM;
+          osmd.EngravingRules.PageFormat.height = LETTER_H_MM;
+        }
+        // ensure multi-page layout is allowed
+        if (typeof osmd.EngravingRules.RenderSingleHorizontalStaffline !== "undefined") {
+          osmd.EngravingRules.RenderSingleHorizontalStaffline = false;
+        }
+      }
+    } catch(e){ console.warn("[M9] setPageFormatLetter failed", e); }
+  }
+
+  /**
+   * After render: display each OSMD page (each <svg>) as a horizontal "strip" with page-like background.
+   * Host should have overflow-x:auto and white-space:nowrap; M7 sets that already.
+   */
+  function afterRenderPagesHorizontal(host){
+    try {
+      host.style.whiteSpace = "nowrap";
+      const pages = host.querySelectorAll("svg");
+      pages.forEach((svg, i) => {
+        svg.style.display       = "inline-block";
+        svg.style.verticalAlign = "top";
+        svg.style.marginRight   = "24px";
+        svg.style.background    = "#fff"; // page canvas feel
+        svg.style.boxShadow     = "0 0 0 1px #eee inset";
+      });
+    } catch(e){ console.warn("[M9] afterRenderPagesHorizontal failed", e); }
+  }
+
+  /**
+   * MusicXML rewrite: enforce N bars per system by inserting <print new-system="yes"> at measure boundaries.
+   * - Removes existing "new-system" prints to avoid double breaks.
+   * - Applies to all parts to keep systems aligned.
+   */
+  function alterBarsPerSystem(xmlString, n){
+    if (!n || !isFinite(n) || n <= 0) return xmlString;
+    try{
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(String(xmlString), "application/xml");
+      // If parse error, bail out
+      if (doc.getElementsByTagName("parsererror").length) return xmlString;
+
+      const ns = doc.documentElement.namespaceURI || null;
+      const parts = Array.from(doc.getElementsByTagName("part"));
+      if (!parts.length) return xmlString;
+
+      for (const part of parts) {
+        const measures = Array.from(part.getElementsByTagName("measure"));
+        let idx = 0;
+        for (const m of measures) {
+          idx++;
+
+          // Remove existing <print new-system="yes"> in this measure
+          const prints = Array.from(m.getElementsByTagName("print"));
+          for (const p of prints) {
+            if ((p.getAttribute && p.getAttribute("new-system")) === "yes") {
+              p.parentNode && p.parentNode.removeChild(p);
+            }
+          }
+
+          // Insert break at measures 1+n, 1+2n, ...
+          if (idx > 1 && ((idx - 1) % n) === 0) {
+            const pr = ns ? doc.createElementNS(ns, "print") : doc.createElement("print");
+            pr.setAttribute("new-system", "yes");
+            m.insertBefore(pr, m.firstChild);
+          }
+        }
+      }
+
+      return new XMLSerializer().serializeToString(doc);
+    } catch(e){
+      console.warn("[M9] alterBarsPerSystem failed", e);
+      return xmlString;
+    }
+  }
+
+  // Expose API for M7 to call
+  window.AA_M9 = {
+    setPageFormatLetter,
+    afterRenderPagesHorizontal,
+    alterBarsPerSystem
+  };
+})();
