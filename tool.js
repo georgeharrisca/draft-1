@@ -1621,12 +1621,11 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 
-
 /* =========================================================================
-   M7) Final Viewer — 90% vertical fit, horizontal scroll, ZIP exports,
-                       orange "Bars Per System" buttons (4/8/12/16)
+   M7) Final Viewer
    ------------------------------------------------------------------------- */
 ;(function () {
+  // Start viewer only after combine is done
   AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
 
   async function bootWhenReady() {
@@ -1634,7 +1633,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     await ensureLib("opensheetmusicdisplay", "./opensheetmusicdisplay.min.js");
     await ensureLib("html2canvas", "./html2canvas.min.js");
     await ensureLib("jspdf", "./jspdf.umd.min.js");
-    await ensureLib("JSZip", "./jszip.min.js");
+    await ensureLib("JSZip", "./jszip.min.js"); // NEW: zip support
     buildViewerUI();
   }
 
@@ -1651,199 +1650,9 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   function lookupGlobal(name){
     return name.split(".").reduce((o,k)=> (o && o[k]!=null) ? o[k] : null, window);
   }
-  function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
 
-  // ---- local polyfills (only if not already defined globally) ---------------
-  const ensureTitle = (typeof window.ensureTitle === "function")
-    ? window.ensureTitle
-    : function ensureTitleLocal(xmlString, title){
-        try {
-          const doc = new DOMParser().parseFromString(String(xmlString), "application/xml");
-          const hasMovement = !!doc.querySelector("movement-title");
-          const hasWork     = !!doc.querySelector("work > work-title");
-          if (!hasMovement && !hasWork) {
-            const root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
-            const mv = doc.createElement("movement-title");
-            mv.textContent = title || "Auto Arranger Score";
-            root.insertBefore(mv, root.firstChild);
-          }
-          return new XMLSerializer().serializeToString(doc);
-        } catch { return xmlString; }
-      };
-
-  const transformXmlForSlashes = (typeof window.transformXmlForSlashes === "function")
-    ? window.transformXmlForSlashes
-    : function transformXmlForSlashesLocal(xmlString){
-        try {
-          const xmlDoc = new DOMParser().parseFromString(String(xmlString), "application/xml");
-          xmlDoc.querySelectorAll("lyric").forEach(n => n.remove());
-          return new XMLSerializer().serializeToString(xmlDoc);
-        } catch { return xmlString; }
-      };
-
-  const withXmlProlog = (typeof window.withXmlProlog === "function")
-    ? window.withXmlProlog
-    : function withXmlPrologLocal(str){
-        if (!str) return str;
-        let s = String(str).replace(/^\uFEFF/, "").replace(/^\s+/, "");
-        if (!/^\<\?xml/i.test(s)) s = `<?xml version="1.0" encoding="UTF-8"?>\n` + s;
-        return s;
-      };
-
-  // ---- Bars per system (partwise + timewise support) ------------------------
-  function applyBarsPerSystem(xmlString, barsPerSystem){
-    if (!barsPerSystem || !isFinite(barsPerSystem) || barsPerSystem <= 0) return xmlString;
-    try {
-      const doc  = new DOMParser().parseFromString(String(xmlString), "application/xml");
-      const root = doc.documentElement;
-      const ns   = root.namespaceURI || null;
-      const isTimewise = /score-timewise/i.test(root.tagName);
-
-      let inserted = 0;
-
-      if (isTimewise) {
-        // TIMEWISE: <score-timewise><measure>...</measure></score-timewise>
-        const measures = Array.from(root.querySelectorAll(":scope > measure"));
-        // clear existing prints
-        measures.forEach(m => m.querySelectorAll(":scope > print").forEach(p => p.remove()));
-        for (let i = 0; i < measures.length; i++){
-          if (i === 0) continue;
-          if (i % barsPerSystem === 0) {
-            const print = ns ? doc.createElementNS(ns, "print") : doc.createElement("print");
-            print.setAttribute("new-system", "yes");
-            measures[i].insertBefore(print, measures[i].firstChild);
-            inserted++;
-          }
-        }
-      } else {
-        // PARTWISE: <score-partwise><part>...<measure/>...</part>...</score-partwise>
-        // Use the first part to determine break indices, then apply to all parts
-        const parts = Array.from(root.querySelectorAll("score-partwise > part, :scope > part"));
-        if (parts.length) {
-          const refMeasures = Array.from(parts[0].querySelectorAll(":scope > measure"));
-          // compute break indices once
-          const breakIdx = [];
-          for (let i = 0; i < refMeasures.length; i++){
-            if (i !== 0 && i % barsPerSystem === 0) breakIdx.push(i);
-          }
-          // clear existing prints in all parts
-          parts.forEach(p => p.querySelectorAll(":scope > measure > print").forEach(n => n.remove()));
-          // apply to all parts using same break indices
-          for (const p of parts){
-            const measures = Array.from(p.querySelectorAll(":scope > measure"));
-            breakIdx.forEach(i => {
-              if (measures[i]) {
-                const print = ns ? doc.createElementNS(ns, "print") : doc.createElement("print");
-                print.setAttribute("new-system", "yes");
-                measures[i].insertBefore(print, measures[i].firstChild);
-                inserted++;
-              }
-            });
-          }
-        }
-      }
-
-      console.log(`[M7] applyBarsPerSystem: inserted ${inserted} system breaks (${isTimewise ? "timewise" : "partwise"})`);
-      return new XMLSerializer().serializeToString(doc);
-    } catch (e) {
-      console.warn("[M7] applyBarsPerSystem failed", e);
-      return xmlString;
-    }
-  }
-
-  // ---- overlay (viewer-only) ------------------------------------------------
-  function getArrangerFromXml(xmlString){
-    try{
-      const doc = new DOMParser().parseFromString(xmlString || "", "application/xml");
-      let arr = "";
-      doc.querySelectorAll("credit").forEach(c => {
-        const t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
-        if (!arr && t === "arranger") {
-          const w = c.querySelector("credit-words");
-          arr = (w && w.textContent || "").trim();
-        }
-      });
-      if (!arr) {
-        const fallback = doc.querySelector('identification > creator[type="arranger"]');
-        if (fallback) arr = (fallback.textContent || "").trim();
-      }
-      return arr || "Arranged by Auto Arranger";
-    } catch(e){ return "Arranged by Auto Arranger"; }
-  }
-
-  function overlayCredits(osmd, host, pickedLabel, arrangerText){
-    try{
-      const PART_TOP_PAD_DEFAULT   = 10;
-      const PART_LEFT_PAD_DEFAULT  = 18;
-      const ARR_TOP_PAD_DEFAULT    = 6;
-      const ARR_RIGHT_PAD_DEFAULT  = 20;
-      const ARR_TOP_TWEAK          = 8;
-      const ARR_RIGHT_INSET        = 40;
-      const PART_FONT_PX_DEFAULT   = 11;
-      const ARR_FONT_PX_DEFAULT    = 11;
-
-      let overlay = host.querySelector(".aa-overlay");
-      if (!overlay) {
-        overlay = document.createElement("div");
-        overlay.className = "aa-overlay";
-        overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
-        host.appendChild(overlay);
-      } else {
-        overlay.innerHTML = "";
-      }
-
-      const svg = host.querySelector("svg");
-      if (!svg) return;
-
-      const svgRect  = svg.getBoundingClientRect();
-      const hostRect = host.getBoundingClientRect();
-
-      let scalePos = NaN;
-      const vb = svg.viewBox && svg.viewBox.baseVal;
-      if (vb && vb.height) { scalePos = svgRect.height / vb.height; }
-      if (!scalePos || !isFinite(scalePos)) {
-        const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
-        scalePos = zoom;
-      }
-
-      let compNode = null;
-      for (const t of svg.querySelectorAll("text")) {
-        const txt = (t.textContent||"");
-        if (/compos/i.test(txt)) { compNode = t; break; }
-      }
-      const cs = compNode ? getComputedStyle(compNode) : null;
-      const measuredPx = (cs && cs.fontSize && cs.fontSize.endsWith("px")) ? parseFloat(cs.fontSize) : NaN;
-
-      const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
-      const weight = (cs && cs.fontWeight) ? cs.fontWeight : "600";
-
-      const partPx = (isFinite(measuredPx) && measuredPx > 0) ? Math.round(measuredPx) : Math.round(PART_FONT_PX_DEFAULT * (scalePos || 1));
-      const arrPx  = (isFinite(measuredPx) && measuredPx > 0) ? Math.round(measuredPx) : Math.round(ARR_FONT_PX_DEFAULT  * (scalePos || 1));
-
-      const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scalePos;
-      const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scalePos;
-      const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scalePos;
-      const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scalePos;
-
-      const makeLabel = (txt, style) => {
-        const d = document.createElement("div");
-        d.textContent = txt;
-        d.style.cssText = style;
-        overlay.appendChild(d);
-        return d;
-      };
-
-      makeLabel(pickedLabel || "Part", `
-        position:absolute; left:${(partLeft - hostRect.left)}px; top:${(partTop - hostRect.top)}px;
-        font:${weight} ${partPx}px/1.1 ${family}; color:#111;`);
-      makeLabel(arrangerText || "Arranged by Auto Arranger", `
-        position:absolute; right:${(hostRect.right - arrRightX)}px; top:${(arrTop - hostRect.top)}px;
-        font:${weight} ${arrPx}px/1.1 ${family}; color:#111; text-align:right;`);
-    } catch(e){ /* swallow */ }
-  }
-
-  // ---- viewer UI -------------------------------------------------------------
   function buildViewerUI(){
+    // nuke any existing viewer
     document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
 
     const state    = getState();
@@ -1853,9 +1662,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     const parts    = sortPartsEvenIfNoPid(partsRaw);
 
     const cleanupFns = [];
-    let barsPerSystemChoice = 0; // 0 = auto; else 4/8/12/16
-    let lastXml = "";
-    let overlayRaf = 0;
 
     const wrap = ce("div");
     wrap.id = "aa-viewer";
@@ -1865,7 +1671,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     backBtn.textContent = "← Back";
     backBtn.title = "Back to instrument selection";
     backBtn.style.cssText = "position:absolute;top:16px;left:16px;padding:8px 12px;border-radius:8px;border:none;background:#e5e7eb;color:#111;font:600 13px system-ui;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)";
-    backBtn.addEventListener("click", () => backToInstrumentSelection(state, { cleanupFns, clearViewerState: true }));
+    backBtn.addEventListener("click", () => backToInstrumentSelection(state));
     wrap.appendChild(backBtn);
 
     const card = ce("div");
@@ -1899,46 +1705,38 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     btnRow.innerHTML = [
       '<button id="aa-btn-pdf" class="aa-btn" disabled>Download PDF</button>',
       '<button id="aa-btn-xml" class="aa-btn" disabled>Download XML</button>',
+      // NEW labels (+ Score) and will ZIP
       '<button id="aa-btn-pdf-all" class="aa-btn">Download PDF All Parts &amp; Score</button>',
       '<button id="aa-btn-xml-all" class="aa-btn">Download XML All Parts &amp; Score</button>'
     ].join("");
     controls.appendChild(btnRow);
+
+    // NEW: Bars-per-system row (orange)
+    const barRow = ce("div");
+    barRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:center;margin-top:4px;";
+    barRow.innerHTML = [
+      '<span style="font:600 13px system-ui;color:#333;margin-right:6px;">Bars Per System:</span>',
+      '<button class="aa-btn aa-btn-orange" data-bars="4">4 Bars</button>',
+      '<button class="aa-btn aa-btn-orange" data-bars="8">8 Bars</button>',
+      '<button class="aa-btn aa-btn-orange" data-bars="12">12 Bars</button>',
+      '<button class="aa-btn aa-btn-orange" data-bars="16">16 Bars</button>',
+      '<button class="aa-btn aa-btn-orange" data-bars="0" title="Remove forced system breaks">Auto</button>'
+    ].join("");
+    controls.appendChild(barRow);
 
     const styleBtn = ce("style");
     styleBtn.textContent = `
       .aa-btn{padding:8px 12px;border-radius:8px;background:#0f62fe;color:#fff;border:none;cursor:pointer;font:600 13px system-ui}
       .aa-btn[disabled]{opacity:.5;cursor:not-allowed}
       .aa-btn:hover:not([disabled]){filter:brightness(0.92)}
-      .aa-btn-orange{background:#f97316}
-      .aa-btn-orange:hover{filter:brightness(0.95)}
-      .aa-toggle-selected{box-shadow:0 0 0 2px rgba(0,0,0,.15) inset}
+      .aa-btn-orange{background:#ff7a00}
+      .aa-btn-orange[data-active="1"]{box-shadow:0 0 0 2px #ff7a00 inset;background:#ff9a33}
     `;
     card.appendChild(styleBtn);
 
-    // Orange bars-per-system row
-    const barRow = ce("div");
-    barRow.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;justify-content:center;align-items:center;";
-    const barTitle = ce("div", { textContent: "Bars Per System:" });
-    barTitle.style.cssText = "color:#000;font:600 13px/1 system-ui;margin-right:6px;";
-    barRow.appendChild(barTitle);
-
-    const makeBarBtn = (n) => {
-      const b = ce("button", { textContent: `${n} Bars` });
-      b.className = "aa-btn aa-btn-orange";
-      b.addEventListener("click", () => {
-        barsPerSystemChoice = n;
-        barRow.querySelectorAll("button").forEach(x=>x.classList.remove("aa-toggle-selected"));
-        b.classList.add("aa-toggle-selected");
-        console.log("[M7] Bars per system set to", n);
-        renderSelection();
-      });
-      return b;
-    };
-    [4,8,12,16].forEach(n => barRow.appendChild(makeBarBtn(n)));
-    controls.appendChild(barRow);
-
     const osmdBox = ce("div");
     osmdBox.id = "aa-osmd-box";
+    // horizontal scroll enabled; vertical fit only
     osmdBox.style.cssText = "margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;position:relative;";
     card.appendChild(osmdBox);
     document.body.appendChild(wrap);
@@ -1950,6 +1748,18 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     const btnXML    = btnRow.querySelector("#aa-btn-xml");
     const btnPDFAll = btnRow.querySelector("#aa-btn-pdf-all");
     const btnXMLAll = btnRow.querySelector("#aa-btn-xml-all");
+
+    let lastXml = "";
+    let overlayRaf = 0;
+    let barsPerSystemChoice = 0; // 0 = auto (no forced breaks)
+
+    function setBarsActive(n){
+      barsPerSystemChoice = Number(n)||0;
+      barRow.querySelectorAll(".aa-btn-orange").forEach(b=>{
+        b.dataset.active = (String(b.getAttribute("data-bars")) === String(barsPerSystemChoice)) ? "1" : "0";
+      });
+      console.log(`[M7] Bars per system set to ${barsPerSystemChoice || "Auto"}`);
+    }
 
     const scheduleOverlay = () => {
       if (overlayRaf) cancelAnimationFrame(overlayRaf);
@@ -1964,14 +1774,11 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     };
     cleanupFns.push(() => { if (overlayRaf) cancelAnimationFrame(overlayRaf); overlayRaf = 0; });
 
-    const onResize = () => { fitScoreToHeight90(osmd, osmdBox); scheduleOverlay(); };
+    const onResize = () => { fitScoreToHeight(osmd, osmdBox); scheduleOverlay(); };
     window.addEventListener("resize", onResize);
     cleanupFns.push(() => window.removeEventListener("resize", onResize));
 
-    const ro = new ResizeObserver(() => {
-      fitScoreToHeight90(osmd, osmdBox);
-      scheduleOverlay();
-    });
+    const ro = new ResizeObserver(() => { fitScoreToHeight(osmd, osmdBox); scheduleOverlay(); });
     ro.observe(osmdBox);
     cleanupFns.push(() => ro.disconnect());
 
@@ -1980,7 +1787,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         if (m.type === "childList") {
           const added = [...m.addedNodes];
           if (added.some(n => n.nodeName === "SVG" || (n.querySelector && n.querySelector("svg")))) {
-            forceIntrinsicSvgWidth(osmd, osmdBox);
+            forceIntrinsicSvgWidth(osmdBox);
             scheduleOverlay();
             return;
           }
@@ -1991,6 +1798,15 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     cleanupFns.push(() => mo.disconnect());
 
     select.addEventListener("change", renderSelection);
+
+    // Bars per system buttons
+    barRow.addEventListener("click", (ev) => {
+      const b = ev.target.closest(".aa-btn-orange");
+      if (!b) return;
+      const n = Number(b.getAttribute("data-bars"))||0;
+      setBarsActive(n);
+      renderSelection(); // re-render current choice with new bars-per-system
+    });
 
     async function renderSelection(){
       const { xml } = pickXml(select.value);
@@ -2003,20 +1819,19 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       try {
         let work = ensureTitle(xml, songName);
         work = transformXmlForSlashes(work);
-        work = applyBarsPerSystem(work, barsPerSystemChoice); // <- **now robust**
+        work = applyBarsPerSystem(work, barsPerSystemChoice);
+        work = applyScalingForBars(work, barsPerSystemChoice);
         work = withXmlProlog(work);
 
         if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
         await osmd.load(work);
         await osmd.render();
-
-        await fitScoreToHeight90(osmd, osmdBox, /*reRenderIfNeeded*/true);
-        forceIntrinsicSvgWidth(osmd, osmdBox);
-
+        await new Promise(r => requestAnimationFrame(r));
+        fitScoreToHeight(osmd, osmdBox);   // vertical fit only (90%)
+        forceIntrinsicSvgWidth(osmdBox);   // keep intrinsic width → horizontal scroll
+        lastXml = work;
         btnPDF.disabled = false;
         btnXML.disabled = false;
-
-        lastXml = work;
         scheduleOverlay();
       } catch(e){
         console.error("[finalViewer] render failed", e);
@@ -2024,15 +1839,15 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       }
     }
 
-    // First render
+    // Render first item immediately
     requestAnimationFrame(() => {
       if (select.options.length > 0) {
         select.selectedIndex = 0;
+        setBarsActive(0); // default Auto
         renderSelection();
       }
     });
 
-    // ---- single PDF/XML for current view ------------------------------------
     btnPDF.addEventListener("click", async () => {
       if (!lastXml) { alert("Load a score/part first."); return; }
       const base = (select.value === "__SCORE__" ? "Score" : select.value);
@@ -2046,7 +1861,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       downloadText(lastXml, safe(name) + ".musicxml", "application/xml");
     });
 
-    // ---------- ZIP: PDFs for Score + all Parts (ghost renderer) --------------
+    // ---------- ZIP: PDFs for Score + all Parts (ghost renderer, no flicker) ----------
     btnPDFAll.addEventListener("click", async () => {
       const s = getState();
       const items = [];
@@ -2064,6 +1879,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
           let xmlWork = ensureTitle(it.xml, songName);
           xmlWork = transformXmlForSlashes(xmlWork);
           xmlWork = applyBarsPerSystem(xmlWork, barsPerSystemChoice);
+          xmlWork = applyScalingForBars(xmlWork, barsPerSystemChoice);
           xmlWork = withXmlProlog(xmlWork);
 
           const ab = await renderXmlToPdfArrayBuffer(ghost, ghostBox, xmlWork);
@@ -2082,7 +1898,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       }
     });
 
-    // ---------- ZIP: XMLs for Score + all Parts -------------------------------
+    // ---------- ZIP: XMLs for Score + all Parts ----------
     btnXMLAll.addEventListener("click", async () => {
       const s = getState();
       const items = [];
@@ -2098,6 +1914,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
           let xmlWork = ensureTitle(it.xml, songName);
           xmlWork = transformXmlForSlashes(xmlWork);
           xmlWork = applyBarsPerSystem(xmlWork, barsPerSystemChoice);
+          xmlWork = applyScalingForBars(xmlWork, barsPerSystemChoice);
           xmlWork = withXmlProlog(xmlWork);
           zip.file(`${safe(songName)} - ${safe(it.label)}.musicxml`, xmlWork);
         }
@@ -2112,7 +1929,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       }
     });
 
-    // ---------- helpers tied to viewer ---------------------------------------
     function pickXml(choice){
       const s = getState();
       if (choice === "__SCORE__") return { xml: s.combinedScoreXml || "" };
@@ -2130,6 +1946,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       if (ov) ov.innerHTML = "";
     }
 
+    // reset to first option and rerender (as if just loaded)
     function resetViewerToDefault(){
       if (!select || select.options.length === 0) return;
       select.selectedIndex = 0;
@@ -2137,9 +1954,10 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       osmdBox.scrollLeft = 0;
       renderSelection();
     }
+
   } // buildViewerUI
 
-  // ===== ghost renderer (prevents flicker for batch PDF) =====
+  /* ===== ghost renderer (prevents flicker) ===== */
   function createGhostOSMD(referenceBox){
     const dims = referenceBox.getBoundingClientRect();
     const ghostBox = document.createElement("div");
@@ -2154,96 +1972,31 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     return { ghost, ghostBox, cleanup };
   }
 
-  async function renderXmlToPdfArrayBuffer(osmdInstance, host, xmlReady){
-    await osmdInstance.load(xmlReady);
-    await osmdInstance.render();
-    await fitScoreToHeight90(osmdInstance, host, /*reRenderIfNeeded*/true);
-    forceIntrinsicSvgWidth(osmdInstance, host);
-
-    const { canvas, w, h } = await snapshotCanvas(host);
+  async function renderXmlToPdfArrayBuffer(ghost, ghostBox, xml){
     const jspdfNS = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
     const JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
-    if (!JsPDFCtor) throw new Error("jsPDF not available in ghost");
+    if (!JsPDFCtor) throw new Error("jsPDF not available.");
 
-    const pdf = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
-    pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
+    await ghost.load(xml);
+    await ghost.render();
+    await new Promise(r => requestAnimationFrame(r));
+    fitScoreToHeight(ghost, ghostBox);
+    forceIntrinsicSvgWidth(ghostBox);
+
+    const { canvas, w, h } = await snapshotCanvas(ghostBox);
+    const PDF_DOWNSCALE = 0.9; // match on-screen 90% feel
+    const pageW = Math.floor(w * PDF_DOWNSCALE);
+    const pageH = Math.floor(h * PDF_DOWNSCALE);
+
+    const pdf = new JsPDFCtor({ orientation: pageW>=pageH?"landscape":"portrait", unit:"pt", format:[pageW,pageH] });
+    pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, pageW, pageH);
     return pdf.output("arraybuffer");
   }
 
-  // ===== layout / export helpers =============================================
-  function forceIntrinsicSvgWidth(osmd, host){
-    const svg = host.querySelector("svg");
-    if (!svg) return;
-    const vb = svg.viewBox && svg.viewBox.baseVal;
-    const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
-    if (vb && vb.width) {
-      svg.style.width = (vb.width * zoom) + "px";
-      svg.style.height = "auto";
-    } else {
-      const r = svg.getBoundingClientRect();
-      if (r.width) svg.style.width = r.width + "px";
-    }
-  }
-
-  // 90% vertical fit (set osmd.zoom and optionally re-render)
-  async function fitScoreToHeight90(osmd, host, reRenderIfNeeded){
-    const svg = host.querySelector("svg");
-    if (!svg) return;
-
-    const hostH = host.clientHeight || host.getBoundingClientRect().height || 800;
-    let baseHeight = NaN;
-
-    const vb = svg.viewBox && svg.viewBox.baseVal;
-    if (vb && vb.height) {
-      baseHeight = vb.height;
-      const rectH = svg.getBoundingClientRect().height;
-      if (rectH && osmd.zoom) baseHeight = rectH / osmd.zoom;
-    } else {
-      const rectH = svg.getBoundingClientRect().height;
-      baseHeight = rectH / (osmd.zoom || 1);
-    }
-
-    const targetZoom = Math.max(0.1, (hostH * 0.90) / baseHeight);
-    if (Math.abs((osmd.zoom || 1) - targetZoom) > 0.01) {
-      osmd.zoom = targetZoom;
-      if (reRenderIfNeeded) { await osmd.render(); }
-    }
-  }
-
-  function snapshotCanvas(container){
-    return html2canvas(container, { scale:2, backgroundColor:"#fff" })
-           .then(canvas => ({canvas, w:canvas.width, h:canvas.height}));
-  }
-
-  async function exportCurrentViewToPdf(container, baseName){
-    const snap = await snapshotCanvas(container);
-    const { w, h, canvas } = snap;
-    const jspdfNS = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
-    const JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
-    if (!JsPDFCtor) { alert("jsPDF not loaded."); return; }
-    const pdf = new JsPDFCtor({ orientation: w>=h?"landscape":"portrait", unit:"pt", format:[w,h] });
-    pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, w, h);
-    pdf.save(safe(baseName || "score") + ".pdf");
-  }
-
-  // === small utils used here ===
-  function safe(s){ return String(s||"").replace(/[\\/:*?"<>|]+/g,"_"); }
-  function downloadText(text, filename, mime){
-    const blob = new Blob([text], {type: mime || "text/plain"});
-    triggerBlobDownload(blob, filename || "file.txt");
-  }
-  function triggerBlobDownload(blob, filename){
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = filename || "download";
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url), 1000);
-  }
-
-  // ===== external helpers expected from earlier modules ======================
+  /* ===== viewer helpers ===== */
   function sortPartsEvenIfNoPid(files){
     const out = [];
-    for (const f of files||[]){
+    for (const f of files){
       const pid = f.newPartId || extractPidFromXml(f.xml) || "";
       const n = parseInt(String(pid).replace(/^P/i,""), 10);
       out.push(Object.assign({}, f, { _pnum: (isFinite(n)?n:999) }));
@@ -2255,6 +2008,337 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     const m = String(xml||"").match(/<score-part\s+id="([^"]+)"/i);
     return m ? m[1] : null;
   }
+  function snapshotCanvas(container){
+    return html2canvas(container, { scale:2, backgroundColor:"#fff" })
+           .then(canvas => ({canvas, w:canvas.width, h:canvas.height}));
+  }
+  async function exportCurrentViewToPdf(container, baseName){
+    const { canvas, w, h } = await snapshotCanvas(container);
+    const pdfDown = 0.9;
+    const jspdfNS = window.jspdf || (window.jspdf && window.jspdf.jsPDF ? window.jspdf : window);
+    const JsPDFCtor = jspdfNS.jsPDF || jspdfNS.JSPDF || jspdfNS.jsPDFConstructor;
+    if (!JsPDFCtor) { alert("jsPDF not loaded."); return; }
+    const pageW = Math.floor(w * pdfDown);
+    const pageH = Math.floor(h * pdfDown);
+    const pdf = new JsPDFCtor({ orientation: pageW>=pageH?"landscape":"portrait", unit:"pt", format:[pageW,pageH] });
+    pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, pageW, pageH);
+    pdf.save(safe(baseName || "score") + ".pdf");
+  }
+  function triggerBlobDownload(blob, filename){
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 100);
+  }
+
+  // Vertical-fit only; keep intrinsic width for horizontal scroll
+  function fitScoreToHeight(osmd, host){
+    const svg = host.querySelector("svg"); if (!svg) return;
+    const maxH = host.clientHeight; if (!maxH) return;
+    let svgH = 0; try { svgH = svg.getBBox().height; } catch(e){}
+    if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
+    if (!svgH) return;
+    const current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
+    const SHRINK = 0.90; // extra 10% shrink
+    let target = Math.min(current, (maxH * SHRINK) / svgH);
+    if (!isFinite(target) || target <= 0) target = 1;
+    target = Math.max(0.3, Math.min(1.5, target));
+    if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
+  }
+  function forceIntrinsicSvgWidth(host){
+    const svg = host.querySelector("svg"); if (!svg) return;
+    // try viewBox width first
+    let vbw = 0;
+    const vb = svg.viewBox && svg.viewBox.baseVal;
+    if (vb && vb.width) vbw = vb.width;
+    if (!vbw) {
+      try { vbw = svg.getBBox().width; } catch(e){}
+    }
+    if (vbw) {
+      svg.style.width = Math.ceil(vbw) + "px";
+    } else {
+      svg.style.removeProperty("width");
+    }
+  }
+
+  // --- MusicXML helpers ---
+  function ensureTitle(xmlString, title){
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(xmlString, "application/xml");
+      const hasMovement = !!doc.querySelector("movement-title");
+      const hasWork     = !!doc.querySelector("work > work-title");
+      if (!hasMovement && !hasWork) {
+        const root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
+        const mv = doc.createElement("movement-title"); mv.textContent = title || "Auto Arranger Score";
+        root.insertBefore(mv, root.firstChild);
+      }
+      return new XMLSerializer().serializeToString(doc);
+    } catch (e) { return xmlString; }
+  }
+  function transformXmlForSlashes(xmlString) {
+    try {
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(xmlString, "application/xml");
+      xmlDoc.querySelectorAll("lyric").forEach(n => n.remove());
+      return new XMLSerializer().serializeToString(xmlDoc);
+    } catch (e) { return xmlString; }
+  }
+  function withXmlProlog(str){
+    if (!str) return str;
+    let s = String(str).replace(/^\uFEFF/, "").replace(/^\s+/, "");
+    if (!/^\<\?xml/i.test(s)) s = '<?xml version="1.0" encoding="UTF-8"?>\n' + s;
+    return s;
+  }
+  function safe(name){
+    return String(name || "").replace(/[\\\/:*?"<>|]+/g, "_").replace(/\s+/g, " ").trim();
+  }
+  function downloadText(text, filename, mimetype){
+    try{
+      const blob = new Blob([text], { type: mimetype || "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename || "download.txt";
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 50);
+    } catch(e){ console.warn("downloadText failed", e); }
+  }
+
+  // Insert forced system breaks every N measures, both partwise and (best-effort) timewise
+  function applyBarsPerSystem(xmlString, barsPerSystem){
+    const N = Number(barsPerSystem)||0;
+    if (!N) return xmlString;
+    try{
+      const doc = new DOMParser().parseFromString(String(xmlString), "application/xml");
+      const root = doc.documentElement;
+      const ns = root.namespaceURI || null;
+
+      function ensurePrint(measureEl){
+        let p = measureEl.querySelector("print");
+        if (!p) {
+          p = ns ? doc.createElementNS(ns,"print") : doc.createElement("print");
+          measureEl.insertBefore(p, measureEl.firstChild);
+        }
+        p.setAttribute("new-system","yes");
+      }
+
+      let inserted = 0;
+      if (/score-partwise/i.test(root.nodeName)) {
+        const parts = Array.from(doc.querySelectorAll("part"));
+        parts.forEach(part => {
+          const measures = Array.from(part.querySelectorAll(":scope > measure"));
+          for (let i=0;i<measures.length;i++){
+            if (i>0 && (i % N)===0) { ensurePrint(measures[i]); inserted++; }
+          }
+        });
+        console.log(`[M7] applyBarsPerSystem: inserted ${inserted} system breaks (partwise)`);
+      } else if (/score-timewise/i.test(root.nodeName)) {
+        // timewise: measures are global; put breaks at target measure indices
+        const measures = Array.from(doc.querySelectorAll(":scope > measure"));
+        for (let i=0;i<measures.length;i++){
+          if (i>0 && (i % N)===0) { ensurePrint(measures[i]); inserted++; }
+        }
+        console.log(`[M7] applyBarsPerSystem: inserted ${inserted} system breaks (timewise)`);
+      }
+      return new XMLSerializer().serializeToString(doc);
+    }catch(e){
+      console.warn("[M7] applyBarsPerSystem failed", e);
+      return xmlString;
+    }
+  }
+
+  // Gently scale engraving so requested bars/system are more likely to fit
+  function applyScalingForBars(xmlString, barsPerSystem){
+    const N = Number(barsPerSystem)||0;
+    if (!N) return xmlString;
+    const kMap = { 4: 1.00, 8: 1.15, 12: 1.30, 16: 1.50 };
+    const k = kMap[N] || 1.00;
+    try {
+      const doc  = new DOMParser().parseFromString(String(xmlString), "application/xml");
+      const root = doc.documentElement;
+      const ns   = root.namespaceURI || null;
+
+      let defaults = doc.querySelector("defaults");
+      if (!defaults) {
+        defaults = ns ? doc.createElementNS(ns, "defaults") : doc.createElement("defaults");
+        root.insertBefore(defaults, root.firstChild);
+      }
+      let scaling = defaults.querySelector("scaling");
+      if (!scaling) {
+        scaling = ns ? doc.createElementNS(ns, "scaling") : doc.createElement("scaling");
+        defaults.appendChild(scaling);
+      }
+      let mm = scaling.querySelector("millimeters");
+      if (!mm) {
+        mm = ns ? doc.createElementNS(ns, "millimeters") : doc.createElement("millimeters");
+        mm.textContent = "7.0";
+        scaling.appendChild(mm);
+      }
+      let tenthsNode = scaling.querySelector("tenths");
+      if (!tenthsNode) {
+        tenthsNode = ns ? doc.createElementNS(ns, "tenths") : doc.createElement("tenths");
+        tenthsNode.textContent = "40";
+        scaling.appendChild(tenthsNode);
+      }
+      const oldTenths = parseFloat(tenthsNode.textContent) || 40;
+      const newTenths = Math.round(oldTenths * k);
+      tenthsNode.textContent = String(newTenths);
+
+      console.log(`[M7] applyScalingForBars: tenths ${oldTenths} -> ${newTenths} (k=${k}) for ${N} bars/system`);
+      return new XMLSerializer().serializeToString(doc);
+    } catch (e) {
+      console.warn("[M7] applyScalingForBars failed", e);
+      return xmlString;
+    }
+  }
+
+  function backToInstrumentSelection(prevState){
+    const packName = (prevState && (prevState.pack || (prevState.selectedPack && prevState.selectedPack.name))) || "";
+    const songName = (prevState && (prevState.song || (prevState.selectedSong && prevState.selectedSong.name))) || "";
+    setState({
+      pack: packName,
+      song: songName,
+      packIndex: getState().packIndex,
+      songIndex: getState().songIndex,
+      // clear viewer-specific results so earlier stages behave
+      arrangedFiles: [],
+      combinedScoreXml: "",
+      timestamp: Date.now()
+    });
+    document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
+    hideArrangingLoading();
+    qs("step1") && qs("step1").classList.add("hidden");
+    qs("step2") && qs("step2").classList.add("hidden");
+    qs("step3") && qs("step3").classList.remove("hidden");
+    AA.emit("wizard:stage", "instruments");
+  }
+
+  // --- overlay helpers ------------------------------------------------
+  function getArrangerFromXml(xmlString){
+    try{
+      const p = new DOMParser();
+      const doc = p.parseFromString(xmlString || "", "application/xml");
+      let arr = "";
+      doc.querySelectorAll("credit").forEach(c => {
+        const t = (c.querySelector("credit-type") && c.querySelector("credit-type").textContent || "").toLowerCase().trim();
+        if (!arr && t === "arranger") {
+          const w = c.querySelector("credit-words");
+          arr = (w && w.textContent || "").trim();
+        }
+      });
+      if (!arr) {
+        const fallback = doc.querySelector('identification > creator[type="arranger"]');
+        if (fallback) arr = (fallback.textContent || "").trim();
+      }
+      return arr || "Arranged by Auto Arranger";
+    } catch(e){ return "Arranged by Auto Arranger"; }
+  }
+
+  function overlayCredits(osmd, host, pickedLabel, arrangerText){
+    try {
+      const PART_TOP_PAD_DEFAULT   = 10;
+      const PART_LEFT_PAD_DEFAULT  = 18;
+      const ARR_TOP_PAD_DEFAULT    = 6;
+      const ARR_RIGHT_PAD_DEFAULT  = 20;
+
+      const ARR_TOP_TWEAK          = 8;
+      const ARR_RIGHT_INSET        = 40;
+
+      const PART_FONT_PX_DEFAULT   = 11;
+      const ARR_FONT_PX_DEFAULT    = 11;
+
+      let overlay = host.querySelector(".aa-overlay");
+      if (!overlay) {
+        overlay = document.createElement("div");
+        overlay.className = "aa-overlay";
+        overlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2;";
+        host.appendChild(overlay);
+      } else {
+        overlay.innerHTML = "";
+      }
+
+      const svg = host.querySelector("svg");
+      if (!svg) return;
+
+      const svgRect  = svg.getBoundingClientRect();
+      const hostRect = host.getBoundingClientRect();
+
+      const absLeft  = (px) => (px - hostRect.left) + "px";
+      const absTop   = (px) => (px - hostRect.top)  + "px";
+      const absRight = (px) => (hostRect.right - px) + "px";
+
+      // find any composer text to steal font metrics
+      let composerTextNode = null;
+      for (const t of svg.querySelectorAll("text")) {
+        const txt = (t.textContent || "");
+        if (/compos/i.test(txt)) { composerTextNode = t; break; }
+      }
+      const cs = composerTextNode ? getComputedStyle(composerTextNode) : null;
+      const measuredPx = (cs && cs.fontSize && cs.fontSize.endsWith("px"))
+        ? parseFloat(cs.fontSize) : NaN;
+
+      let scalePos = NaN;
+      const vb = svg.viewBox && svg.viewBox.baseVal;
+      if (vb && vb.height) scalePos = svgRect.height / vb.height;
+      if (!scalePos || !isFinite(scalePos)) {
+        const zoom = (typeof osmd.zoom === "number" && isFinite(osmd.zoom)) ? osmd.zoom : 1;
+        scalePos = zoom;
+      }
+
+      const family = (cs && cs.fontFamily) ? cs.fontFamily : (getComputedStyle(host).fontFamily || "serif");
+      const weight = (cs && cs.fontWeight) ? cs.fontWeight : "normal";
+      const fstyle = (cs && cs.fontStyle)  ? cs.fontStyle  : "normal";
+
+      const partPx = (isFinite(measuredPx) && measuredPx > 0)
+        ? Math.round(measuredPx)
+        : Math.round(PART_FONT_PX_DEFAULT * (scalePos || 1));
+
+      const arrPx  = (isFinite(measuredPx) && measuredPx > 0)
+        ? Math.round(measuredPx)
+        : Math.round(ARR_FONT_PX_DEFAULT * (scalePos || 1));
+
+      const partTop   = svgRect.top  + PART_TOP_PAD_DEFAULT  * scalePos;
+      const partLeft  = svgRect.left + PART_LEFT_PAD_DEFAULT * scalePos;
+      const arrTop    = svgRect.top  + (ARR_TOP_PAD_DEFAULT + ARR_TOP_TWEAK) * scalePos;
+      const arrRightX = svgRect.right - (ARR_RIGHT_PAD_DEFAULT + ARR_RIGHT_INSET) * scalePos;
+
+      if (pickedLabel) {
+        const el = document.createElement("div");
+        el.textContent = pickedLabel;
+        el.style.cssText =
+          "position:absolute;" +
+          "left:" + absLeft(partLeft) + ";" +
+          "top:" + absTop(partTop) + ";" +
+          "font-size:" + partPx + "px;" +
+          "font-weight:" + weight + ";" +
+          "font-style:" + fstyle + ";" +
+          "font-family:" + family + ";" +
+          "color:#111;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
+        overlay.appendChild(el);
+      }
+
+      if (arrangerText) {
+        const el = document.createElement("div");
+        el.textContent = arrangerText;
+        el.style.cssText =
+          "position:absolute;" +
+          "right:" + absRight(arrRightX) + ";" +
+          "top:" + absTop(arrTop) + ";" +
+          "font-size:" + arrPx + "px;" +
+          "font-weight:" + weight + ";" +
+          "font-style:" + fstyle + ";" +
+          "font-family:" + family + ";" +
+          "color:#111;text-align:right;letter-spacing:.2px;pointer-events:none;user-select:none;white-space:nowrap;";
+        overlay.appendChild(el);
+      }
+    } catch (e) {
+      console.warn("[M7 overlay] skipped due to error:", e);
+    }
+  }
+
+  // tiny DOM helper
+  function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
 })();
 
 
