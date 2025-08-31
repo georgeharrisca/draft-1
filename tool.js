@@ -1666,16 +1666,15 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     wrap.id = "aa-viewer";
     wrap.style.cssText = "position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;height:100vh;background:rgba(0,0,0,0.08);padding:28px;box-sizing:border-box;overflow:hidden;";
 
-    const backBtn = ce("button");
-    backBtn.textContent = "← Back";
-    backBtn.title = "Back to instrument selection";
-    backBtn.style.cssText = "position:absolute;top:16px;left:16px;padding:8px 12px;border-radius:8px;border:none;background:#e5e7eb;color:#111;font:600 13px system-ui;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)";
-   
-    wrap.appendChild(backBtn);
-
     const card = ce("div");
     card.style.cssText = "margin:auto;width:min(1200px,100%);height:calc(100vh - 56px);background:#fff;border-radius:14px;box-shadow:0 12px 36px rgba(0,0,0,.18);padding:20px 20px 18px;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;overflow:hidden;";
     wrap.appendChild(card);
+
+    const backBtn = ce("button");
+    backBtn.textContent = "← Back";
+    backBtn.title = "Back to start";
+    backBtn.style.cssText = "position:absolute;top:16px;left:16px;padding:8px 12px;border-radius:8px;border:none;background:#e5e7eb;color:#111;font:600 13px system-ui;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)";
+    wrap.appendChild(backBtn);
 
     const title = ce("h2", { textContent: songName });
     title.style.cssText = "margin:0;text-align:center;color:#000;font:700 20px/1.2 system-ui,Arial";
@@ -1709,18 +1708,17 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     ].join("");
     controls.appendChild(btnRow);
 
-// Bars-per-system row (orange)
-const barRow = ce("div");
-barRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:center;margin-top:4px;";
-barRow.innerHTML = [
-  '<span style="font:600 13px system-ui;color:#333;margin-right:6px;">Bars Per System:</span>',
-  '<button class="aa-btn aa-btn-orange" data-bars="4">4 Bars</button>',
-  '<button class="aa-btn aa-btn-orange" data-bars="8">8 Bars</button>',
-  '<button class="aa-btn aa-btn-orange" data-bars="12">12 Bars</button>',
-  '<button class="aa-btn aa-btn-orange" data-bars="16">16 Bars</button>'
-].join("");
-controls.appendChild(barRow);
-
+    // Bars-per-system row (orange)
+    const barRow = ce("div");
+    barRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:center;margin-top:4px;";
+    barRow.innerHTML = [
+      '<span style="font:600 13px system-ui;color:#333;margin-right:6px;">Bars Per System:</span>',
+      '<button class="aa-btn aa-btn-orange" data-bars="4">4 Bars</button>',
+      '<button class="aa-btn aa-btn-orange" data-bars="8">8 Bars</button>',
+      '<button class="aa-btn aa-btn-orange" data-bars="12">12 Bars</button>',
+      '<button class="aa-btn aa-btn-orange" data-bars="16">16 Bars</button>'
+    ].join("");
+    controls.appendChild(barRow);
 
     const styleBtn = ce("style");
     styleBtn.textContent = `
@@ -1734,12 +1732,12 @@ controls.appendChild(barRow);
 
     const osmdBox = ce("div");
     osmdBox.id = "aa-osmd-box";
+    // vertical fit, keep intrinsic width for horizontal scroll
     osmdBox.style.cssText = "margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;position:relative;";
     card.appendChild(osmdBox);
     document.body.appendChild(wrap);
 
     const OSMD = lookupGlobal("opensheetmusicdisplay");
-    // IMPORTANT: respect XML system/page breaks
     const osmd = new OSMD.OpenSheetMusicDisplay(osmdBox, {
       autoResize: true,
       backend: "svg",
@@ -1755,7 +1753,7 @@ controls.appendChild(barRow);
 
     let lastXml = "";
     let overlayRaf = 0;
-    let barsPerSystemChoice = 0; // 0 = Auto
+    let barsPerSystemChoice = 0; // 0 = Auto (we default to 8 on first render below)
 
     function setBarsActive(n){
       barsPerSystemChoice = Number(n)||0;
@@ -1798,21 +1796,16 @@ controls.appendChild(barRow);
         }
       }
     });
-
-
-     
-// after btnPDF/btnXML enabling and scheduleOverlay():
-if (typeof AA !== "undefined" && AA.emit) {
-  AA.emit("viewer:rendered", { osmd, host: osmdBox });
-}
-
-     
-     
     mo.observe(osmdBox, { childList: true, subtree: true });
     cleanupFns.push(() => mo.disconnect());
 
+    // Back button (full reset to first screen)
+    backBtn.addEventListener("click", () => backToFreshStart({ cleanupFns }));
+
+    // Change selection
     select.addEventListener("change", renderSelection);
 
+    // Bars-per-system clicks
     barRow.addEventListener("click", (ev) => {
       const b = ev.target.closest(".aa-btn-orange");
       if (!b) return;
@@ -1846,20 +1839,23 @@ if (typeof AA !== "undefined" && AA.emit) {
         btnPDF.disabled = false;
         btnXML.disabled = false;
         scheduleOverlay();
+        if (AA && AA.emit) AA.emit("viewer:rendered", { osmd, host: osmdBox });
       } catch(e){
         console.error("[finalViewer] render failed", e);
         alert("Failed to render this selection.");
       }
     }
 
+    // First render
     requestAnimationFrame(() => {
       if (select.options.length > 0) {
         select.selectedIndex = 0;
-        setBarsActive(8);
+        setBarsActive(8);   // default to 8 bars/system
         renderSelection();
       }
     });
 
+    // Single PDF/XML
     btnPDF.addEventListener("click", async () => {
       if (!lastXml) { alert("Load a score/part first."); return; }
       const base = (select.value === "__SCORE__" ? "Score" : select.value);
@@ -1873,7 +1869,7 @@ if (typeof AA !== "undefined" && AA.emit) {
       downloadText(lastXml, safe(name) + ".musicxml", "application/xml");
     });
 
-    // ---------- ZIP: PDFs for Score + all Parts (ghost renderer, no flicker) ----------
+    // ZIP: PDFs (Score + Parts) using a ghost renderer (no flicker)
     btnPDFAll.addEventListener("click", async () => {
       const s = getState();
       const items = [];
@@ -1909,7 +1905,7 @@ if (typeof AA !== "undefined" && AA.emit) {
       }
     });
 
-    // ---------- ZIP: XMLs for Score + all Parts ----------
+    // ZIP: XMLs (Score + Parts)
     btnXMLAll.addEventListener("click", async () => {
       const s = getState();
       const items = [];
@@ -1939,6 +1935,7 @@ if (typeof AA !== "undefined" && AA.emit) {
       }
     });
 
+    // ----- local helpers in viewer -----
     function pickXml(choice){
       const s = getState();
       if (choice === "__SCORE__") return { xml: s.combinedScoreXml || "" };
@@ -1946,7 +1943,6 @@ if (typeof AA !== "undefined" && AA.emit) {
       const hit = list.find(f => (f.instrumentName || f.baseName) === choice);
       return { xml: (hit && hit.xml) || "" };
     }
-
     function ensureOverlayOnTop(host){
       const ov = host.querySelector(".aa-overlay");
       if (ov && ov.parentNode === host) host.appendChild(ov);
@@ -1955,13 +1951,45 @@ if (typeof AA !== "undefined" && AA.emit) {
       const ov = host.querySelector(".aa-overlay");
       if (ov) ov.innerHTML = "";
     }
-
     function resetViewerToDefault(){
       if (!select || select.options.length === 0) return;
       select.selectedIndex = 0;
       lastXml = "";
       osmdBox.scrollLeft = 0;
       renderSelection();
+    }
+
+    // Back → full app reset to first screen
+    function backToFreshStart({ cleanupFns = [] } = {}) {
+      try { cleanupFns.forEach(fn => { try { fn(); } catch(_){} }); } catch(_) {}
+      try { document.getElementById("aa-viewer")?.remove(); } catch(_) {}
+
+      setState({
+        packIndex: null, pack: null,
+        songIndex: null, song: null, selectedSong: null,
+        instrumentSelections: [],
+        parts: [], assignedResults: [], groupedAssignments: [],
+        arrangedFiles: [], combinedScoreXml: "",
+        barsPerSystem: 0,
+        arrangeDone: false, renameDone: false, reassignByScoreDone: false, combineDone: false,
+        timestamp: Date.now()
+      });
+
+      try {
+        const libSel = typeof libSelectEl === "function" ? libSelectEl() : null;
+        if (libSel) libSel.value = "";
+        const sSel = typeof songSelectEl === "function" ? songSelectEl() : null;
+        if (sSel) {
+          sSel.innerHTML = `<option value="">-- Select a Song --</option>`;
+          sSel.value = "";
+        }
+      } catch(_) {}
+
+      try { setWizardStage("library"); } catch(_) {
+        document.getElementById("step1")?.classList.remove("hidden");
+        document.getElementById("step2")?.classList.add("hidden");
+        document.getElementById("step3")?.classList.add("hidden");
+      }
     }
   } // buildViewerUI
 
@@ -2073,7 +2101,6 @@ if (typeof AA !== "undefined" && AA.emit) {
   }
 
   // --- MusicXML helpers -------------------------------------------------
-
   function ensureTitle(xmlString, title){
     try {
       const parser = new DOMParser();
@@ -2088,7 +2115,6 @@ if (typeof AA !== "undefined" && AA.emit) {
       return new XMLSerializer().serializeToString(doc);
     } catch (e) { return xmlString; }
   }
-
   function transformXmlForSlashes(xmlString) {
     try {
       const parser = new DOMParser();
@@ -2097,18 +2123,15 @@ if (typeof AA !== "undefined" && AA.emit) {
       return new XMLSerializer().serializeToString(xmlDoc);
     } catch (e) { return xmlString; }
   }
-
   function withXmlProlog(str){
     if (!str) return str;
     let s = String(str).replace(/^\uFEFF/, "").replace(/^\s+/, "");
     if (!/^\<\?xml/i.test(s)) s = '<?xml version="1.0" encoding="UTF-8"?>\n' + s;
     return s;
   }
-
   function safe(name){
     return String(name || "").replace(/[\\\/:*?"<>|]+/g, "_").replace(/\s+/g, " ").trim();
   }
-
   function downloadText(text, filename, mimetype){
     try{
       const blob = new Blob([text], { type: mimetype || "application/octet-stream" });
@@ -2126,11 +2149,7 @@ if (typeof AA !== "undefined" && AA.emit) {
     prints.forEach(n => n.parentNode && n.parentNode.removeChild(n));
   }
 
-  // Insert forced system breaks every N measures.
-  // Strategy:
-  //  - strip all existing <print>
-  //  - insert <print new-system="yes"> into the FIRST PART ONLY
-  //    at measures i where i % N === 0 (i>0)
+  // Insert forced system breaks every N measures into the first part.
   function applyBarsPerSystem(xmlString, barsPerSystem){
     const N = Number(barsPerSystem)||0;
     try{
@@ -2170,7 +2189,6 @@ if (typeof AA !== "undefined" && AA.emit) {
         for (let i=0;i<measures.length;i++){
           if (i>0 && (i % N)===0) {
             const m = measures[i];
-            // insert into the FIRST <part> of the measure
             const firstPart = m.getElementsByTagName("part")[0];
             if (firstPart) {
               const p = mkPrint();
@@ -2193,7 +2211,6 @@ if (typeof AA !== "undefined" && AA.emit) {
   function applyScalingForBars(xmlString, barsPerSystem){
     const N = Number(barsPerSystem)||0;
     if (!N) return xmlString;
-    // tweak multipliers if you want even stronger packing
     const kMap = { 4: 1.00, 8: 1.15, 12: 1.30, 16: 1.50 };
     const k = kMap[N] || 1.00;
     try {
@@ -2234,68 +2251,6 @@ if (typeof AA !== "undefined" && AA.emit) {
       return xmlString;
     }
   }
-
-// --- replace your current back button wiring ---
-backBtn.addEventListener("click", () => backToFreshStart({ cleanupFns }));
-
-// --- drop in this new helper (replace old backToInstrumentSelection) ---
-function backToFreshStart({ cleanupFns = [] } = {}) {
-  // 1) tear down viewer UI/observers safely
-  try { cleanupFns.forEach(fn => { try { fn(); } catch(_){} }); } catch(_) {}
-  try { document.getElementById("aa-viewer")?.remove(); } catch(_) {}
-
-  // 2) nuke all volatile state so it feels like first load
-  setState({
-    // library choice
-    packIndex: null,
-    pack: null,
-    // song choice
-    songIndex: null,
-    song: null,
-    selectedSong: null,
-
-    // step 3 selections
-    instrumentSelections: [],
-
-    // pipeline artifacts
-    parts: [],
-    assignedResults: [],
-    groupedAssignments: [],
-    arrangedFiles: [],
-    combinedScoreXml: "",
-
-    // viewer prefs
-    barsPerSystem: 0,
-
-    // pipeline flags
-    arrangeDone: false,
-    renameDone: false,
-    reassignByScoreDone: false,
-    combineDone: false,
-
-    timestamp: Date.now()
-  });
-
-  // 3) visually reset selects if helpers exist
-  try {
-    const libSel = typeof libSelectEl === "function" ? libSelectEl() : null;
-    if (libSel) libSel.value = "";
-    const sSel = typeof songSelectEl === "function" ? songSelectEl() : null;
-    if (sSel) {
-      sSel.innerHTML = `<option value="">-- Select a Song --</option>`;
-      sSel.value = "";
-    }
-  } catch(_) {}
-
-  // 4) show Step 1 (and let your stage listeners rebuild as needed)
-  try { setWizardStage("library"); } catch(_) {
-    // fallback to manual DOM show/hide if setWizardStage isn’t available
-    document.getElementById("step1")?.classList.remove("hidden");
-    document.getElementById("step2")?.classList.add("hidden");
-    document.getElementById("step3")?.classList.add("hidden");
-  }
-}
-
 
   // --- overlay (viewer-only) -------------------------------------------
   function getArrangerFromXml(xmlString){
