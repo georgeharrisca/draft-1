@@ -1670,7 +1670,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     backBtn.textContent = "← Back";
     backBtn.title = "Back to instrument selection";
     backBtn.style.cssText = "position:absolute;top:16px;left:16px;padding:8px 12px;border-radius:8px;border:none;background:#e5e7eb;color:#111;font:600 13px system-ui;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)";
-    backBtn.addEventListener("click", () => backToInstrumentSelection(state));
+   
     wrap.appendChild(backBtn);
 
     const card = ce("div");
@@ -2235,25 +2235,67 @@ if (typeof AA !== "undefined" && AA.emit) {
     }
   }
 
-  function backToInstrumentSelection(prevState){
-    const packName = (prevState && (prevState.pack || (prevState.selectedPack && prevState.selectedPack.name))) || "";
-    const songName = (prevState && (prevState.song || (prevState.selectedSong && prevState.selectedSong.name))) || "";
-    setState({
-      pack: packName,
-      song: songName,
-      packIndex: getState().packIndex,
-      songIndex: getState().songIndex,
-      arrangedFiles: [],
-      combinedScoreXml: "",
-      timestamp: Date.now()
-    });
-    document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
-    hideArrangingLoading();
-    qs("step1") && qs("step1").classList.add("hidden");
-    qs("step2") && qs("step2").classList.add("hidden");
-    qs("step3") && qs("step3").classList.remove("hidden");
-    AA.emit("wizard:stage", "instruments");
+// --- replace your current back button wiring ---
+backBtn.addEventListener("click", () => backToFreshStart({ cleanupFns }));
+
+// --- drop in this new helper (replace old backToInstrumentSelection) ---
+function backToFreshStart({ cleanupFns = [] } = {}) {
+  // 1) tear down viewer UI/observers safely
+  try { cleanupFns.forEach(fn => { try { fn(); } catch(_){} }); } catch(_) {}
+  try { document.getElementById("aa-viewer")?.remove(); } catch(_) {}
+
+  // 2) nuke all volatile state so it feels like first load
+  setState({
+    // library choice
+    packIndex: null,
+    pack: null,
+    // song choice
+    songIndex: null,
+    song: null,
+    selectedSong: null,
+
+    // step 3 selections
+    instrumentSelections: [],
+
+    // pipeline artifacts
+    parts: [],
+    assignedResults: [],
+    groupedAssignments: [],
+    arrangedFiles: [],
+    combinedScoreXml: "",
+
+    // viewer prefs
+    barsPerSystem: 0,
+
+    // pipeline flags
+    arrangeDone: false,
+    renameDone: false,
+    reassignByScoreDone: false,
+    combineDone: false,
+
+    timestamp: Date.now()
+  });
+
+  // 3) visually reset selects if helpers exist
+  try {
+    const libSel = typeof libSelectEl === "function" ? libSelectEl() : null;
+    if (libSel) libSel.value = "";
+    const sSel = typeof songSelectEl === "function" ? songSelectEl() : null;
+    if (sSel) {
+      sSel.innerHTML = `<option value="">-- Select a Song --</option>`;
+      sSel.value = "";
+    }
+  } catch(_) {}
+
+  // 4) show Step 1 (and let your stage listeners rebuild as needed)
+  try { setWizardStage("library"); } catch(_) {
+    // fallback to manual DOM show/hide if setWizardStage isn’t available
+    document.getElementById("step1")?.classList.remove("hidden");
+    document.getElementById("step2")?.classList.add("hidden");
+    document.getElementById("step3")?.classList.add("hidden");
   }
+}
+
 
   // --- overlay (viewer-only) -------------------------------------------
   function getArrangerFromXml(xmlString){
