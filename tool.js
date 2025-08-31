@@ -1672,7 +1672,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     backBtn.textContent = "← Back";
     backBtn.title = "Back to instrument selection";
     backBtn.style.cssText = "position:absolute;top:16px;left:16px;padding:8px 12px;border-radius:8px;border:none;background:#e5e7eb;color:#111;font:600 13px system-ui;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)";
-    backBtn.addEventListener("click", () => backToInstrumentSelection(getState(), { cleanupFns }));
+    backBtn.addEventListener("click", () => backToInstrumentSelection({ cleanupFns }));
     wrap.appendChild(backBtn);
 
     const card = ce("div");
@@ -2231,39 +2231,57 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     }
   }
 
-  // --- Back to Step 3 (preserve pack/song; clear pipeline) ---------------
-  function backToInstrumentSelection(prevState, { cleanupFns = [] } = {}) {
+  // --- Back to Step 3 (preserve pack/song & instrumentData; clear pipeline) ---
+  function backToInstrumentSelection({ cleanupFns = [] } = {}) {
     // tear down viewer safely
     try { cleanupFns.forEach(fn => { try { fn(); } catch(_){} }); } catch(_) {}
     try { document.getElementById("aa-viewer")?.remove(); } catch(_) {}
     try { document.getElementById("aa-osmd-ghost")?.remove(); } catch(_) {}
 
-    // keep library + song, clear everything else
-    const keep = {
-      packIndex: prevState?.packIndex ?? null,
-      pack:      prevState?.pack ?? null,
-      songIndex: prevState?.songIndex ?? null,
-      song:      prevState?.song ?? null,
-      selectedSong: prevState?.selectedSong ?? null
-    };
+    // IMPORTANT: merge-only reset so instrumentData / libraryData remain
+    if (typeof mergeState === "function") {
+      mergeState({
+        // clear only what should reset
+        instrumentSelections: [],
+        parts: [],
+        assignedResults: [],
+        groupedAssignments: [],
+        arrangedFiles: [],
+        combinedScoreXml: "",
+        barsPerSystem: 0,
+        arrangeDone: false,
+        renameDone: false,
+        reassignByScoreDone: false,
+        combineDone: false,
+        timestamp: Date.now()
+      });
+    } else {
+      // fallback (if only setState exists): include preserved globals explicitly
+      const cur = getState() || {};
+      setState({
+        packIndex: cur.packIndex ?? null,
+        pack: cur.pack ?? null,
+        songIndex: cur.songIndex ?? null,
+        song: cur.song ?? null,
+        selectedSong: cur.selectedSong ?? null,
+        libraryData: cur.libraryData ?? [],
+        instrumentData: cur.instrumentData ?? [],
+        instrumentSelections: [],
+        parts: [],
+        assignedResults: [],
+        groupedAssignments: [],
+        arrangedFiles: [],
+        combinedScoreXml: "",
+        barsPerSystem: 0,
+        arrangeDone: false,
+        renameDone: false,
+        reassignByScoreDone: false,
+        combineDone: false,
+        timestamp: Date.now()
+      });
+    }
 
-    setState({
-      ...keep,
-      instrumentSelections: [],
-      parts: [],
-      assignedResults: [],
-      groupedAssignments: [],
-      arrangedFiles: [],
-      combinedScoreXml: "",
-      barsPerSystem: 0,
-      arrangeDone: false,
-      renameDone: false,
-      reassignByScoreDone: false,
-      combineDone: false,
-      timestamp: Date.now()
-    });
-
-    // show Step 3
+    // show Step 3 (Instrument Picker)
     if (typeof setWizardStage === "function") {
       setWizardStage("instruments");
     } else {
@@ -2403,6 +2421,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   // tiny DOM helper
   function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
 })();
+
 
 
 /* =========================================================================
