@@ -2787,40 +2787,64 @@ function ensureXmlHeader(xml) {
    M9) Viewer Page Frames (Letter) + Horizontal Pagination
    ------------------------------------------------------------------------- */
 ;(function () {
-  const LETTER_RATIO = 8.5 / 11;   // width / height
-  const GAP_BETWEEN = 28;          // px gap between page frames
+  const LETTER_RATIO   = 8.5 / 11; // width / height
+  const GAP_BETWEEN    = 28;       // px gap between page frames
   const TOP_BOTTOM_PAD = 12;       // px inset from host top/bottom for frames
 
   function ensureFrames(host) {
     try {
       if (!host) return;
+
+      // make sure the host can layer children
+      const hostCS = getComputedStyle(host);
+      if (hostCS.position === "static") host.style.position = "relative";
+
       const svg = host.querySelector("svg");
       if (!svg) return;
 
-      // layer ordering: frames (0) < score SVG (1) < overlay titles (2)
-      svg.style.position = "relative";
-      svg.style.zIndex = "1";
+      // Find the OSMD render wrapper that is a direct child of host and contains the SVG.
+      // This avoids relying on z-index on the <svg> itself (SVG/HTML stacking can be quirky).
+      let renderLayer = svg;
+      let cur = svg;
+      while (cur && cur.parentElement && cur.parentElement !== host) {
+        cur = cur.parentElement;
+      }
+      if (cur && cur.parentElement === host) {
+        renderLayer = cur; // this is the direct-child wrapper that contains the SVG
+      }
 
+      // Layer ordering:
+      // frames (z=0)  <  renderLayer with SVG (z=1)  <  overlay titles (z=3)
+      renderLayer.style.position = "relative";
+      renderLayer.style.zIndex   = "1";
+
+      // Ensure frames container exists and is the FIRST child
       let frames = host.querySelector(".aa-pageframes");
       if (!frames) {
         frames = document.createElement("div");
         frames.className = "aa-pageframes";
         frames.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:0;";
-        host.appendChild(frames);
+        host.insertBefore(frames, host.firstChild); // prepend => always behind
+      } else if (frames !== host.firstChild) {
+        // If it drifted, put it back at the front to guarantee it's behind
+        host.insertBefore(frames, host.firstChild);
       }
 
-      // keep overlay titles above frames
+      // Keep overlay above everything
       const ov = host.querySelector(".aa-overlay");
-      if (ov) ov.style.zIndex = "2";
+      if (ov) {
+        ov.style.position = "absolute";
+        ov.style.zIndex = "3";
+      }
 
       // actual drawn size
       const svgRect = svg.getBoundingClientRect();
       if (!svgRect.height || !svgRect.width) return;
 
-      const pageH = Math.max(1, Math.floor(svgRect.height)); // px
-      const pageW = Math.max(1, Math.floor(pageH * LETTER_RATIO));
+      const pageH    = Math.max(1, Math.floor(svgRect.height)); // px
+      const pageW    = Math.max(1, Math.floor(pageH * LETTER_RATIO));
       const contentW = Math.max(1, Math.floor(svgRect.width));
-      const count = Math.max(1, Math.ceil(contentW / pageW));
+      const count    = Math.max(1, Math.ceil(contentW / pageW));
 
       // add/remove frames to match count
       const current = frames.children.length;
@@ -2850,9 +2874,9 @@ function ensureXmlHeader(xml) {
       // position frames as a horizontal row
       [...frames.children].forEach((f, idx) => {
         const x = leftPad + idx * (pageW + GAP_BETWEEN);
-        f.style.left = x + "px";
-        f.style.top = TOP_BOTTOM_PAD + "px";
-        f.style.width = pageW + "px";
+        f.style.left   = x + "px";
+        f.style.top    = TOP_BOTTOM_PAD + "px";
+        f.style.width  = pageW + "px";
         f.style.height = usableH + "px";
       });
     } catch (e) {
@@ -2909,9 +2933,8 @@ function ensureXmlHeader(xml) {
   });
   docMO.observe(document.documentElement, { childList: true, subtree: true });
 
-  // Optional: react to an event from M7 after each render, if you emit it
+  // React after each render (M7 emits this)
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => ensureFrames(host));
   }
 })();
-
