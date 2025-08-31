@@ -2075,6 +2075,11 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     else svg.style.removeProperty("width");
   }
 
+   if (typeof AA !== "undefined" && AA.emit) {
+  AA.emit("viewer:rendered", { osmd, host: osmdBox });
+}
+   
+   
   // --- MusicXML helpers -------------------------------------------------
   function ensureTitle(xmlString, title){
     try {
