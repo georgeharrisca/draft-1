@@ -1593,6 +1593,35 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 
+// --- overlay helper shim (define only if missing) ---------------------------
+(function(){
+  if (typeof window.getArrangerFromXml === "function") return;
+  window.getArrangerFromXml = function(xmlString){
+    try{
+      const doc = new DOMParser().parseFromString(xmlString || "", "application/xml");
+      // 1) credit/credit-type = arranger
+      for (const c of doc.querySelectorAll("credit")) {
+        const t = (c.querySelector("credit-type")?.textContent || "").toLowerCase().trim();
+        if (t === "arranger") {
+          const w = c.querySelector("credit-words");
+          const txt = (w?.textContent || "").trim();
+          if (txt) return txt;
+        }
+      }
+      // 2) identification/creator[type=arranger]
+      const fallback = doc.querySelector('identification > creator[type="arranger"]');
+      const txt = (fallback?.textContent || "").trim();
+      return txt || "Arranged by Auto Arranger";
+    } catch (_) {
+      return "Arranged by Auto Arranger";
+    }
+  };
+})();
+
+
+
+
+
 /* =========================================================================
    M7) Final Viewer  — with orange “Bars Per System” controls + 90% fit
    ------------------------------------------------------------------------- */
@@ -1722,18 +1751,27 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     let overlayRaf = 0;
     let barsPerSystem = 0; // 0 = auto (no forced breaks)
 
-    // Overlay scheduler
-    const scheduleOverlay = () => {
-      if (overlayRaf) cancelAnimationFrame(overlayRaf);
-      overlayRaf = requestAnimationFrame(() => {
-        overlayRaf = 0;
-        if (!lastXml) return;
-        const pickedLabel = (select.value === "__SCORE__" ? "Score" : select.value) || "";
-        const arranger    = getArrangerFromXml(lastXml);
-        overlayCredits(osmd, osmdBox, pickedLabel, arranger);
-        ensureOverlayOnTop(osmdBox);
-      });
-    };
+// Overlay scheduler (never throws if helpers are missing)
+const scheduleOverlay = () => {
+  if (overlayRaf) cancelAnimationFrame(overlayRaf);
+  overlayRaf = requestAnimationFrame(() => {
+    overlayRaf = 0;
+    if (!lastXml) return;
+
+    const pickedLabel = (select.value === "__SCORE__" ? "Score" : select.value) || "";
+    const arranger = (typeof getArrangerFromXml === "function")
+      ? getArrangerFromXml(lastXml)
+      : "Arranged by Auto Arranger";
+
+    if (typeof overlayCredits === "function") {
+      overlayCredits(osmd, osmdBox, pickedLabel, arranger);
+      // keep overlay on top of the SVG
+      const ov = osmdBox.querySelector(".aa-overlay");
+      if (ov && ov.parentNode === osmdBox) osmdBox.appendChild(ov);
+    }
+  });
+};
+
     cleanupFns.push(() => { if (overlayRaf) cancelAnimationFrame(overlayRaf); overlayRaf = 0; });
 
     const onResize = () => { fitScoreToHeight(osmd, osmdBox); scheduleOverlay(); };
