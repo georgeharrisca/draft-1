@@ -1707,18 +1707,18 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     ].join("");
     controls.appendChild(btnRow);
 
-    // Bars-per-system row (orange)
-    const barRow = ce("div");
-    barRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:center;margin-top:4px;";
-    barRow.innerHTML = [
-      '<span style="font:600 13px system-ui;color:#333;margin-right:6px;">Bars Per System:</span>',
-      '<button class="aa-btn aa-btn-orange" data-bars="4">4 Bars</button>',
-      '<button class="aa-btn aa-btn-orange" data-bars="8">8 Bars</button>',
-      '<button class="aa-btn aa-btn-orange" data-bars="12">12 Bars</button>',
-      '<button class="aa-btn aa-btn-orange" data-bars="16">16 Bars</button>',
-      '<button class="aa-btn aa-btn-orange" data-bars="0" title="Remove forced system breaks">Auto</button>'
-    ].join("");
-    controls.appendChild(barRow);
+// Bars-per-system row (orange)
+const barRow = ce("div");
+barRow.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:center;margin-top:4px;";
+barRow.innerHTML = [
+  '<span style="font:600 13px system-ui;color:#333;margin-right:6px;">Bars Per System:</span>',
+  '<button class="aa-btn aa-btn-orange" data-bars="4">4 Bars</button>',
+  '<button class="aa-btn aa-btn-orange" data-bars="8">8 Bars</button>',
+  '<button class="aa-btn aa-btn-orange" data-bars="12">12 Bars</button>',
+  '<button class="aa-btn aa-btn-orange" data-bars="16">16 Bars</button>'
+].join("");
+controls.appendChild(barRow);
+
 
     const styleBtn = ce("style");
     styleBtn.textContent = `
@@ -1843,7 +1843,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     requestAnimationFrame(() => {
       if (select.options.length > 0) {
         select.selectedIndex = 0;
-        setBarsActive(0);
+        setBarsActive(8);
         renderSelection();
       }
     });
