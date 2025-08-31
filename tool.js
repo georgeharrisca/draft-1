@@ -1572,6 +1572,47 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     return name.split(".").reduce((o,k)=> (o && o[k]!=null) ? o[k] : null, window);
   }
 
+// --- M7 local helpers (polyfill if missing) ---------------------------------
+const ensureTitle = (typeof window.ensureTitle === "function")
+  ? window.ensureTitle
+  : function ensureTitleLocal(xmlString, title){
+      try {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(String(xmlString), "application/xml");
+        const hasMovement = !!doc.querySelector("movement-title");
+        const hasWork     = !!doc.querySelector("work > work-title");
+        if (!hasMovement && !hasWork) {
+          const root = doc.querySelector("score-partwise, score-timewise") || doc.documentElement;
+          const mv = doc.createElement("movement-title");
+          mv.textContent = title || "Auto Arranger Score";
+          root.insertBefore(mv, root.firstChild);
+        }
+        return new XMLSerializer().serializeToString(doc);
+      } catch (e) { return xmlString; }
+    };
+
+const transformXmlForSlashes = (typeof window.transformXmlForSlashes === "function")
+  ? window.transformXmlForSlashes
+  : function transformXmlForSlashesLocal(xmlString){
+      try {
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(String(xmlString), "application/xml");
+        xmlDoc.querySelectorAll("lyric").forEach(n => n.remove());
+        return new XMLSerializer().serializeToString(xmlDoc);
+      } catch (e) { return xmlString; }
+    };
+
+const withXmlProlog = (typeof window.withXmlProlog === "function")
+  ? window.withXmlProlog
+  : function withXmlPrologLocal(str){
+      if (!str) return str;
+      let s = String(str).replace(/^\uFEFF/,"").replace(/^\s+/,"");
+      if (!/^\<\?xml/i.test(s)) s = '<?xml version="1.0" encoding="UTF-8"?>\n' + s;
+      return s;
+    };
+// ---------------------------------------------------------------------------
+
+   
   function buildViewerUI(){
     // Remove any existing viewer
     document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
