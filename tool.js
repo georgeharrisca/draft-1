@@ -1690,28 +1690,60 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         return s;
       };
 
-  // ---- Bars per system (inject MusicXML <print new-system="yes">) -----------
+  // ---- Bars per system (partwise + timewise support) ------------------------
   function applyBarsPerSystem(xmlString, barsPerSystem){
     if (!barsPerSystem || !isFinite(barsPerSystem) || barsPerSystem <= 0) return xmlString;
     try {
-      const doc = new DOMParser().parseFromString(String(xmlString), "application/xml");
-      const ns  = doc.documentElement.namespaceURI || null;
-      // remove existing <print> to avoid conflicts
-      doc.querySelectorAll("measure > print").forEach(n => n.remove());
+      const doc  = new DOMParser().parseFromString(String(xmlString), "application/xml");
+      const root = doc.documentElement;
+      const ns   = root.namespaceURI || null;
+      const isTimewise = /score-timewise/i.test(root.tagName);
 
-      doc.querySelectorAll("part").forEach(partEl => {
-        const measures = Array.from(partEl.querySelectorAll(":scope > measure"));
+      let inserted = 0;
+
+      if (isTimewise) {
+        // TIMEWISE: <score-timewise><measure>...</measure></score-timewise>
+        const measures = Array.from(root.querySelectorAll(":scope > measure"));
+        // clear existing prints
+        measures.forEach(m => m.querySelectorAll(":scope > print").forEach(p => p.remove()));
         for (let i = 0; i < measures.length; i++){
-          if (i === 0) continue; // first system starts naturally
+          if (i === 0) continue;
           if (i % barsPerSystem === 0) {
-            const m = measures[i];
-            const print = doc.createElementNS(ns, "print");
+            const print = ns ? doc.createElementNS(ns, "print") : doc.createElement("print");
             print.setAttribute("new-system", "yes");
-            // insert at top of measure (before notes)
-            m.insertBefore(print, m.firstChild);
+            measures[i].insertBefore(print, measures[i].firstChild);
+            inserted++;
           }
         }
-      });
+      } else {
+        // PARTWISE: <score-partwise><part>...<measure/>...</part>...</score-partwise>
+        // Use the first part to determine break indices, then apply to all parts
+        const parts = Array.from(root.querySelectorAll("score-partwise > part, :scope > part"));
+        if (parts.length) {
+          const refMeasures = Array.from(parts[0].querySelectorAll(":scope > measure"));
+          // compute break indices once
+          const breakIdx = [];
+          for (let i = 0; i < refMeasures.length; i++){
+            if (i !== 0 && i % barsPerSystem === 0) breakIdx.push(i);
+          }
+          // clear existing prints in all parts
+          parts.forEach(p => p.querySelectorAll(":scope > measure > print").forEach(n => n.remove()));
+          // apply to all parts using same break indices
+          for (const p of parts){
+            const measures = Array.from(p.querySelectorAll(":scope > measure"));
+            breakIdx.forEach(i => {
+              if (measures[i]) {
+                const print = ns ? doc.createElementNS(ns, "print") : doc.createElement("print");
+                print.setAttribute("new-system", "yes");
+                measures[i].insertBefore(print, measures[i].firstChild);
+                inserted++;
+              }
+            });
+          }
+        }
+      }
+
+      console.log(`[M7] applyBarsPerSystem: inserted ${inserted} system breaks (${isTimewise ? "timewise" : "partwise"})`);
       return new XMLSerializer().serializeToString(doc);
     } catch (e) {
       console.warn("[M7] applyBarsPerSystem failed", e);
@@ -1719,7 +1751,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     }
   }
 
-  // ---- overlay (viewer-only, non-destructive) --------------------------------
+  // ---- overlay (viewer-only) ------------------------------------------------
   function getArrangerFromXml(xmlString){
     try{
       const doc = new DOMParser().parseFromString(xmlString || "", "application/xml");
@@ -1750,7 +1782,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       const PART_FONT_PX_DEFAULT   = 11;
       const ARR_FONT_PX_DEFAULT    = 11;
 
-      // container
       let overlay = host.querySelector(".aa-overlay");
       if (!overlay) {
         overlay = document.createElement("div");
@@ -1775,7 +1806,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         scalePos = zoom;
       }
 
-      // try to infer font
       let compNode = null;
       for (const t of svg.querySelectorAll("text")) {
         const txt = (t.textContent||"");
@@ -1897,7 +1927,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       b.className = "aa-btn aa-btn-orange";
       b.addEventListener("click", () => {
         barsPerSystemChoice = n;
-        // visual toggle (optional)
         barRow.querySelectorAll("button").forEach(x=>x.classList.remove("aa-toggle-selected"));
         b.classList.add("aa-toggle-selected");
         console.log("[M7] Bars per system set to", n);
@@ -1972,25 +2001,22 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         return;
       }
       try {
-        // base xml (title + cleanup)
         let work = ensureTitle(xml, songName);
         work = transformXmlForSlashes(work);
-        // enforce bars/system if selected
-        work = applyBarsPerSystem(work, barsPerSystemChoice);
+        work = applyBarsPerSystem(work, barsPerSystemChoice); // <- **now robust**
         work = withXmlProlog(work);
 
         if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
         await osmd.load(work);
         await osmd.render();
 
-        // 90% vertical fit + keep intrinsic width (horizontal scroll)
         await fitScoreToHeight90(osmd, osmdBox, /*reRenderIfNeeded*/true);
         forceIntrinsicSvgWidth(osmd, osmdBox);
 
         btnPDF.disabled = false;
         btnXML.disabled = false;
 
-        lastXml = work; // store processed xml (includes bars-per-system)
+        lastXml = work;
         scheduleOverlay();
       } catch(e){
         console.error("[finalViewer] render failed", e);
@@ -2020,7 +2046,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       downloadText(lastXml, safe(name) + ".musicxml", "application/xml");
     });
 
-    // ---------- ZIP: PDFs for Score + all Parts (ghost renderer, no flicker) ----------
+    // ---------- ZIP: PDFs for Score + all Parts (ghost renderer) --------------
     btnPDFAll.addEventListener("click", async () => {
       const s = getState();
       const items = [];
@@ -2032,11 +2058,9 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
       try {
         const zip = new JSZip();
-        // ghost renderer setup
         const { ghost, ghostBox, cleanup } = createGhostOSMD(osmdBox);
 
         for (const it of items) {
-          // match viewer: title + slashes + bars/system + prolog, then 90% fit
           let xmlWork = ensureTitle(it.xml, songName);
           xmlWork = transformXmlForSlashes(xmlWork);
           xmlWork = applyBarsPerSystem(xmlWork, barsPerSystemChoice);
@@ -2058,7 +2082,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       }
     });
 
-    // ---------- ZIP: XMLs for Score + all Parts ----------
+    // ---------- ZIP: XMLs for Score + all Parts -------------------------------
     btnXMLAll.addEventListener("click", async () => {
       const s = getState();
       const items = [];
@@ -2071,7 +2095,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       try {
         const zip = new JSZip();
         for (const it of items) {
-          // keep consistent with viewer: include bars-per-system injection
           let xmlWork = ensureTitle(it.xml, songName);
           xmlWork = transformXmlForSlashes(xmlWork);
           xmlWork = applyBarsPerSystem(xmlWork, barsPerSystemChoice);
@@ -2157,7 +2180,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       svg.style.width = (vb.width * zoom) + "px";
       svg.style.height = "auto";
     } else {
-      // fallback to bounding box
       const r = svg.getBoundingClientRect();
       if (r.width) svg.style.width = r.width + "px";
     }
@@ -2173,9 +2195,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
     const vb = svg.viewBox && svg.viewBox.baseVal;
     if (vb && vb.height) {
-      // estimate baseHeight as current vb height
       baseHeight = vb.height;
-      // if already zoomed, try to normalize
       const rectH = svg.getBoundingClientRect().height;
       if (rectH && osmd.zoom) baseHeight = rectH / osmd.zoom;
     } else {
@@ -2186,9 +2206,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     const targetZoom = Math.max(0.1, (hostH * 0.90) / baseHeight);
     if (Math.abs((osmd.zoom || 1) - targetZoom) > 0.01) {
       osmd.zoom = targetZoom;
-      if (reRenderIfNeeded) {
-        await osmd.render();
-      }
+      if (reRenderIfNeeded) { await osmd.render(); }
     }
   }
 
@@ -2238,6 +2256,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     return m ? m[1] : null;
   }
 })();
+
 
 
 /* =========================================================================
