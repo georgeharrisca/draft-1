@@ -1712,14 +1712,16 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     select.addEventListener("change", renderSelection);
 
     // Handle Bars Per System clicks
-    barsRow.addEventListener("click", (e) => {
-      const btn = e.target.closest(".aa-btn-orange");
-      if (!btn) return;
-      barsRow.querySelectorAll(".aa-btn-orange").forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
-      barsPerSystem = parseInt(btn.dataset.bars,10) || 0;
-      renderSelection(); // re-render current selection with new breaks
-    });
+  barsRow.addEventListener("click", (e) => {
+  const btn = e.target.closest(".aa-btn-orange");
+  if (!btn) return;
+  barsRow.querySelectorAll(".aa-btn-orange").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  barsPerSystem = parseInt(btn.dataset.bars,10) || 0;
+  console.log("[M7] Bars per system set to", barsPerSystem);
+  renderSelection(); // re-render current selection with new breaks
+});
+
 
     async function renderSelection(){
       const { xml } = pickXml(select.value);
@@ -1865,14 +1867,57 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     }
   }
 
-  /* ===== helper: force bars-per-system by inserting MusicXML system breaks ===== */
-  function forceBarsPerSystem(xmlString, N){
-    try{
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(xmlString, "application/xml");
+ /* ===== helper: force bars-per-system by inserting MusicXML system breaks ===== */
+function forceBarsPerSystem(xmlString, N){
+  try{
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xmlString, "application/xml");
 
-      const parts = Array.from(doc.getElementsByTagName("part"));
-      if (!parts.length) return xmlString;
+    const parts = Array.from(doc.getElementsByTagName("part"));
+    if (!parts.length) return xmlString;
+
+    // Gather measure counts from the first part
+    const firstMeasures = Array.from(parts[0].getElementsByTagName("measure"));
+    if (!firstMeasures.length) return xmlString;
+
+    // We want breaks at measures N+1, 2N+1, ... (skip index 0)
+    const breakIdx = new Set();
+    for (let i = 0; i < firstMeasures.length; i++) {
+      if (i !== 0 && (i % N) === 0) breakIdx.add(i); // i= N, 2N, 3N...
+    }
+
+    // Clean any existing print new-system/new-page
+    parts.forEach(p => {
+      Array.from(p.getElementsByTagName("measure")).forEach(m => {
+        Array.from(m.getElementsByTagName("print")).forEach(pr => {
+          const ns = (pr.getAttribute("new-system")||"").toLowerCase();
+          const np = (pr.getAttribute("new-page")||"").toLowerCase();
+          if (ns === "yes" || np === "yes") {
+            pr.parentNode.removeChild(pr);
+          }
+        });
+      });
+    });
+
+    // Insert <print new-system="yes"/> at targeted measures for every part
+    parts.forEach(p => {
+      const measures = Array.from(p.getElementsByTagName("measure"));
+      measures.forEach((m, idx) => {
+        if (!breakIdx.has(idx)) return;
+        const printEl = doc.createElement("print");
+        printEl.setAttribute("new-system","yes");
+        // Put print as very first child so it precedes attributes/clefs etc.
+        m.insertBefore(printEl, m.firstChild);
+      });
+    });
+
+    return new XMLSerializer().serializeToString(doc);
+  } catch(e){
+    console.warn("[M7] forceBarsPerSystem failed, returning original XML", e);
+    return xmlString;
+  }
+}
+
 
       // Collect measure numbers to break on from the first part
       const firstMeasures = Array.from(parts[0].getElementsByTagName("measure"));
