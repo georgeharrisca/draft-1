@@ -1626,10 +1626,11 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
    M7) Final Viewer
    ------------------------------------------------------------------------- */
 ;(function () {
+  // Start viewer once combine is done
   AA.on("combine:done", () => AA.safe("finalViewer", bootWhenReady));
 
   async function bootWhenReady() {
-    if (document.getElementById('aa-viewer')) return;
+    if (document.getElementById("aa-viewer")) return;
     await ensureLib("opensheetmusicdisplay", "./opensheetmusicdisplay.min.js");
     await ensureLib("html2canvas", "./html2canvas.min.js");
     await ensureLib("jspdf", "./jspdf.umd.min.js");
@@ -1652,6 +1653,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
   }
 
   function buildViewerUI(){
+    // Remove any existing viewer
     document.querySelectorAll('#aa-viewer').forEach(n => n.remove());
 
     const state    = getState();
@@ -1666,15 +1668,16 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     wrap.id = "aa-viewer";
     wrap.style.cssText = "position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;height:100vh;background:rgba(0,0,0,0.08);padding:28px;box-sizing:border-box;overflow:hidden;";
 
+    const backBtn = ce("button");
+    backBtn.textContent = "← Back";
+    backBtn.title = "Back to instrument selection";
+    backBtn.style.cssText = "position:absolute;top:16px;left:16px;padding:8px 12px;border-radius:8px;border:none;background:#e5e7eb;color:#111;font:600 13px system-ui;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)";
+    backBtn.addEventListener("click", () => backToInstrumentSelection(getState(), { cleanupFns }));
+    wrap.appendChild(backBtn);
+
     const card = ce("div");
     card.style.cssText = "margin:auto;width:min(1200px,100%);height:calc(100vh - 56px);background:#fff;border-radius:14px;box-shadow:0 12px 36px rgba(0,0,0,.18);padding:20px 20px 18px;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;overflow:hidden;";
     wrap.appendChild(card);
-
-    const backBtn = ce("button");
-    backBtn.textContent = "← Back";
-    backBtn.title = "Back to start";
-    backBtn.style.cssText = "position:absolute;top:16px;left:16px;padding:8px 12px;border-radius:8px;border:none;background:#e5e7eb;color:#111;font:600 13px system-ui;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)";
-    wrap.appendChild(backBtn);
 
     const title = ce("h2", { textContent: songName });
     title.style.cssText = "margin:0;text-align:center;color:#000;font:700 20px/1.2 system-ui,Arial";
@@ -1732,12 +1735,13 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
     const osmdBox = ce("div");
     osmdBox.id = "aa-osmd-box";
-    // vertical fit, keep intrinsic width for horizontal scroll
+    // vertical fit, horizontal scroll
     osmdBox.style.cssText = "margin-top:8px;border:1px solid #e5e5e5;border-radius:10px;background:#fff;padding:14px;flex:1 1 auto;min-height:0;overflow-y:hidden;overflow-x:auto;white-space:nowrap;position:relative;";
     card.appendChild(osmdBox);
     document.body.appendChild(wrap);
 
     const OSMD = lookupGlobal("opensheetmusicdisplay");
+    // Respect XML system/page breaks
     const osmd = new OSMD.OpenSheetMusicDisplay(osmdBox, {
       autoResize: true,
       backend: "svg",
@@ -1753,7 +1757,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
     let lastXml = "";
     let overlayRaf = 0;
-    let barsPerSystemChoice = 0; // 0 = Auto (we default to 8 on first render below)
+    let barsPerSystemChoice = 0; // 0 = Auto/off
 
     function setBarsActive(n){
       barsPerSystemChoice = Number(n)||0;
@@ -1799,15 +1803,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     mo.observe(osmdBox, { childList: true, subtree: true });
     cleanupFns.push(() => mo.disconnect());
 
-  backBtn.addEventListener("click", () => {
-  // send the current state so we can preserve pack/song
-  backToInstrumentSelection(getState(), { cleanupFns });
-});
-
-    // Change selection
     select.addEventListener("change", renderSelection);
 
-    // Bars-per-system clicks
     barRow.addEventListener("click", (ev) => {
       const b = ev.target.closest(".aa-btn-orange");
       if (!b) return;
@@ -1841,23 +1838,25 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         btnPDF.disabled = false;
         btnXML.disabled = false;
         scheduleOverlay();
-        if (AA && AA.emit) AA.emit("viewer:rendered", { osmd, host: osmdBox });
+
+        if (typeof AA !== "undefined" && AA.emit) {
+          AA.emit("viewer:rendered", { osmd, host: osmdBox });
+        }
       } catch(e){
         console.error("[finalViewer] render failed", e);
         alert("Failed to render this selection.");
       }
     }
 
-    // First render
+    // Render first item immediately
     requestAnimationFrame(() => {
       if (select.options.length > 0) {
         select.selectedIndex = 0;
-        setBarsActive(8);   // default to 8 bars/system
+        setBarsActive(8); // default choice
         renderSelection();
       }
     });
 
-    // Single PDF/XML
     btnPDF.addEventListener("click", async () => {
       if (!lastXml) { alert("Load a score/part first."); return; }
       const base = (select.value === "__SCORE__" ? "Score" : select.value);
@@ -1871,7 +1870,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       downloadText(lastXml, safe(name) + ".musicxml", "application/xml");
     });
 
-    // ZIP: PDFs (Score + Parts) using a ghost renderer (no flicker)
+    // ---------- ZIP: PDFs for Score + all Parts (ghost renderer, no flicker) ----------
     btnPDFAll.addEventListener("click", async () => {
       const s = getState();
       const items = [];
@@ -1883,6 +1882,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
       try {
         const zip = new JSZip();
+        // ghost renderer setup
         const { ghost, ghostBox, cleanup } = createGhostOSMD(osmdBox);
 
         for (const it of items) {
@@ -1898,7 +1898,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         cleanup();
 
         const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
-        triggerBlobDownload(blob, `${safe(songName)} - PDFs (Score & Parts).zip`);
+        const zipName = `${safe(songName)} - PDFs (Score & Parts).zip`;
+        triggerBlobDownload(blob, zipName);
       } catch (e) {
         console.error("[finalViewer] ZIP PDFs failed", e);
         alert("Failed to export PDFs.");
@@ -1907,7 +1908,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       }
     });
 
-    // ZIP: XMLs (Score + Parts)
+    // ---------- ZIP: XMLs for Score + all Parts ----------
     btnXMLAll.addEventListener("click", async () => {
       const s = getState();
       const items = [];
@@ -1928,7 +1929,8 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
           zip.file(`${safe(songName)} - ${safe(it.label)}.musicxml`, xmlWork);
         }
         const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
-        triggerBlobDownload(blob, `${safe(songName)} - XMLs (Score & Parts).zip`);
+        const zipName = `${safe(songName)} - XMLs (Score & Parts).zip`;
+        triggerBlobDownload(blob, zipName);
       } catch (e) {
         console.error("[finalViewer] ZIP XMLs failed", e);
         alert("Failed to export XMLs.");
@@ -1937,7 +1939,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       }
     });
 
-    // ----- local helpers in viewer -----
     function pickXml(choice){
       const s = getState();
       if (choice === "__SCORE__") return { xml: s.combinedScoreXml || "" };
@@ -1945,6 +1946,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       const hit = list.find(f => (f.instrumentName || f.baseName) === choice);
       return { xml: (hit && hit.xml) || "" };
     }
+
     function ensureOverlayOnTop(host){
       const ov = host.querySelector(".aa-overlay");
       if (ov && ov.parentNode === host) host.appendChild(ov);
@@ -1953,84 +1955,14 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       const ov = host.querySelector(".aa-overlay");
       if (ov) ov.innerHTML = "";
     }
+
+    // reset to first option and rerender (as if just loaded)
     function resetViewerToDefault(){
       if (!select || select.options.length === 0) return;
       select.selectedIndex = 0;
       lastXml = "";
       osmdBox.scrollLeft = 0;
       renderSelection();
-    }
-
- function backToInstrumentSelection(prevState, { cleanupFns = [] } = {}) {
-  // 1) tear down viewer safely
-  try { cleanupFns.forEach(fn => { try { fn(); } catch(_){} }); } catch(_) {}
-  try { document.getElementById("aa-viewer")?.remove(); } catch(_) {}
-  try { document.getElementById("aa-osmd-ghost")?.remove(); } catch(_) {}
-
-  // 2) keep library + song, clear everything else
-  const keep = {
-    packIndex: prevState?.packIndex ?? null,
-    pack:      prevState?.pack ?? null,
-    songIndex: prevState?.songIndex ?? null,
-    song:      prevState?.song ?? null,
-    selectedSong: prevState?.selectedSong ?? null
-  };
-
-  setState({
-    ...keep,
-    // let the user re-pick instruments
-    instrumentSelections: [],
-
-    // nuke pipeline artifacts
-    parts: [],
-    assignedResults: [],
-    groupedAssignments: [],
-    arrangedFiles: [],
-    combinedScoreXml: "",
-
-    // viewer prefs & pipeline flags
-    barsPerSystem: 0,
-    arrangeDone: false,
-    renameDone: false,
-    reassignByScoreDone: false,
-    combineDone: false,
-
-    timestamp: Date.now()
-  });
-
-  // 3) show Step 3 (instrument selection)
-  if (typeof setWizardStage === "function") {
-    setWizardStage("instruments");
-  } else {
-    // fallback: manual show/hide
-    document.getElementById("step1")?.classList.add("hidden");
-    document.getElementById("step2")?.classList.add("hidden");
-    document.getElementById("step3")?.classList.remove("hidden");
-  }
-
-  // 4) let other modules refresh if they listen
-  if (AA && typeof AA.emit === "function") {
-    AA.emit("viewer:closed");
-    AA.emit("viewer:backToInstruments");
-  }
-}
-
-
-      try {
-        const libSel = typeof libSelectEl === "function" ? libSelectEl() : null;
-        if (libSel) libSel.value = "";
-        const sSel = typeof songSelectEl === "function" ? songSelectEl() : null;
-        if (sSel) {
-          sSel.innerHTML = `<option value="">-- Select a Song --</option>`;
-          sSel.value = "";
-        }
-      } catch(_) {}
-
-      try { setWizardStage("library"); } catch(_) {
-        document.getElementById("step1")?.classList.remove("hidden");
-        document.getElementById("step2")?.classList.add("hidden");
-        document.getElementById("step3")?.classList.add("hidden");
-      }
     }
   } // buildViewerUI
 
@@ -2051,7 +1983,9 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       newPageFromXML: true
     });
 
-    const cleanup = () => { try { ghostBox.remove(); } catch(_) {} };
+    const cleanup = () => {
+      try { ghostBox.remove(); } catch(_) {}
+    };
     return { ghost, ghostBox, cleanup };
   }
 
@@ -2156,6 +2090,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       return new XMLSerializer().serializeToString(doc);
     } catch (e) { return xmlString; }
   }
+
   function transformXmlForSlashes(xmlString) {
     try {
       const parser = new DOMParser();
@@ -2164,15 +2099,18 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       return new XMLSerializer().serializeToString(xmlDoc);
     } catch (e) { return xmlString; }
   }
+
   function withXmlProlog(str){
     if (!str) return str;
     let s = String(str).replace(/^\uFEFF/, "").replace(/^\s+/, "");
     if (!/^\<\?xml/i.test(s)) s = '<?xml version="1.0" encoding="UTF-8"?>\n' + s;
     return s;
   }
+
   function safe(name){
     return String(name || "").replace(/[\\\/:*?"<>|]+/g, "_").replace(/\s+/g, " ").trim();
   }
+
   function downloadText(text, filename, mimetype){
     try{
       const blob = new Blob([text], { type: mimetype || "application/octet-stream" });
@@ -2190,7 +2128,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     prints.forEach(n => n.parentNode && n.parentNode.removeChild(n));
   }
 
-  // Insert forced system breaks every N measures into the first part.
+  // Insert forced system breaks every N measures (first part only)
   function applyBarsPerSystem(xmlString, barsPerSystem){
     const N = Number(barsPerSystem)||0;
     try{
@@ -2290,6 +2228,53 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     } catch (e) {
       console.warn("[M7] applyScalingForBars failed", e);
       return xmlString;
+    }
+  }
+
+  // --- Back to Step 3 (preserve pack/song; clear pipeline) ---------------
+  function backToInstrumentSelection(prevState, { cleanupFns = [] } = {}) {
+    // tear down viewer safely
+    try { cleanupFns.forEach(fn => { try { fn(); } catch(_){} }); } catch(_) {}
+    try { document.getElementById("aa-viewer")?.remove(); } catch(_) {}
+    try { document.getElementById("aa-osmd-ghost")?.remove(); } catch(_) {}
+
+    // keep library + song, clear everything else
+    const keep = {
+      packIndex: prevState?.packIndex ?? null,
+      pack:      prevState?.pack ?? null,
+      songIndex: prevState?.songIndex ?? null,
+      song:      prevState?.song ?? null,
+      selectedSong: prevState?.selectedSong ?? null
+    };
+
+    setState({
+      ...keep,
+      instrumentSelections: [],
+      parts: [],
+      assignedResults: [],
+      groupedAssignments: [],
+      arrangedFiles: [],
+      combinedScoreXml: "",
+      barsPerSystem: 0,
+      arrangeDone: false,
+      renameDone: false,
+      reassignByScoreDone: false,
+      combineDone: false,
+      timestamp: Date.now()
+    });
+
+    // show Step 3
+    if (typeof setWizardStage === "function") {
+      setWizardStage("instruments");
+    } else {
+      document.getElementById("step1")?.classList.add("hidden");
+      document.getElementById("step2")?.classList.add("hidden");
+      document.getElementById("step3")?.classList.remove("hidden");
+    }
+
+    if (AA && typeof AA.emit === "function") {
+      AA.emit("viewer:closed");
+      AA.emit("viewer:backToInstruments");
     }
   }
 
@@ -2415,9 +2400,9 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     }
   }
 
+  // tiny DOM helper
   function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
 })();
-
 
 
 /* =========================================================================
