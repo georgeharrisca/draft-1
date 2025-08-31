@@ -884,7 +884,9 @@ function extractPartsFromScore(xmlText){
      M5) reassignPartIdsByScoreOrder
      M6) combineArrangedParts
      M7) finalViewer
+     M8) apply credits
      H1) helpers (OSMD header helper)
+     M9) viewer enhancers
    ========================================================================== */
 
 
@@ -1796,6 +1798,16 @@ controls.appendChild(barRow);
         }
       }
     });
+
+
+     
+// after btnPDF/btnXML enabling and scheduleOverlay():
+if (typeof AA !== "undefined" && AA.emit) {
+  AA.emit("viewer:rendered", { osmd, host: osmdBox });
+}
+
+     
+     
     mo.observe(osmdBox, { childList: true, subtree: true });
     cleanupFns.push(() => mo.disconnect());
 
@@ -2705,6 +2717,11 @@ controls.appendChild(barRow);
 
 
 
+
+
+
+
+
    
 
 /* ============================================================================
@@ -2719,86 +2736,140 @@ function ensureXmlHeader(xml) {
 
 
 
+
+
+
+
+
 /* =========================================================================
-   M9) Viewer Enhancers: Letter page format + horizontal pages + bars/system
+   M9) Viewer Page Frames (Letter) + Horizontal Pagination
    ------------------------------------------------------------------------- */
-;(function(){
-  const INCH_TO_MM = 25.4;
-  const LETTER_W_MM = 8.5 * INCH_TO_MM;  // 215.9 mm
-  const LETTER_H_MM = 11   * INCH_TO_MM; // 279.4 mm
+;(function () {
+  const LETTER_RATIO = 8.5 / 11;   // width / height
+  const GAP_BETWEEN = 28;          // px gap between page frames
+  const TOP_BOTTOM_PAD = 12;       // px inset from host top/bottom for frames
 
-  // Force OSMD to Letter pages — call AFTER osmd.load(...) but BEFORE osmd.render()
-  function setPageFormatLetter(osmd){
+  function ensureFrames(host) {
     try {
-      if (osmd?.EngravingRules?.PageFormat) {
-        const pf = osmd.EngravingRules.PageFormat;
-        if (pf.size) { pf.size.width = LETTER_W_MM; pf.size.height = LETTER_H_MM; }
-        else { osmd.EngravingRules.PageFormat.width = LETTER_W_MM; osmd.EngravingRules.PageFormat.height = LETTER_H_MM; }
-        if (typeof osmd.EngravingRules.RenderSingleHorizontalStaffline !== "undefined") {
-          osmd.EngravingRules.RenderSingleHorizontalStaffline = false;
+      if (!host) return;
+      const svg = host.querySelector("svg");
+      if (!svg) return;
+
+      // layer ordering: frames (0) < score SVG (1) < overlay titles (2)
+      svg.style.position = "relative";
+      svg.style.zIndex = "1";
+
+      let frames = host.querySelector(".aa-pageframes");
+      if (!frames) {
+        frames = document.createElement("div");
+        frames.className = "aa-pageframes";
+        frames.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:0;";
+        host.appendChild(frames);
+      }
+
+      // keep overlay titles above frames
+      const ov = host.querySelector(".aa-overlay");
+      if (ov) ov.style.zIndex = "2";
+
+      // actual drawn size
+      const svgRect = svg.getBoundingClientRect();
+      if (!svgRect.height || !svgRect.width) return;
+
+      const pageH = Math.max(1, Math.floor(svgRect.height)); // px
+      const pageW = Math.max(1, Math.floor(pageH * LETTER_RATIO));
+      const contentW = Math.max(1, Math.floor(svgRect.width));
+      const count = Math.max(1, Math.ceil(contentW / pageW));
+
+      // add/remove frames to match count
+      const current = frames.children.length;
+      if (current < count) {
+        for (let i = current; i < count; i++) {
+          const f = document.createElement("div");
+          f.className = "aa-pageframe";
+          f.style.cssText =
+            "position:absolute;" +
+            "border-radius:8px;background:#fff;" +
+            "box-shadow:0 4px 28px rgba(0,0,0,.12);" +
+            "outline:1px solid rgba(0,0,0,.06);";
+          frames.appendChild(f);
+        }
+      } else if (current > count) {
+        for (let i = 0; i < current - count; i++) {
+          frames.lastChild && frames.lastChild.remove();
         }
       }
-    } catch(e){ console.warn("[M9] setPageFormatLetter failed", e); }
-  }
 
-  // After render: show each page (SVG) as a horizontal “strip” with page-like background
-  function afterRenderPagesHorizontal(host){
-    try {
-      host.style.whiteSpace = "nowrap";
-      const pages = host.querySelectorAll("svg");
-      pages.forEach((svg) => {
-        svg.style.display       = "inline-block";
-        svg.style.verticalAlign = "top";
-        svg.style.marginRight   = "24px";
-        svg.style.background    = "#fff";
-        svg.style.boxShadow     = "0 0 0 1px #eee inset";
+      const leftPad = Math.max(
+        14,
+        parseInt(getComputedStyle(host).paddingLeft || "0", 10)
+      );
+      const usableH = Math.max(1, pageH - TOP_BOTTOM_PAD * 2);
+
+      // position frames as a horizontal row
+      [...frames.children].forEach((f, idx) => {
+        const x = leftPad + idx * (pageW + GAP_BETWEEN);
+        f.style.left = x + "px";
+        f.style.top = TOP_BOTTOM_PAD + "px";
+        f.style.width = pageW + "px";
+        f.style.height = usableH + "px";
       });
-    } catch(e){ console.warn("[M9] afterRenderPagesHorizontal failed", e); }
-  }
-
-  /**
-   * MusicXML rewrite: enforce N bars per system by inserting <print new-system="yes"> at measure boundaries.
-   * Removes existing "new-system" prints first; applies to all parts.
-   */
-  function alterBarsPerSystem(xmlString, n){
-    if (!n || !isFinite(n) || n <= 0) return xmlString;
-    try{
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(String(xmlString), "application/xml");
-      if (doc.getElementsByTagName("parsererror").length) return xmlString;
-
-      const ns = doc.documentElement.namespaceURI || null;
-      const parts = Array.from(doc.getElementsByTagName("part"));
-      if (!parts.length) return xmlString;
-
-      for (const part of parts) {
-        const measures = Array.from(part.getElementsByTagName("measure"));
-        let idx = 0;
-        for (const m of measures) {
-          idx++;
-          // Remove existing <print new-system="yes">
-          const prints = Array.from(m.getElementsByTagName("print"));
-          for (const p of prints) {
-            if ((p.getAttribute && p.getAttribute("new-system")) === "yes") {
-              p.parentNode && p.parentNode.removeChild(p);
-            }
-          }
-          // Insert break at measures 1+n, 1+2n, ...
-          if (idx > 1 && ((idx - 1) % n) === 0) {
-            const pr = ns ? doc.createElementNS(ns, "print") : doc.createElement("print");
-            pr.setAttribute("new-system", "yes");
-            m.insertBefore(pr, m.firstChild);
-          }
-        }
-      }
-      return new XMLSerializer().serializeToString(doc);
-    } catch(e){
-      console.warn("[M9] alterBarsPerSystem failed", e);
-      return xmlString;
+    } catch (e) {
+      console.warn("[M9] ensureFrames skipped:", e);
     }
   }
 
-  // Expose to M7
-  window.AA_M9 = { setPageFormatLetter, afterRenderPagesHorizontal, alterBarsPerSystem };
+  // observe the viewer box and its content so frames stay in sync
+  function hookHost(host) {
+    if (!host || host._m9Hooked) return;
+    host._m9Hooked = true;
+
+    const ro = new ResizeObserver(() => ensureFrames(host));
+    ro.observe(host);
+
+    const mo = new MutationObserver((muts) => {
+      for (const m of muts) {
+        if (m.type === "childList") {
+          // new SVG or re-render — refresh frames
+          ensureFrames(host);
+          return;
+        }
+      }
+    });
+    mo.observe(host, { childList: true, subtree: true });
+
+    // stash for optional cleanup
+    host._m9ro = ro;
+    host._m9mo = mo;
+
+    // initial paint
+    ensureFrames(host);
+  }
+
+  // If the viewer is already present
+  function tryHookNow() {
+    const host = document.getElementById("aa-osmd-box");
+    if (host) hookHost(host);
+  }
+  document.addEventListener("DOMContentLoaded", tryHookNow);
+
+  // If the viewer appears later, catch it
+  const docMO = new MutationObserver((muts) => {
+    for (const m of muts) {
+      for (const n of m.addedNodes) {
+        if (!(n instanceof HTMLElement)) continue;
+        if (n.id === "aa-osmd-box") hookHost(n);
+        else {
+          const h = n.querySelector && n.querySelector("#aa-osmd-box");
+          if (h) hookHost(h);
+        }
+      }
+    }
+  });
+  docMO.observe(document.documentElement, { childList: true, subtree: true });
+
+  // Optional: react to an event from M7 after each render, if you emit it
+  if (typeof AA !== "undefined" && AA.on) {
+    AA.on("viewer:rendered", ({ host }) => ensureFrames(host));
+  }
 })();
 
