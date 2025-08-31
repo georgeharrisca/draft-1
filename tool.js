@@ -1822,13 +1822,12 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         return;
       }
       try {
-     let work = ensureTitle(xml, songName);
-work = transformXmlForSlashes(work);
-work = applyBarsPerSystem(work, barsPerSystemChoice);
-work = applyScalingForBars(work, barsPerSystemChoice);
-**if (window.AA_forceLetterLayoutXML) work = AA_forceLetterLayoutXML(work);**
-work = withXmlProlog(work);
-
+        let work = ensureTitle(xml, songName);
+        work = transformXmlForSlashes(work);
+        work = applyBarsPerSystem(work, barsPerSystemChoice);
+        work = applyScalingForBars(work, barsPerSystemChoice);
+        if (window.AA_forceLetterLayoutXML) work = AA_forceLetterLayoutXML(work);
+        work = withXmlProlog(work);
 
         if (typeof osmd.zoom === "number") osmd.zoom = 1.0;
         await osmd.load(work);
@@ -1892,11 +1891,7 @@ work = withXmlProlog(work);
           xmlWork = transformXmlForSlashes(xmlWork);
           xmlWork = applyBarsPerSystem(xmlWork, barsPerSystemChoice);
           xmlWork = applyScalingForBars(xmlWork, barsPerSystemChoice);
-           xmlWork = applyBarsPerSystem(xmlWork, barsPerSystemChoice);
-xmlWork = applyScalingForBars(xmlWork, barsPerSystemChoice);
-**if (window.AA_forceLetterLayoutXML) xmlWork = AA_forceLetterLayoutXML(xmlWork);**
-xmlWork = withXmlProlog(xmlWork);
-
+          if (window.AA_forceLetterLayoutXML) xmlWork = AA_forceLetterLayoutXML(xmlWork);
           xmlWork = withXmlProlog(xmlWork);
 
           const ab = await renderXmlToPdfArrayBuffer(ghost, ghostBox, xmlWork);
@@ -1932,11 +1927,7 @@ xmlWork = withXmlProlog(xmlWork);
           xmlWork = transformXmlForSlashes(xmlWork);
           xmlWork = applyBarsPerSystem(xmlWork, barsPerSystemChoice);
           xmlWork = applyScalingForBars(xmlWork, barsPerSystemChoice);
-           xmlWork = applyBarsPerSystem(xmlWork, barsPerSystemChoice);
-xmlWork = applyScalingForBars(xmlWork, barsPerSystemChoice);
-**if (window.AA_forceLetterLayoutXML) xmlWork = AA_forceLetterLayoutXML(xmlWork);**
-xmlWork = withXmlProlog(xmlWork);
-
+          if (window.AA_forceLetterLayoutXML) xmlWork = AA_forceLetterLayoutXML(xmlWork);
           xmlWork = withXmlProlog(xmlWork);
           zip.file(`${safe(songName)} - ${safe(it.label)}.musicxml`, xmlWork);
         }
@@ -2087,11 +2078,6 @@ xmlWork = withXmlProlog(xmlWork);
     else svg.style.removeProperty("width");
   }
 
-   if (typeof AA !== "undefined" && AA.emit) {
-  AA.emit("viewer:rendered", { osmd, host: osmdBox });
-}
-   
-   
   // --- MusicXML helpers -------------------------------------------------
   function ensureTitle(xmlString, title){
     try {
@@ -2438,6 +2424,7 @@ xmlWork = withXmlProlog(xmlWork);
   // tiny DOM helper
   function ce(tag, props){ const el = document.createElement(tag); if (props) Object.assign(el, props); return el; }
 })();
+
 
 
 
