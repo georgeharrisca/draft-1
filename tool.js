@@ -3018,9 +3018,7 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M9) Viewer Page Frames (Letter) + Horizontal Pagination (decoration only)
-   - Frames never cover the SVG
-   - Overlay titles pinned to page 1 (no counter-translate)
+   M9) Viewer Page Frames (Letter) + Horizontal Pagination (frames behind)
    ------------------------------------------------------------------------- */
 ;(function () {
   const LETTER_RATIO   = 8.5 / 11;  // width/height
@@ -3029,18 +3027,15 @@ function ensureXmlHeader(xml) {
   const LEFT_MIN_PAD   = 14;        // px minimum left padding
 
   // Layering inside #aa-osmd-box:
-  // 1 = frames (behind), 2 = SVG (music), 3 = overlay titles
-  const Z_FRAMES = 1, Z_SVG = 2, Z_OVLY = 3;
+  // -1 = frames (behind everything), 0/auto = SVG (music), 3 = overlay titles
+  const Z_FRAMES = -1, Z_OVLY = 3;
 
-  // Hook viewer host once
   function hookHost(host){
     if (!host || host._m9Hooked) return;
     host._m9Hooked = true;
 
-    // Ensure positioning context
     if (getComputedStyle(host).position === "static") host.style.position = "relative";
 
-    // Observe size/render changes
     const ro = new ResizeObserver(()=> layout(host));
     ro.observe(host);
     const mo = new MutationObserver(()=> layout(host));
@@ -3052,18 +3047,15 @@ function ensureXmlHeader(xml) {
     layout(host);
   }
 
-  // Re-layout whenever M7 says it rendered
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => layout(host));
   }
 
-  // If the viewer already exists
   document.addEventListener("DOMContentLoaded", () => {
     const host = document.getElementById("aa-osmd-box");
     if (host) hookHost(host);
   });
 
-  // Or when it appears later
   const docMO = new MutationObserver(muts=>{
     for (const m of muts) {
       for (const n of m.addedNodes) {
@@ -3078,15 +3070,14 @@ function ensureXmlHeader(xml) {
   });
   docMO.observe(document.documentElement, { childList:true, subtree:true });
 
-  // ---- Layout -----------------------------------------------------------
   function layout(host){
     try{
       const svg = host.querySelector("svg");
       if (!svg) return;
 
-      // Put the SVG above frames, below overlay
-      svg.style.position = "relative";
-      svg.style.zIndex   = String(Z_SVG);
+      // The SVG (music) should be above frames (no z-index needed, keep default/auto)
+      // Ensure it doesn’t accidentally create a new stacking context that beats our frames:
+      svg.style.position = "relative"; // z-index auto (>= 0) so it paints above z=-1 frames
 
       const d = dims(host, svg);
       ensureFrames(host, d);
@@ -3099,7 +3090,6 @@ function ensureXmlHeader(xml) {
   function dims(host, svg){
     const cs       = getComputedStyle(host);
     const padLeft  = Math.max(LEFT_MIN_PAD, parseInt(cs.paddingLeft || "0", 10));
-    const padRight = parseInt(cs.paddingRight || "0", 10);
     const hostH    = host.clientHeight;
 
     const usableH  = Math.max(1, hostH - TOP_BOTTOM_PAD*2);
@@ -3110,17 +3100,18 @@ function ensureXmlHeader(xml) {
     const svgW     = Math.max(1, Math.floor(svgRect.width));
 
     const count    = Math.max(1, Math.ceil(svgW / pageW));
-    return { padLeft, padRight, usableH, pageH, pageW, svgW, count };
+    return { padLeft, usableH, pageH, pageW, svgW, count };
   }
 
-  // ---- Frames (purely decorative, behind SVG) --------------------------
+  // ---------------- Frames (decorative, always behind) -------------------
   function ensureFrames(host, d){
     let frames = host.querySelector(".aa-pageframes");
     if (!frames) {
       frames = document.createElement("div");
       frames.className = "aa-pageframes";
       frames.style.cssText = "position:absolute;inset:0;pointer-events:none;";
-      frames.style.zIndex = String(Z_FRAMES);
+      // Put frames on a negative z-index so they can never cover the SVG
+      frames.style.zIndex = String(Z_FRAMES); // = -1
       host.appendChild(frames);
     } else {
       frames.style.zIndex = String(Z_FRAMES);
@@ -3133,8 +3124,8 @@ function ensureXmlHeader(xml) {
         "position:absolute",
         "border-radius:8px",
         "background:#fff",
-        "box-shadow:0 8px 30px rgba(0,0,0,.16)",
-        "outline:2px solid rgba(0,0,0,.18)"   // darker outline so pages are obvious
+        "box-shadow:0 8px 28px rgba(0,0,0,.16)",
+        "outline:2px solid rgba(0,0,0,.20)"
       ].join(";");
       return f;
     });
@@ -3148,26 +3139,23 @@ function ensureXmlHeader(xml) {
     });
   }
 
-  // ---- Overlay pinned to page 1 ----------------------------------------
+  // ---------------- Overlay pinned to page 1 -----------------------------
   function pinOverlayToPage1(host, d){
     const overlay = host.querySelector(".aa-overlay");
     if (!overlay) return;
 
-    // Ensure the overlay container itself is transparent and on top
     overlay.style.position      = "absolute";
     overlay.style.inset         = "0";
     overlay.style.pointerEvents = "none";
     overlay.style.background    = "transparent";
     overlay.style.zIndex        = String(Z_OVLY);
-    overlay.style.transform     = "";          // IMPORTANT: no counter-translate
+    overlay.style.transform     = "";          // do not counter-translate; stays on page 1
     overlay.style.willChange    = "auto";
 
-    // Retrieve the two text nodes we inject in M7 (left: part/score, right: arranger)
     const kids = overlay.querySelectorAll("div");
     const partEl = kids[0] || null;
     const arrEl  = kids[1] || null;
 
-    // Page 1 geometry
     const pageLeft  = d.padLeft;
     const pageTop   = TOP_BOTTOM_PAD;
     const pageRight = d.padLeft + d.pageW;
@@ -3187,14 +3175,16 @@ function ensureXmlHeader(xml) {
     if (arrEl) {
       arrEl.style.position    = "absolute";
       arrEl.style.left        = "";
-      arrEl.style.right       = (Math.max(0, host.clientWidth - pageRight) + ARR_RIGHT_INSET) + "px";
+      // right offset measured from the host’s right edge to page 1’s right edge
+      const rightInsetFromHost = Math.max(0, host.clientWidth - pageRight) + ARR_RIGHT_INSET;
+      arrEl.style.right       = rightInsetFromHost + "px";
       arrEl.style.top         = (pageTop + ARR_TOP_INSET) + "px";
       arrEl.style.textAlign   = "right";
       arrEl.style.background  = "transparent";
     }
   }
 
-  // ---- util -------------------------------------------------------------
+  // ---------------- util --------------------------------------------------
   function syncChildren(parent, desired, factory){
     const cur = parent.children.length;
     if (cur < desired) {
@@ -3204,3 +3194,4 @@ function ensureXmlHeader(xml) {
     }
   }
 })();
+
