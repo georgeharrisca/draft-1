@@ -3017,120 +3017,76 @@ function ensureXmlHeader(xml) {
 
 
 
-
 /* =========================================================================
-   M9) Viewer Page Frames (Letter) + Horizontal Pagination
+   M9) Viewer Page Frames (Letter) + Horizontal Pagination + Cuts + Pinned Overlays
    ------------------------------------------------------------------------- */
 ;(function () {
-  const LETTER_RATIO = 8.5 / 11;   // width / height
-  const GAP_BETWEEN = 28;          // px gap between page frames
-  const TOP_BOTTOM_PAD = 12;       // px inset from host top/bottom for frames
+  const LETTER_RATIO   = 8.5 / 11;  // width / height
+  const GAP_BETWEEN    = 28;        // px gap between page frames
+  const TOP_BOTTOM_PAD = 12;        // px inset from host top/bottom for frames
+  const LEFT_MIN_PAD   = 14;        // min left pad inside host (align with host padding)
 
-  function ensureFrames(host) {
-    try {
-      if (!host) return;
-      const svg = host.querySelector("svg");
-      if (!svg) return;
+  // z-order (host must be position:relative)
+  // 0: host background
+  // 1: frames (visual pages with shadow)
+  // 2: OSMD SVG (score)
+  // 3: cuts/scrims (hide score outside pages & between pages)
+  // 4: overlay titles (part/score & arranger)
+  const Z_FRAMES = 1;
+  const Z_SVG    = 2;
+  const Z_CUTS   = 3;
+  const Z_OVLY   = 4;
 
-      // layer ordering: frames (0) < score SVG (1) < overlay titles (2)
-      svg.style.position = "relative";
-      svg.style.zIndex = "1";
-
-      let frames = host.querySelector(".aa-pageframes");
-      if (!frames) {
-        frames = document.createElement("div");
-        frames.className = "aa-pageframes";
-        frames.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:0;";
-        host.appendChild(frames);
-      }
-
-      // keep overlay titles above frames
-      const ov = host.querySelector(".aa-overlay");
-      if (ov) ov.style.zIndex = "2";
-
-      // actual drawn size
-      const svgRect = svg.getBoundingClientRect();
-      if (!svgRect.height || !svgRect.width) return;
-
-      const pageH = Math.max(1, Math.floor(svgRect.height)); // px
-      const pageW = Math.max(1, Math.floor(pageH * LETTER_RATIO));
-      const contentW = Math.max(1, Math.floor(svgRect.width));
-      const count = Math.max(1, Math.ceil(contentW / pageW));
-
-      // add/remove frames to match count
-      const current = frames.children.length;
-      if (current < count) {
-        for (let i = current; i < count; i++) {
-          const f = document.createElement("div");
-          f.className = "aa-pageframe";
-          f.style.cssText =
-            "position:absolute;" +
-            "border-radius:8px;background:#fff;" +
-            "box-shadow:0 4px 28px rgba(0,0,0,.12);" +   // <- fixed
-            "outline:1px solid rgba(0,0,0,.06);";        // <- fixed
-          frames.appendChild(f);
-        }
-      } else if (current > count) {
-        for (let i = 0; i < current - count; i++) {
-          frames.lastChild && frames.lastChild.remove();
-        }
-      }
-
-      const leftPad = Math.max(
-        14,
-        parseInt(getComputedStyle(host).paddingLeft || "0", 10)
-      );
-      const usableH = Math.max(1, pageH - TOP_BOTTOM_PAD * 2);
-
-      // position frames as a horizontal row
-      [...frames.children].forEach((f, idx) => {
-        const x = leftPad + idx * (pageW + GAP_BETWEEN);
-        f.style.left = x + "px";
-        f.style.top = TOP_BOTTOM_PAD + "px";
-        f.style.width = pageW + "px";
-        f.style.height = usableH + "px";
-      });
-    } catch (e) {
-      console.warn("[M9] ensureFrames skipped:", e);
-    }
-  }
-
-  // observe the viewer box and its content so frames stay in sync
+  // ---- main hook --------------------------------------------------------
   function hookHost(host) {
     if (!host || host._m9Hooked) return;
     host._m9Hooked = true;
+    if (getComputedStyle(host).position === "static") {
+      host.style.position = "relative";
+    }
 
-    const ro = new ResizeObserver(() => ensureFrames(host));
+    const ro = new ResizeObserver(() => layout(host));
     ro.observe(host);
 
-    const mo = new MutationObserver((muts) => {
+    const mo = new MutationObserver(muts => {
       for (const m of muts) {
         if (m.type === "childList") {
-          // new SVG or re-render — refresh frames
-          ensureFrames(host);
+          // new SVG or re-render
+          layout(host);
           return;
         }
       }
     });
-    mo.observe(host, { childList: true, subtree: true });
+    mo.observe(host, { childList:true, subtree:true });
 
-    // stash for optional cleanup
+    const onScroll = () => {
+      // keep overlays pinned to viewport (page 1 corner), independent of scroll
+      const ov = host.querySelector(".aa-overlay");
+      if (ov) {
+        ov.style.transform = `translateX(${host.scrollLeft}px)`;
+      }
+    };
+    host.addEventListener("scroll", onScroll);
+
     host._m9ro = ro;
     host._m9mo = mo;
+    host._m9OnScroll = onScroll;
 
-    // initial paint
-    ensureFrames(host);
+    // initial pass
+    layout(host);
   }
 
-  // If the viewer is already present
-  function tryHookNow() {
+  // called by M7 after each successful render
+  if (typeof AA !== "undefined" && AA.on) {
+    AA.on("viewer:rendered", ({ host }) => layout(host));
+  }
+
+  // safety nets: try to hook if viewer already exists or appears later
+  document.addEventListener("DOMContentLoaded", () => {
     const host = document.getElementById("aa-osmd-box");
     if (host) hookHost(host);
-  }
-  document.addEventListener("DOMContentLoaded", tryHookNow);
-
-  // If the viewer appears later, catch it
-  const docMO = new MutationObserver((muts) => {
+  });
+  const docMO = new MutationObserver(muts => {
     for (const m of muts) {
       for (const n of m.addedNodes) {
         if (!(n instanceof HTMLElement)) continue;
@@ -3142,11 +3098,220 @@ function ensureXmlHeader(xml) {
       }
     }
   });
-  docMO.observe(document.documentElement, { childList: true, subtree: true });
+  docMO.observe(document.documentElement, { childList:true, subtree:true });
 
-  // React to the post-render event from M7
-  if (typeof AA !== "undefined" && AA.on) {
-    AA.on("viewer:rendered", ({ host }) => ensureFrames(host));
+  // ---- layout pipeline --------------------------------------------------
+  function layout(host) {
+    try {
+      const svg = host.querySelector("svg");
+      if (!svg) return;
+
+      // layer the SVG above frames
+      svg.style.position = "relative";
+      svg.style.zIndex   = String(Z_SVG);
+
+      const dims = computeDims(host, svg);
+      ensureFrames(host, dims);
+      ensureCuts(host, dims);
+      ensureScrims(host, dims);
+      pinOverlayToPage1(host, dims);
+    } catch (e) {
+      console.warn("[M9] layout skipped:", e);
+    }
+  }
+
+  // compute all geometry once
+  function computeDims(host, svg) {
+    const hostCS   = getComputedStyle(host);
+    const padLeft  = Math.max(LEFT_MIN_PAD, parseInt(hostCS.paddingLeft || "0", 10));
+    const padRight = parseInt(hostCS.paddingRight || "0", 10);
+    const hostH    = host.clientHeight; // available height inside the viewer pane
+
+    // page height locked to host height (no vertical scroll), with small top/bottom pad
+    const usableH  = Math.max(1, hostH - TOP_BOTTOM_PAD * 2);
+    const pageH    = usableH; // the inner page height we show
+    const pageW    = Math.max(1, Math.floor(pageH * LETTER_RATIO));
+
+    // actual drawn width of the SVG (after OSMD zoom)
+    const svgRect  = svg.getBoundingClientRect();
+    const svgW     = Math.max(1, Math.floor(svgRect.width));
+
+    // how many pages we need to span the SVG content horizontally
+    const count    = Math.max(1, Math.ceil(svgW / pageW));
+
+    return {
+      padLeft,
+      padRight,
+      hostH,
+      usableH,
+      pageH,
+      pageW,
+      svgW,
+      count
+    };
+  }
+
+  // ---- frames (background pages) ---------------------------------------
+  function ensureFrames(host, d) {
+    let frames = host.querySelector(".aa-pageframes");
+    if (!frames) {
+      frames = document.createElement("div");
+      frames.className = "aa-pageframes";
+      frames.style.cssText = "position:absolute;inset:0;pointer-events:none;";
+      frames.style.zIndex = String(Z_FRAMES);
+      host.appendChild(frames);
+    } else {
+      frames.style.zIndex = String(Z_FRAMES);
+    }
+
+    syncChildCount(frames, d.count, () => {
+      const f = document.createElement("div");
+      f.className = "aa-pageframe";
+      f.style.cssText = [
+        "position:absolute",
+        "border-radius:8px",
+        "background:#fff",
+        "box-shadow:0 4px 28px rgba(0,0,0,.12)",
+        "outline:1px solid rgba(0,0,0,.06)"
+      ].join(";");
+      return f;
+    });
+
+    [...frames.children].forEach((f, idx) => {
+      const x = d.padLeft + idx * (d.pageW + GAP_BETWEEN);
+      f.style.left   = x + "px";
+      f.style.top    = TOP_BOTTOM_PAD + "px";
+      f.style.width  = d.pageW + "px";
+      f.style.height = d.usableH + "px";
+    });
+  }
+
+  // ---- cuts between pages (hide score in the gaps) ---------------------
+  function ensureCuts(host, d) {
+    let cuts = host.querySelector(".aa-pagecuts");
+    if (!cuts) {
+      cuts = document.createElement("div");
+      cuts.className = "aa-pagecuts";
+      cuts.style.cssText = "position:absolute;inset:0;pointer-events:none;";
+      cuts.style.zIndex = String(Z_CUTS);
+      host.appendChild(cuts);
+    } else {
+      cuts.style.zIndex = String(Z_CUTS);
+    }
+
+    // we need N-1 vertical cut strips between pages
+    const cutCount = Math.max(0, d.count - 1);
+    syncChildCount(cuts, cutCount, () => {
+      const g = document.createElement("div");
+      g.className = "aa-pagecut";
+      g.style.cssText = [
+        "position:absolute",
+        "background:#fff" // same as frame background to visually cut the score
+      ].join(";");
+      return g;
+    });
+
+    [...cuts.children].forEach((g, idx) => {
+      // idx runs 0..(d.count-2); place a gap right after each page (except last)
+      const x = d.padLeft + (idx + 1) * d.pageW + idx * GAP_BETWEEN;
+      g.style.left   = x + "px";
+      g.style.top    = TOP_BOTTOM_PAD + "px";
+      g.style.width  = GAP_BETWEEN + "px";
+      g.style.height = d.usableH + "px";
+    });
+  }
+
+  // ---- scrims (hide above/below pages so score is fully “inside”) ------
+  function ensureScrims(host, d) {
+    let scrims = host.querySelector(".aa-pagescrims");
+    if (!scrims) {
+      scrims = document.createElement("div");
+      scrims.className = "aa-pagescrims";
+      scrims.style.cssText = "position:absolute;inset:0;pointer-events:none;";
+      scrims.style.zIndex = String(Z_CUTS); // same layer as cuts, above svg
+      host.appendChild(scrims);
+    } else {
+      scrims.style.zIndex = String(Z_CUTS);
+    }
+
+    // we keep exactly two scrims: top & bottom
+    syncChildCount(scrims, 2, (i) => {
+      const s = document.createElement("div");
+      s.className = i === 0 ? "aa-scrim-top" : "aa-scrim-bottom";
+      s.style.cssText = "position:absolute;background:#fff;";
+      return s;
+    });
+
+    const [topS, botS] = scrims.children;
+    // top strip
+    topS.style.left   = "0px";
+    topS.style.top    = "0px";
+    topS.style.width  = "100%";
+    topS.style.height = TOP_BOTTOM_PAD + "px";
+    // bottom strip
+    botS.style.left   = "0px";
+    botS.style.top    = (TOP_BOTTOM_PAD + d.usableH) + "px";
+    botS.style.width  = "100%";
+    botS.style.height = Math.max(0, host.clientHeight - (TOP_BOTTOM_PAD + d.usableH)) + "px";
+  }
+
+  // ---- pin the overlay titles to page 1’s corners ----------------------
+  function pinOverlayToPage1(host, d) {
+    const overlay = host.querySelector(".aa-overlay");
+    if (!overlay) return;
+
+    // ensure overlay is on top and pinned horizontally to viewport
+    overlay.style.position = "absolute";
+    overlay.style.inset    = "0";
+    overlay.style.pointerEvents = "none";
+    overlay.style.zIndex   = String(Z_OVLY);
+    overlay.style.transform = `translateX(${host.scrollLeft}px)`; // pin against horizontal scroll
+
+    // locate overlay children created by M7 (expected: [part/score, arranger])
+    const kids = overlay.querySelectorAll("div");
+    const partEl = kids[0] || null;
+    const arrEl  = kids[1] || null;
+
+    // base font sizing stays as M7 computed; we just move them to page 1 corners
+    // page 1 rect inside host:
+    const pageLeft  = d.padLeft;
+    const pageTop   = TOP_BOTTOM_PAD;
+    const pageRight = d.padLeft + d.pageW;
+
+    // small inner insets on the page for titles
+    const PART_LEFT_INSET = 18;
+    const PART_TOP_INSET  = 10;
+
+    const ARR_RIGHT_INSET = 20;
+    const ARR_TOP_INSET   = 14;
+
+    if (partEl) {
+      partEl.style.left = (pageLeft + PART_LEFT_INSET) + "px";
+      partEl.style.top  = (pageTop  + PART_TOP_INSET)  + "px";
+      // clear right alignment if any
+      partEl.style.right = "";
+    }
+
+    if (arrEl) {
+      arrEl.style.right = (Math.max(0, host.clientWidth - pageRight) + ARR_RIGHT_INSET) + "px";
+      arrEl.style.top   = (pageTop + ARR_TOP_INSET) + "px";
+      // clear left alignment if any
+      arrEl.style.left = "";
+      arrEl.style.textAlign = "right";
+    }
+  }
+
+  // ---- helpers ---------------------------------------------------------
+  function syncChildCount(container, desired, factory) {
+    const cur = container.children.length;
+    if (cur < desired) {
+      for (let i = cur; i < desired; i++) {
+        container.appendChild(factory(i));
+      }
+    } else if (cur > desired) {
+      for (let i = 0; i < cur - desired; i++) {
+        container.lastChild && container.lastChild.remove();
+      }
+    }
   }
 })();
-
