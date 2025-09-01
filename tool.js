@@ -2840,20 +2840,25 @@ function ensureXmlHeader(xml) {
       if (!svg) return;
 
       // Layer ordering in host:
-      //   .aa-pageframes (z:0)  ← background pages
-      //   <svg> (z:1)           ← OSMD score
-      //   .aa-pageclips (z:3)   ← overlay clipped to page 1
-      host.style.position = host.style.position || "relative";
+      //   .aa-pageframes (z:1)  ← background pages (behind)
+      //   <svg> (z:10)          ← OSMD score
+      //   .aa-pageclips (z:20)  ← overlay clipped to page 1 (front)
+      if (!/relative|absolute|fixed/.test(getComputedStyle(host).position)) {
+        host.style.position = "relative";
+      }
       svg.style.position = "relative";
-      svg.style.zIndex   = "1";
+      svg.style.zIndex   = "10"; // score above frames
 
       // Create/ensure background page frames container
       let frames = host.querySelector(".aa-pageframes");
       if (!frames) {
         frames = document.createElement("div");
         frames.className = "aa-pageframes";
-        frames.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:0;";
-        host.appendChild(frames);
+        frames.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:1;";
+        // ensure frames are behind the svg even if appended later
+        host.insertBefore(frames, svg);
+      } else {
+        frames.style.zIndex = "1";
       }
 
       // Create/ensure foreground page clips container (for overlays)
@@ -2861,13 +2866,11 @@ function ensureXmlHeader(xml) {
       if (!clips) {
         clips = document.createElement("div");
         clips.className = "aa-pageclips";
-        clips.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:3;";
+        clips.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:20;";
         host.appendChild(clips);
+      } else {
+        clips.style.zIndex = "20";
       }
-
-      // Make sure M7’s overlay (if present) stays above SVG, but we’ll hide it
-      const ov = host.querySelector(".aa-overlay");
-      if (ov) ov.style.zIndex = "2"; // we will hide it in sync step
 
       // We size page frames to the viewer height, not the SVG height
       const hostH = host.clientHeight;
@@ -2928,6 +2931,10 @@ function ensureXmlHeader(xml) {
       // Make sure a page-1 overlay container exists (empty for now)
       setupPageOverlay(host, { pageW, pageH });
 
+      // Keep .aa-overlay (from M7) above SVG but *we will hide it only after we mirror it*
+      const ov = host.querySelector(".aa-overlay");
+      if (ov) ov.style.zIndex = "15"; // between svg (10) and pageclips (20)
+
     } catch (e) {
       console.warn("[M9] ensureFrames skipped:", e);
     }
@@ -2960,11 +2967,10 @@ function ensureXmlHeader(xml) {
         "position:absolute",
         "inset:0",
         "pointer-events:none",
-        "z-index:4"
+        "z-index:21"
       ].join(";");
       clips.firstElementChild.appendChild(pageOverlay);
     }
-    // keep size in case clips was resized
     pageOverlay.style.width  = pageW + "px";
     pageOverlay.style.height = pageH + "px";
   }
@@ -2984,10 +2990,14 @@ function ensureXmlHeader(xml) {
       if (!pageOverlay) return;
     }
 
-    // Create a cheap signature of the source content to avoid duplicates
+    // If source has no content yet, don't hide it and don't sync (prevents "missing overlays")
+    if (!overlaySrc.firstChild) return;
+
     const sig = (overlaySrc.textContent || "").trim();
+    if (!sig) return; // ignore empty signatures
+
     if (pageOverlay.dataset.sig === sig) {
-      // nothing new to sync
+      // already mirrored; nothing to do
       return;
     }
 
@@ -2995,16 +3005,18 @@ function ensureXmlHeader(xml) {
     while (pageOverlay.firstChild) pageOverlay.removeChild(pageOverlay.firstChild);
 
     // Move (not clone) current overlay children into the page overlay
-    while (overlaySrc.firstChild) pageOverlay.appendChild(overlaySrc.firstChild);
+    let moved = false;
+    while (overlaySrc.firstChild) {
+      pageOverlay.appendChild(overlaySrc.firstChild);
+      moved = true;
+    }
 
-    // Hide the source overlay so it doesn't render on top (we own the display)
-    overlaySrc.style.display = "none";
-
-    // Store signature for dedupe
-    pageOverlay.dataset.sig = sig;
-
-    // Position the labels in page-1 coords
-    requestAnimationFrame(() => positionPage1Labels(pageOverlay, pageW, pageH));
+    // Only hide the source overlay if we actually moved something
+    if (moved) {
+      overlaySrc.style.display = "none";
+      pageOverlay.dataset.sig = sig;
+      requestAnimationFrame(() => positionPage1Labels(pageOverlay, pageW, pageH));
+    }
   }
 
   // Observe the M7 overlay so future updates get mirrored automatically (debounced)
@@ -3047,31 +3059,33 @@ function ensureXmlHeader(xml) {
       const nodes = Array.prototype.slice.call(pageOverlay.children || []);
       if (!nodes.length) return;
 
-      // Normalize all to absolutely positioned within the clip
       for (const n of nodes) {
         n.style.position = "absolute";
         n.style.whiteSpace = "nowrap";
-        // wipe old absolute placement from host coords
-        n.style.left = n.style.left || "";
-        n.style.top = n.style.top || "";
-        n.style.right = n.style.right || "";
+        // wipe host-coord offsets
+        n.style.left = "";
+        n.style.top = "";
+        n.style.right = "";
       }
 
-      // Heuristic: node that originally had 'right:' in style (from M7) is arranger
-      const arranger = nodes.find(n => /right\s*:/.test((n.getAttribute("style")||"")));
-      const part     = nodes.find(n => !arranger || n !== arranger) || nodes[0];
+      // Heuristic: node that originally had 'right:' in inline style is arranger
+      // (if both lost it, we still place the last node as arranger)
+      const inlineHadRight = (el) => /(^|;) *right *:/.test((el.getAttribute("style")||""));
+      let arranger = nodes.find(inlineHadRight);
+      if (!arranger && nodes.length > 1) arranger = nodes[nodes.length-1];
+
+      const part = nodes.find(n => n !== arranger) || nodes[0];
 
       const TOP   = 10;  // px from top of page
       const LEFT  = 18;  // px from left
       const RIGHT = 20;  // px from right
 
-      // place part/score (left)
       if (part) {
         part.style.left  = LEFT + "px";
         part.style.top   = TOP  + "px";
         part.style.right = "auto";
+        part.style.textAlign = "left";
       }
-      // place arranger (right)
       if (arranger) {
         arranger.style.right = RIGHT + "px";
         arranger.style.top   = TOP   + "px";
@@ -3159,4 +3173,5 @@ function ensureXmlHeader(xml) {
     AA.on("viewer:rendered", ({ host }) => ensureAll(host));
   }
 })();
+
 
