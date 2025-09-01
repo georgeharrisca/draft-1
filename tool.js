@@ -3018,7 +3018,7 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M9) Viewer Page Frames (Letter) + Horizontal Pagination (frames behind)
+   M9) Viewer Page Frames (Letter) + Horizontal Pagination (frames visible)
    ------------------------------------------------------------------------- */
 ;(function () {
   const LETTER_RATIO   = 8.5 / 11;  // width/height
@@ -3027,8 +3027,8 @@ function ensureXmlHeader(xml) {
   const LEFT_MIN_PAD   = 14;        // px minimum left padding
 
   // Layering inside #aa-osmd-box:
-  // -1 = frames (behind everything), 0/auto = SVG (music), 3 = overlay titles
-  const Z_FRAMES = -1, Z_OVLY = 3;
+  // 1 = SVG (music, default/auto), 2 = frames (outline only), 3 = overlay titles
+  const Z_FRAMES = 2, Z_OVLY = 3;
 
   function hookHost(host){
     if (!host || host._m9Hooked) return;
@@ -3047,6 +3047,7 @@ function ensureXmlHeader(xml) {
     layout(host);
   }
 
+  // Re-layout after each OSMD render (emitted from M7)
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => layout(host));
   }
@@ -3075,9 +3076,8 @@ function ensureXmlHeader(xml) {
       const svg = host.querySelector("svg");
       if (!svg) return;
 
-      // The SVG (music) should be above frames (no z-index needed, keep default/auto)
-      // Ensure it doesn’t accidentally create a new stacking context that beats our frames:
-      svg.style.position = "relative"; // z-index auto (>= 0) so it paints above z=-1 frames
+      // Keep SVG in its default layer (auto/relative => z>=1)
+      svg.style.position = "relative";
 
       const d = dims(host, svg);
       ensureFrames(host, d);
@@ -3103,15 +3103,14 @@ function ensureXmlHeader(xml) {
     return { padLeft, usableH, pageH, pageW, svgW, count };
   }
 
-  // ---------------- Frames (decorative, always behind) -------------------
+  // ---------------- Frames (outline/shadow above SVG, no fill) -----------
   function ensureFrames(host, d){
     let frames = host.querySelector(".aa-pageframes");
     if (!frames) {
       frames = document.createElement("div");
       frames.className = "aa-pageframes";
       frames.style.cssText = "position:absolute;inset:0;pointer-events:none;";
-      // Put frames on a negative z-index so they can never cover the SVG
-      frames.style.zIndex = String(Z_FRAMES); // = -1
+      frames.style.zIndex = String(Z_FRAMES);
       host.appendChild(frames);
     } else {
       frames.style.zIndex = String(Z_FRAMES);
@@ -3120,12 +3119,13 @@ function ensureXmlHeader(xml) {
     syncChildren(frames, d.count, () => {
       const f = document.createElement("div");
       f.className = "aa-pageframe";
+      // Transparent background so we never cover music; strong outline/shadow so it’s visible
       f.style.cssText = [
         "position:absolute",
+        "background:transparent",
         "border-radius:8px",
-        "background:#fff",
-        "box-shadow:0 8px 28px rgba(0,0,0,.16)",
-        "outline:2px solid rgba(0,0,0,.20)"
+        "outline:2px solid rgba(0,0,0,.28)",
+        "box-shadow:0 10px 28px rgba(0,0,0,.18)"
       ].join(";");
       return f;
     });
@@ -3149,8 +3149,7 @@ function ensureXmlHeader(xml) {
     overlay.style.pointerEvents = "none";
     overlay.style.background    = "transparent";
     overlay.style.zIndex        = String(Z_OVLY);
-    overlay.style.transform     = "";          // do not counter-translate; stays on page 1
-    overlay.style.willChange    = "auto";
+    overlay.style.transform     = "";      // stay on page 1
 
     const kids = overlay.querySelectorAll("div");
     const partEl = kids[0] || null;
@@ -3175,7 +3174,6 @@ function ensureXmlHeader(xml) {
     if (arrEl) {
       arrEl.style.position    = "absolute";
       arrEl.style.left        = "";
-      // right offset measured from the host’s right edge to page 1’s right edge
       const rightInsetFromHost = Math.max(0, host.clientWidth - pageRight) + ARR_RIGHT_INSET;
       arrEl.style.right       = rightInsetFromHost + "px";
       arrEl.style.top         = (pageTop + ARR_TOP_INSET) + "px";
