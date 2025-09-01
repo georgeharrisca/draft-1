@@ -3210,4 +3210,252 @@ function ensureXmlHeader(xml) {
 
 
 
+/* =========================================================================
+   M10) Post-render pagination fit: stretch systems to page width, center p1,
+        push overflow to next page
+   ------------------------------------------------------------------------- */
+;(function () {
+  // Hook after M7 renders one selection
+  if (typeof AA !== "undefined" && AA.on) {
+    AA.on("viewer:rendered", ({ osmd, host }) => {
+      try { fitSystemsToPageFrames(osmd, host); } catch (e) { console.warn("[M10] pass 1:", e); }
+    });
+  }
+
+  // Also react to host resizes (re-run layout)
+  const ro = new ResizeObserver(() => {
+    const host = document.getElementById("aa-osmd-box");
+    const svg  = host && host.querySelector("svg");
+    if (host && svg) {
+      try { fitSystemsToPageFrames(null, host); } catch (e) { /* ignore */ }
+    }
+  });
+  const tryAttachRO = () => {
+    const host = document.getElementById("aa-osmd-box");
+    if (host) ro.observe(host);
+  };
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", tryAttachRO);
+  } else {
+    tryAttachRO();
+  }
+
+  // --- Core ---------------------------------------------------------------
+
+  function fitSystemsToPageFrames(osmd, host) {
+    if (!host) return;
+    const svg = host.querySelector("svg");
+    const framesWrap = host.querySelector(".aa-pageframes");
+    if (!svg || !framesWrap) return;
+
+    // Clean any previous transforms we applied
+    cleanupOldTransforms(svg);
+
+    const frames = collectFrames(framesWrap);
+    if (!frames.length) return;
+
+    // Find "system" groups in OSMD SVG (robust multi-selector)
+    const systems = findSystemGroups(svg);
+    if (!systems.length) return;
+
+    // Compute bounding boxes for all systems (before we move/scale)
+    const sys = systems.map(g => ({ g, bb: safeBBox(g) }))
+                       // Keep top-to-bottom order stable
+                       .sort((a, b) => (a.bb.y === b.bb.y ? a.bb.x - b.bb.x : a.bb.y - b.bb.y));
+
+    // Assign each system to the nearest page by X (we’ll re-x-place later anyway)
+    sys.forEach(s => {
+      s.pageIndex = nearestFrameIndex(frames, s.bb.x);
+    });
+
+    // Layout pass page by page
+    const topInset = 12;   // visual padding inside frame (px)
+    const botInset = 18;
+
+    frames.forEach((frame, pIdx) => {
+      const innerLeft  = frame.left + innerPad(frame);
+      const innerRight = frame.right - innerPad(frame);
+      const innerTop   = frame.top + topInset;
+      const innerHeight= frame.height - (topInset + botInset);
+      const innerWidth = Math.max(1, innerRight - innerLeft);
+
+      // All systems that belong to this page (in reading order)
+      const items = sys.filter(s => s.pageIndex === pIdx);
+
+      // Determine first page centering target width (content width after stretch).
+      // We’ll compute per system; at the end we know contentMinX/contentMaxX.
+      let cursorY   = innerTop;
+      const vGap    = 14; // gap between systems on a page
+      let contentMinX = Infinity, contentMaxX = -Infinity;
+
+      for (const s of items) {
+        const bb0 = s.bb;
+
+        // Scale X so system fills page width (include last system)
+        const scaleX = clamp(innerWidth / Math.max(1, bb0.width), 0.5, 2.0);
+
+        // Estimate system height stays roughly constant on horizontal scaling
+        const sysHeight = bb0.height;
+
+        // If placing here would overflow vertically, push to next page
+        if ((cursorY + sysHeight) > (innerTop + innerHeight)) {
+          // mark it for next page
+          s.pageIndex = pIdx + 1;
+          continue;
+        }
+
+        // Compose transform: first translate so left aligns to innerLeft,
+        // then translate vertically to cursorY, then scaleX on x-axis only.
+        const tx = innerLeft - bb0.x;
+        const ty = cursorY - bb0.y;
+
+        // Save so we can center page 1 later
+        const leftAfter  = bb0.x + tx;
+        const rightAfter = leftAfter + bb0.width * scaleX;
+        contentMinX = Math.min(contentMinX, leftAfter);
+        contentMaxX = Math.max(contentMaxX, rightAfter);
+
+        applyTransform(s.g, tx, ty, scaleX);
+
+        cursorY += sysHeight + vGap;
+      }
+
+      // Center first page content horizontally inside page frame
+      if (pIdx === 0 && isFinite(contentMinX) && isFinite(contentMaxX)) {
+        const contentW = contentMaxX - contentMinX;
+        const slack    = innerWidth - contentW;
+        if (slack > 2) {
+          const nudge = Math.floor(slack / 2);
+          // Nudge *only* systems we just placed on page 1
+          items.forEach(s => {
+            const t = parseTransform(s.g);
+            // translate x by +nudge
+            setTransform(s.g, t.tx + nudge, t.ty, t.sx);
+          });
+        }
+      }
+    });
+
+    // Second pass: anything we pushed to "next page" needs real placement.
+    const maxPage = Math.max(...sys.map(s => s.pageIndex));
+    for (let pIdx = 1; pIdx <= maxPage; pIdx++) {
+      const frame = frames[pIdx];
+      if (!frame) break;
+
+      const innerLeft  = frame.left + innerPad(frame);
+      const innerTop   = frame.top + 12;
+      const innerRight = frame.right - innerPad(frame);
+      const innerHeight= frame.height - (12 + 18);
+      const innerWidth = Math.max(1, innerRight - innerLeft);
+      const vGap       = 14;
+
+      let cursorY = innerTop;
+
+      const items = sys
+        .filter(s => s.pageIndex === pIdx)
+        .sort((a, b) => (a.bb.y === b.bb.y ? a.bb.x - b.bb.x : a.bb.y - b.bb.y));
+
+      for (const s of items) {
+        const bb0 = s.bb;
+        const scaleX = clamp(innerWidth / Math.max(1, bb0.width), 0.5, 2.0);
+        const sysHeight = bb0.height;
+
+        // If still overflowing this page, push forward again
+        if ((cursorY + sysHeight) > (innerTop + innerHeight)) {
+          s.pageIndex = pIdx + 1;
+          continue;
+        }
+        const tx = innerLeft - bb0.x;
+        const ty = cursorY - bb0.y;
+        applyTransform(s.g, tx, ty, scaleX);
+        cursorY += sysHeight + vGap;
+      }
+    }
+
+    // Make sure svg z-index sits above frames (M9) so music isn’t hidden
+    svg.style.position = "relative";
+    svg.style.zIndex = "1";
+  }
+
+  // --- Utilities ----------------------------------------------------------
+
+  function cleanupOldTransforms(svg) {
+    svg.querySelectorAll("[data-m10]").forEach(g => {
+      g.removeAttribute("data-m10");
+      const t0 = g.getAttribute("data-m10-original-transform");
+      if (t0 != null) g.setAttribute("transform", t0);
+      else g.removeAttribute("transform");
+      g.removeAttribute("data-m10-original-transform");
+    });
+  }
+
+  function collectFrames(framesWrap) {
+    const rects = [];
+    framesWrap.querySelectorAll(".aa-pageframe").forEach(el => {
+      const r = el.getBoundingClientRect();
+      rects.push({ el, left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height });
+    });
+    return rects;
+  }
+
+  function innerPad(frame) {
+    // reflect subtle rounded corner/frame shadow breathing room
+    return Math.max(14, Math.floor(frame.width * 0.04));
+  }
+
+  function nearestFrameIndex(frames, x) {
+    if (!frames.length) return 0;
+    let best = 0, bestDist = Infinity;
+    for (let i = 0; i < frames.length; i++) {
+      const mid = (frames[i].left + frames[i].right) / 2;
+      const d = Math.abs(mid - x);
+      if (d < bestDist) { best = i; bestDist = d; }
+    }
+    return best;
+  }
+
+  function findSystemGroups(svg) {
+    // Try several likely patterns OSMD uses.
+    let gs = svg.querySelectorAll('g[id^="System"], g[id*="System"], g[id*="system"], g[class*="System"], g[class*="system"]');
+    if (gs && gs.length) return Array.from(gs);
+
+    // Fallback: group by top-level children that contain stave lines (VexFlow)
+    const topGs = Array.from(svg.querySelectorAll("g"));
+    const likely = topGs.filter(g => g.querySelector('path[stroke][d], line[stroke]'));
+    return likely.length ? likely : [];
+  }
+
+  function safeBBox(el) {
+    try { return el.getBBox(); }
+    catch (_) { return { x: el.offsetLeft||0, y: el.offsetTop||0, width: el.clientWidth||1, height: el.clientHeight||1 }; }
+  }
+
+  function applyTransform(g, tx, ty, sx) {
+    const orig = g.getAttribute("transform");
+    if (!g.hasAttribute("data-m10-original-transform")) {
+      if (orig != null) g.setAttribute("data-m10-original-transform", orig);
+      else g.setAttribute("data-m10-original-transform", "");
+    }
+    setTransform(g, tx, ty, sx);
+    g.setAttribute("data-m10", "1");
+  }
+
+  function parseTransform(g) {
+    const t = g.getAttribute("transform") || "";
+    // Very simple parse for our pattern: translate(a,b) scale(sx,1)
+    const m = t.match(/translate\(([-\d.]+)[, ]+([-\d.]+)\).*?scale\(([-\d.]+)[, ]*1\)/);
+    if (m) return { tx: parseFloat(m[1])||0, ty: parseFloat(m[2])||0, sx: parseFloat(m[3])||1 };
+    // or just translate(a,b)
+    const m2 = t.match(/translate\(([-\d.]+)[, ]+([-\d.]+)\)/);
+    if (m2) return { tx: parseFloat(m2[1])||0, ty: parseFloat(m2[2])||0, sx: 1 };
+    return { tx: 0, ty: 0, sx: 1 };
+  }
+
+  function setTransform(g, tx, ty, sx) {
+    if (!isFinite(sx) || sx <= 0) sx = 1;
+    g.setAttribute("transform", `translate(${tx},${ty}) scale(${sx},1)`);
+  }
+
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+})();
 
