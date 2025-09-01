@@ -2832,36 +2832,32 @@ function ensureXmlHeader(xml) {
   const TOP_BOTTOM_PAD  = 12;        // px inset from host top/bottom for frames
   const LEFT_MIN_PAD    = 14;        // ensure a small left margin
 
-  // ---------- Core: ensure frames & clips exist and are laid out ----------
   function ensureFrames(host) {
     try {
       if (!host) return;
       const svg = host.querySelector("svg");
       if (!svg) return;
 
-      // Layer ordering in host:
-      //   .aa-pageframes (z:1)  ← background pages (behind)
-      //   <svg> (z:10)          ← OSMD score
-      //   .aa-pageclips (z:20)  ← overlay clipped to page 1 (front)
+      // host/SVG stacking
       if (!/relative|absolute|fixed/.test(getComputedStyle(host).position)) {
         host.style.position = "relative";
       }
       svg.style.position = "relative";
-      svg.style.zIndex   = "10"; // score above frames
+      svg.style.zIndex   = "10";
 
-      // Create/ensure background page frames container
+      // Ensure frames container (BACKGROUND pages)
       let frames = host.querySelector(".aa-pageframes");
       if (!frames) {
         frames = document.createElement("div");
         frames.className = "aa-pageframes";
         frames.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:1;";
-        // ensure frames are behind the svg even if appended later
-        host.insertBefore(frames, svg);
+        // NOTE: append to host; z-index will place it behind svg anyway
+        host.appendChild(frames);
       } else {
         frames.style.zIndex = "1";
       }
 
-      // Create/ensure foreground page clips container (for overlays)
+      // Ensure clips container (for page-1 overlays)
       let clips = host.querySelector(".aa-pageclips");
       if (!clips) {
         clips = document.createElement("div");
@@ -2872,16 +2868,16 @@ function ensureXmlHeader(xml) {
         clips.style.zIndex = "20";
       }
 
-      // We size page frames to the viewer height, not the SVG height
+      // Page sizing uses viewer height so pages stay constant size
       const hostH = host.clientHeight;
       if (!hostH) return;
 
-      const pageH   = Math.max(1, Math.floor(hostH - TOP_BOTTOM_PAD * 2)); // px page height
-      const pageW   = Math.max(1, Math.floor(pageH * LETTER_RATIO));       // px page width (letter)
-      const contentW = Math.max(1, Math.ceil(svg.getBoundingClientRect().width)); // rendered width
-      const count   = Math.max(1, Math.ceil(contentW / pageW));
+      const pageH    = Math.max(1, Math.floor(hostH - TOP_BOTTOM_PAD * 2));
+      const pageW    = Math.max(1, Math.floor(pageH * LETTER_RATIO));
+      const contentW = Math.max(1, Math.ceil(svg.getBoundingClientRect().width));
+      const count    = Math.max(1, Math.ceil(contentW / pageW));
 
-      // Add/remove frames to match count
+      // Make sure we have "count" frames and clip boxes
       adjustChildren(frames, count, () => {
         const f = document.createElement("div");
         f.className = "aa-pageframe";
@@ -2894,8 +2890,6 @@ function ensureXmlHeader(xml) {
         ].join(";");
         return f;
       });
-
-      // Add/remove clip boxes to match count (used for overlay clipping/placement)
       adjustChildren(clips, count, () => {
         const c = document.createElement("div");
         c.className = "aa-pageclip";
@@ -2907,7 +2901,7 @@ function ensureXmlHeader(xml) {
         return c;
       });
 
-      // Horizontal layout
+      // Layout horizontally
       const leftPad = Math.max(
         LEFT_MIN_PAD,
         parseInt(getComputedStyle(host).paddingLeft || "0", 10)
@@ -2928,19 +2922,25 @@ function ensureXmlHeader(xml) {
         c.style.height = pageH + "px";
       }
 
-      // Make sure a page-1 overlay container exists (empty for now)
+      // Prepare page-1 overlay container
       setupPageOverlay(host, { pageW, pageH });
 
-      // Keep .aa-overlay (from M7) above SVG but *we will hide it only after we mirror it*
+      // Keep M7 overlay above SVG (but under pageclips). We'll hide it only after mirroring.
       const ov = host.querySelector(".aa-overlay");
-      if (ov) ov.style.zIndex = "15"; // between svg (10) and pageclips (20)
+      if (ov) ov.style.zIndex = "15";
+
+      // Mirror overlays into page 1 and keep in sync
+      syncOverlayToPage1(host, { pageW, pageH });
+      watchM7Overlay(host, { pageW, pageH });
+
+      // Debug breadcrumb
+      // console.log(`[M9] frames laid out: ${count} (page ${pageW}x${pageH})`);
 
     } catch (e) {
       console.warn("[M9] ensureFrames skipped:", e);
     }
   }
 
-  // Helper: ensure N children; create with factory; remove extras
   function adjustChildren(container, targetCount, factory) {
     const current = container.children.length;
     if (current < targetCount) {
@@ -2954,7 +2954,6 @@ function ensureXmlHeader(xml) {
     }
   }
 
-  // ---------- Overlay on page 1 only (dedup, clear, pin) ----------
   function setupPageOverlay(host, { pageW, pageH }) {
     const clips = host.querySelector(".aa-pageclips");
     if (!clips || !clips.firstElementChild) return;
@@ -2975,7 +2974,6 @@ function ensureXmlHeader(xml) {
     pageOverlay.style.height = pageH + "px";
   }
 
-  // Copy children from M7 overlay into page 1 overlay (dedup + clear)
   function syncOverlayToPage1(host, { pageW, pageH }) {
     const overlaySrc = host.querySelector(".aa-overlay");
     if (!overlaySrc) return;
@@ -2990,41 +2988,33 @@ function ensureXmlHeader(xml) {
       if (!pageOverlay) return;
     }
 
-    // If source has no content yet, don't hide it and don't sync (prevents "missing overlays")
+    // If source has no children yet, don't hide it and don't sync
     if (!overlaySrc.firstChild) return;
 
     const sig = (overlaySrc.textContent || "").trim();
-    if (!sig) return; // ignore empty signatures
+    if (!sig) return;
 
-    if (pageOverlay.dataset.sig === sig) {
-      // already mirrored; nothing to do
-      return;
-    }
+    if (pageOverlay.dataset.sig === sig) return; // already synced
 
-    // Clear page-1 overlay before moving new nodes in
     while (pageOverlay.firstChild) pageOverlay.removeChild(pageOverlay.firstChild);
 
-    // Move (not clone) current overlay children into the page overlay
     let moved = false;
     while (overlaySrc.firstChild) {
       pageOverlay.appendChild(overlaySrc.firstChild);
       moved = true;
     }
 
-    // Only hide the source overlay if we actually moved something
     if (moved) {
-      overlaySrc.style.display = "none";
+      overlaySrc.style.display = "none";  // only hide after successful move
       pageOverlay.dataset.sig = sig;
       requestAnimationFrame(() => positionPage1Labels(pageOverlay, pageW, pageH));
     }
   }
 
-  // Observe the M7 overlay so future updates get mirrored automatically (debounced)
   function watchM7Overlay(host, { pageW, pageH }) {
     const overlaySrc = host.querySelector(".aa-overlay");
     if (!overlaySrc) return;
 
-    // Already watching? Just refresh metrics.
     if (overlaySrc._m9Watcher) {
       overlaySrc._m9Watcher._pageW = pageW;
       overlaySrc._m9Watcher._pageH = pageH;
@@ -3053,7 +3043,6 @@ function ensureXmlHeader(xml) {
     overlaySrc._m9Watcher._pageH = pageH;
   }
 
-  // Reposition the two labels inside the page-1 overlay box
   function positionPage1Labels(pageOverlay, pageW, pageH) {
     try {
       const nodes = Array.prototype.slice.call(pageOverlay.children || []);
@@ -3062,23 +3051,17 @@ function ensureXmlHeader(xml) {
       for (const n of nodes) {
         n.style.position = "absolute";
         n.style.whiteSpace = "nowrap";
-        // wipe host-coord offsets
-        n.style.left = "";
-        n.style.top = "";
-        n.style.right = "";
+        n.style.left = n.style.top = n.style.right = "";
       }
 
-      // Heuristic: node that originally had 'right:' in inline style is arranger
-      // (if both lost it, we still place the last node as arranger)
       const inlineHadRight = (el) => /(^|;) *right *:/.test((el.getAttribute("style")||""));
       let arranger = nodes.find(inlineHadRight);
-      if (!arranger && nodes.length > 1) arranger = nodes[nodes.length-1];
-
+      if (!arranger && nodes.length > 1) arranger = nodes[nodes.length - 1];
       const part = nodes.find(n => n !== arranger) || nodes[0];
 
-      const TOP   = 10;  // px from top of page
-      const LEFT  = 18;  // px from left
-      const RIGHT = 20;  // px from right
+      const TOP   = 10;
+      const LEFT  = 18;
+      const RIGHT = 20;
 
       if (part) {
         part.style.left  = LEFT + "px";
@@ -3097,34 +3080,27 @@ function ensureXmlHeader(xml) {
     }
   }
 
-  // ---------- Glue: run on new/updated viewer ----------
   function ensureAll(host) {
     if (!host) return;
     const svg = host.querySelector("svg");
     if (!svg) return;
 
-    // Lay out frames/clips to match current host/svg
     ensureFrames(host);
 
-    // Dimensions for overlay placement (page 1)
     const pageH = Math.max(1, Math.floor(host.clientHeight - TOP_BOTTOM_PAD * 2));
     const pageW = Math.max(1, Math.floor(pageH * LETTER_RATIO));
 
-    // Copy overlay content to page 1 and keep in sync
     syncOverlayToPage1(host, { pageW, pageH });
     watchM7Overlay(host, { pageW, pageH });
   }
 
-  // Hook a viewer host once
   function hookHost(host) {
     if (!host || host._m9Hooked) return;
     host._m9Hooked = true;
 
-    // React to host resize
     const ro = new ResizeObserver(() => ensureAll(host));
     ro.observe(host);
 
-    // React to OSMD re-render (new SVG etc.)
     const mo = new MutationObserver((muts) => {
       for (const m of muts) {
         if (m.type === "childList") {
@@ -3138,11 +3114,9 @@ function ensureXmlHeader(xml) {
     host._m9ro = ro;
     host._m9mo = mo;
 
-    // Initial
     ensureAll(host);
   }
 
-  // If the viewer is already present
   function tryHookNow() {
     const host = document.getElementById("aa-osmd-box");
     if (host) hookHost(host);
@@ -3153,7 +3127,6 @@ function ensureXmlHeader(xml) {
     tryHookNow();
   }
 
-  // If the viewer appears later, catch it
   const docMO = new MutationObserver((muts) => {
     for (const m of muts) {
       for (const n of m.addedNodes) {
@@ -3168,10 +3141,8 @@ function ensureXmlHeader(xml) {
   });
   docMO.observe(document.documentElement, { childList: true, subtree: true });
 
-  // Also listen to the event M7 emits after each render
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => ensureAll(host));
   }
 })();
-
 
