@@ -2793,27 +2793,48 @@ function ensureXmlHeader(xml) {
 
 /* =========================================================================
    M9) Viewer Page Frames (Letter) + Horizontal Pagination (clipped pages)
+   + Per-page horizontal stretch (every page)
    ------------------------------------------------------------------------- */
 ;(function () {
   const LETTER_RATIO = 8.5 / 11;   // width / height
   const GAP_BETWEEN = 28;          // px gap between page frames
   const TOP_BOTTOM_PAD = 12;       // px inset from host top/bottom for frames
+  const MAX_PAGE_STRETCH = 1.6;    // safety cap for horizontal stretch
 
+  // --- (A) Try to tell OSMD to justify systems (helps before visual stretch)
+  if (typeof AA !== "undefined" && AA.on) {
+    AA.on("viewer:rendered", ({ osmd }) => {
+      try {
+        const r = osmd && (osmd.EngravingRules || osmd.rules);
+        if (!r) return;
+        for (const k of [
+          "JustifySystemLines", "justifySystemLines",
+          "StretchLastSystemLine", "stretchLastSystemLine",
+          "JustifyLastSystem", "justifyLastSystem",
+          "justifyLastSystemLines", "FillLastSystemLine", "fillLastSystemLine"
+        ]) {
+          if (k in r) r[k] = true;
+        }
+      } catch (_) {}
+    });
+  }
+
+  // --- (B) Visual paging with per-page horizontal stretch
   function ensurePages(host) {
     try {
       if (!host) return;
       const svg = host.querySelector("svg");
       if (!svg) return;
 
-      // Base SVG stays in DOM for metrics and overlays, but is hidden visually.
+      // Base SVG stays for metrics/overlay, but is visually hidden.
       svg.style.position = "absolute";
       svg.style.left = "0";
       svg.style.top = "0";
-      svg.style.opacity = "0";      // hide the original strip
+      svg.style.opacity = "0";
       svg.style.pointerEvents = "none";
       svg.style.zIndex = "0";
 
-      // Ensure layering for frames (0), clipped pages (1), overlays (2)
+      // Layer stack: frames (0) < clips (1) < overlay (2)
       let frames = host.querySelector(".aa-pageframes");
       if (!frames) {
         frames = document.createElement("div");
@@ -2833,16 +2854,20 @@ function ensureXmlHeader(xml) {
       const ov = host.querySelector(".aa-overlay");
       if (ov) ov.style.zIndex = "2";
 
-      // live pixel size of the OSMD SVG
+      // Live pixel size of OSMD SVG
       const svgRect = svg.getBoundingClientRect();
       if (!svgRect.height || !svgRect.width) return;
 
-      const pageH = Math.max(1, Math.floor(svgRect.height)); // px (we’re doing vertical fit elsewhere)
+      // Convert SVG user units to CSS px (so we can measure content by pages in px)
+      const vb = svg.viewBox && svg.viewBox.baseVal;
+      const unit2px = vb && vb.width ? (svgRect.width / vb.width) : 1;
+
+      const pageH = Math.max(1, Math.floor(svgRect.height)); // vertical fit is handled by M7 zoom
       const pageW = Math.max(1, Math.floor(pageH * LETTER_RATIO));
       const contentW = Math.max(1, Math.floor(svgRect.width));
       const pageCount = Math.max(1, Math.ceil(contentW / pageW));
 
-      // add/remove FRAMES to match pageCount
+      // sync FRAMES
       syncChildren(frames, pageCount, () => {
         const f = document.createElement("div");
         f.className = "aa-pageframe";
@@ -2856,7 +2881,7 @@ function ensureXmlHeader(xml) {
         return f;
       });
 
-      // add/remove CLIPS to match pageCount
+      // sync CLIPS
       syncChildren(clips, pageCount, () => {
         const c = document.createElement("div");
         c.className = "aa-pageclip";
@@ -2864,7 +2889,7 @@ function ensureXmlHeader(xml) {
           "position:absolute",
           "overflow:hidden",
           "border-radius:8px",
-          "pointer-events:none" // let scrolling pass through
+          "pointer-events:none"
         ].join(";");
         return c;
       });
@@ -2875,8 +2900,7 @@ function ensureXmlHeader(xml) {
       );
       const usableH = Math.max(1, pageH - TOP_BOTTOM_PAD * 2);
 
-      // Prepare a normalized clone template of the SVG (right size in CSS px)
-      // We’ll clone this for each page and offset it horizontally.
+      // Normalize the clone’s CSS box to the measured SVG rect (so transforms are predictable)
       const normalizedWidth  = Math.ceil(svgRect.width);
       const normalizedHeight = Math.ceil(svgRect.height);
       function makeSvgClone() {
@@ -2888,48 +2912,99 @@ function ensureXmlHeader(xml) {
           "opacity:1",
           "pointer-events:none",
           `width:${normalizedWidth}px`,
-          `height:${normalizedHeight}px`
+          `height:${normalizedHeight}px`,
+          "transform-origin:left top"
         ].join(";");
         return clone;
       }
 
-      // position frames and clips; insert/replace clones inside clips
       for (let i = 0; i < pageCount; i++) {
         const x = leftPad + i * (pageW + GAP_BETWEEN);
 
+        // layout frames
         const frame = frames.children[i];
         frame.style.left   = x + "px";
         frame.style.top    = TOP_BOTTOM_PAD + "px";
         frame.style.width  = pageW + "px";
         frame.style.height = usableH + "px";
 
+        // layout clips
         const clip = clips.children[i];
         clip.style.left   = x + "px";
         clip.style.top    = TOP_BOTTOM_PAD + "px";
         clip.style.width  = pageW + "px";
         clip.style.height = usableH + "px";
 
-        // ensure each clip contains exactly one up-to-date clone,
-        // shifted so the i-th page region is visible.
-        const desiredOffset = -i * pageW;
-        const currentClone = clip.firstElementChild;
-        if (!currentClone || currentClone.tagName.toLowerCase() !== "svg") {
+        // ensure one clone per clip
+        let clone = clip.firstElementChild;
+        if (!clone || clone.tagName.toLowerCase() !== "svg") {
           clip.innerHTML = "";
-          const cl = makeSvgClone();
-          cl.style.left = desiredOffset + "px";
-          clip.appendChild(cl);
+          clone = makeSvgClone();
+          clip.appendChild(clone);
         } else {
-          // update size/offset if zoom changed
-          currentClone.style.width  = normalizedWidth  + "px";
-          currentClone.style.height = normalizedHeight + "px";
-          currentClone.style.left   = desiredOffset + "px";
+          clone.style.width  = normalizedWidth  + "px";
+          clone.style.height = normalizedHeight + "px";
+        }
+
+        // --- Per-page measurement: find content width inside this page slice
+        const slice = measureSliceContent(svg, unit2px, i, pageW);
+        let translateX, scaleX;
+
+        if (slice && slice.widthPx > 0) {
+          // Align content to left of page and stretch to fill the page width
+          translateX = -slice.minPx;
+          scaleX = Math.min(MAX_PAGE_STRETCH, pageW / slice.widthPx);
+        } else {
+          // Fallback: default slice view (no per-page measurement available)
+          translateX = -i * pageW;
+          const leftover = Math.max(1, contentW - i * pageW);
+          scaleX = Math.min(MAX_PAGE_STRETCH, pageW / Math.min(pageW, leftover));
+        }
+
+        clone.style.transform = `translateX(${translateX}px) scaleX(${scaleX})`;
+      }
+    } catch (e) {
+      console.warn("[M9] ensurePages skipped:", e);
+    }
+  }
+
+  // Measure content that actually falls inside page slice i (in CSS px)
+  function measureSliceContent(svg, unit2px, pageIndex, pageW) {
+    try {
+      const pageLeft = pageIndex * pageW;
+      const pageRight = (pageIndex + 1) * pageW;
+
+      // Limit query to likely drawing elements (broad but avoids defs/clipPath)
+      const elems = svg.querySelectorAll("path,rect,line,polyline,polygon,text,g");
+      let minPx = Infinity;
+      let maxPx = -Infinity;
+
+      for (const el of elems) {
+        if (typeof el.getBBox !== "function") continue;
+        let b;
+        try { b = el.getBBox(); } catch(_) { continue; }
+        if (!b || !isFinite(b.x) || !isFinite(b.width)) continue;
+
+        const leftPx  = b.x * unit2px;
+        const rightPx = (b.x + b.width) * unit2px;
+        if (rightPx <= pageLeft || leftPx >= pageRight) continue; // no overlap
+
+        // clamp to slice boundaries
+        const clampedLeft  = Math.max(pageLeft, leftPx);
+        const clampedRight = Math.min(pageRight, rightPx);
+
+        if (clampedRight > clampedLeft) {
+          if (clampedLeft < minPx) minPx = clampedLeft;
+          if (clampedRight > maxPx) maxPx = clampedRight;
         }
       }
 
-      // Remove any extra clones in clips (already handled by syncChildren)
-
-    } catch (e) {
-      console.warn("[M9] ensurePages skipped:", e);
+      if (!isFinite(minPx) || !isFinite(maxPx) || maxPx <= minPx) {
+        return null;
+      }
+      return { minPx, maxPx, widthPx: maxPx - minPx };
+    } catch (_) {
+      return null;
     }
   }
 
@@ -2951,15 +3026,14 @@ function ensureXmlHeader(xml) {
     if (!host || host._m9Hooked) return;
     host._m9Hooked = true;
 
-    // Recompute on host resize (zoom from M7 changes SVG rect too)
+    // Recompute on host resize (M7 zoom updates svgRect)
     const ro = new ResizeObserver(() => ensurePages(host));
     ro.observe(host);
 
-    // Recompute when OSMD re-renders (new SVG node)
+    // Recompute on OSMD re-render (new SVG)
     const mo = new MutationObserver((muts) => {
       for (const m of muts) {
         if (m.type === "childList") {
-          // new SVG or re-render — refresh pages next frame
           requestAnimationFrame(() => ensurePages(host));
           return;
         }
@@ -2996,7 +3070,7 @@ function ensureXmlHeader(xml) {
   });
   docMO.observe(document.documentElement, { childList: true, subtree: true });
 
-  // React to M7 emit after each render
+  // Re-run after each M7 render
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => ensurePages(host));
   }
