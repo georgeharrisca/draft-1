@@ -33,6 +33,17 @@ const DATA_BASE = window.AUTO_ARRANGER_DATA_BASE;
 const ROOT_BASE = new URL('.', document.baseURI).href.replace(/\/$/, "");
 
 
+
+
+
+
+
+
+
+
+
+
+
 /* ============================================================================
    B) GENERIC HELPERS (DOM, STATE, FETCH)
    ========================================================================== */
@@ -98,6 +109,16 @@ async function tryJson(paths){
 }
 
 
+
+
+
+
+
+
+
+
+
+
 /* ============================================================================
    C) LIGHTWEIGHT EVENT BUS
    ========================================================================== */
@@ -126,6 +147,19 @@ window.AA = window.AA || (function(){
   };
   return API;
 })();
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 /* ============================================================================
@@ -173,6 +207,20 @@ function updateChoiceFlow(){
     el.textContent = "";
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 /* ============================================================================
@@ -277,6 +325,19 @@ updateChoiceFlow();
     console.warn("[AA] No library packs found. Last URL tried:", getState().libraryJsonUrl);
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 /* ============================================================================
@@ -387,6 +448,19 @@ async function loadInstrumentData(){
 }
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
 /* ============================================================================
    G) SONG POPULATION & CHANGE HANDLERS
    ========================================================================== */
@@ -452,6 +526,20 @@ async function onSongChosen(){
 }
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /* ============================================================================
    H) XML EXTRACTION (SINGLE-PART SCORES FROM SELECTED FILE)
    ========================================================================== */
@@ -499,6 +587,21 @@ function extractPartsFromScore(xmlText){
 
   return out;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 /* ============================================================================
@@ -821,6 +924,14 @@ function extractPartsFromScore(xmlText){
 
 
 
+
+
+
+
+
+
+
+
 /* ============================================================================
    J) PIPELINE RESET (RUNS RIGHT AFTER "SAVE SELECTIONS")
    ========================================================================== */
@@ -857,6 +968,10 @@ function extractPartsFromScore(xmlText){
     // showArrangingLoading(); // re-enable when pipeline modules are reattached
   }
 })();
+
+
+
+
 
 
 
@@ -995,6 +1110,21 @@ function extractPartsFromScore(xmlText){
   }
 })();
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /* ============================================================================
    M2) groupAssignments — match assignedPart to extracted partName
    ---------------------------------------------------------------------------- */
@@ -1061,6 +1191,20 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     return xmlString;
   }
 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 /* =========================================================================
@@ -1212,6 +1356,19 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
 /* =========================================================================
    M4) renameParts — assert instance labels into each arranged single-part
    - Listens:  arrange:done
@@ -1307,6 +1464,17 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
 
 
 
+
+
+
+
+
+
+
+
+
+
+
 /* ============================================================================
    M5) reassignPartIdsByScoreOrder — P1..Pn by scoreOrder (with dup decimals)
    ---------------------------------------------------------------------------- */
@@ -1355,6 +1523,19 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     return m ? m[1] : null;
   }
 })();
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /* =========================================================================
    M6) combineArrangedParts — merge & adopt front-matter from source
@@ -1627,6 +1808,21 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     }
   };
 })();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -2468,6 +2664,17 @@ function fitScoreToHeight(osmd, host){
 
 
 
+
+
+
+
+
+
+
+
+
+
+
 /* =========================================================================
    M8) applyCredits — clone credits from original & set OSMD header
    - Title/Subtitle/Composer shown via standard credits + header
@@ -2808,6 +3015,14 @@ function fitScoreToHeight(osmd, host){
 
 
 
+
+
+
+
+
+
+
+
    
 
 /* ============================================================================
@@ -2823,8 +3038,20 @@ function ensureXmlHeader(xml) {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
 /* =========================================================================
    M9) Viewer Page Frames (Letter) + Horizontal Pagination + Page-1 Overlays
+       + Clipped Page Views (score cut into pages above frames)
    ------------------------------------------------------------------------- */
 ;(function () {
   const LETTER_RATIO    = 8.5 / 11;  // width / height
@@ -2832,127 +3059,153 @@ function ensureXmlHeader(xml) {
   const TOP_BOTTOM_PAD  = 12;        // px inset from host top/bottom for frames
   const LEFT_MIN_PAD    = 14;        // ensure a small left margin
 
-  function ensureFrames(host) {
-    try {
-      if (!host) return;
-      const svg = host.querySelector("svg");
-      if (!svg) return;
+  function ensureLayout(host) {
+    const svg = host && host.querySelector("svg");
+    if (!host || !svg) return;
 
-      // host/SVG stacking
-      if (!/relative|absolute|fixed/.test(getComputedStyle(host).position)) {
-        host.style.position = "relative";
-      }
-      svg.style.position = "relative";
-      svg.style.zIndex   = "10";
-
-      // Ensure frames container (BACKGROUND pages)
-      let frames = host.querySelector(".aa-pageframes");
-      if (!frames) {
-        frames = document.createElement("div");
-        frames.className = "aa-pageframes";
-        frames.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:1;";
-        // NOTE: append to host; z-index will place it behind svg anyway
-        host.appendChild(frames);
-      } else {
-        frames.style.zIndex = "1";
-      }
-
-      // Ensure clips container (for page-1 overlays)
-      let clips = host.querySelector(".aa-pageclips");
-      if (!clips) {
-        clips = document.createElement("div");
-        clips.className = "aa-pageclips";
-        clips.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:20;";
-        host.appendChild(clips);
-      } else {
-        clips.style.zIndex = "20";
-      }
-
-      // Page sizing uses viewer height so pages stay constant size
-      const hostH = host.clientHeight;
-      if (!hostH) return;
-
-      const pageH    = Math.max(1, Math.floor(hostH - TOP_BOTTOM_PAD * 2));
-      const pageW    = Math.max(1, Math.floor(pageH * LETTER_RATIO));
-      const contentW = Math.max(1, Math.ceil(svg.getBoundingClientRect().width));
-      const count    = Math.max(1, Math.ceil(contentW / pageW));
-
-      // Make sure we have "count" frames and clip boxes
-      adjustChildren(frames, count, () => {
-        const f = document.createElement("div");
-        f.className = "aa-pageframe";
-        f.style.cssText = [
-          "position:absolute",
-          "border-radius:8px",
-          "background:#fff",
-          "box-shadow:0 4px 28px rgba(0,0,0,.12)",
-          "outline:1px solid rgba(0,0,0,.06)"
-        ].join(";");
-        return f;
-      });
-      adjustChildren(clips, count, () => {
-        const c = document.createElement("div");
-        c.className = "aa-pageclip";
-        c.style.cssText = [
-          "position:absolute",
-          "overflow:hidden",
-          "pointer-events:none"
-        ].join(";");
-        return c;
-      });
-
-      // Layout horizontally
-      const leftPad = Math.max(
-        LEFT_MIN_PAD,
-        parseInt(getComputedStyle(host).paddingLeft || "0", 10)
-      );
-
-      for (let i = 0; i < count; i++) {
-        const x = leftPad + i * (pageW + GAP_BETWEEN);
-        const f = frames.children[i];
-        const c = clips.children[i];
-        f.style.left   = x + "px";
-        f.style.top    = TOP_BOTTOM_PAD + "px";
-        f.style.width  = pageW + "px";
-        f.style.height = pageH + "px";
-
-        c.style.left   = x + "px";
-        c.style.top    = TOP_BOTTOM_PAD + "px";
-        c.style.width  = pageW + "px";
-        c.style.height = pageH + "px";
-      }
-
-      // Prepare page-1 overlay container
-      setupPageOverlay(host, { pageW, pageH });
-
-      // Keep M7 overlay above SVG (but under pageclips). We'll hide it only after mirroring.
-      const ov = host.querySelector(".aa-overlay");
-      if (ov) ov.style.zIndex = "15";
-
-      // Mirror overlays into page 1 and keep in sync
-      syncOverlayToPage1(host, { pageW, pageH });
-      watchM7Overlay(host, { pageW, pageH });
-
-      // Debug breadcrumb
-      // console.log(`[M9] frames laid out: ${count} (page ${pageW}x${pageH})`);
-
-    } catch (e) {
-      console.warn("[M9] ensureFrames skipped:", e);
+    // host/SVG basic stacking
+    if (!/relative|absolute|fixed/.test(getComputedStyle(host).position)) {
+      host.style.position = "relative";
     }
+    // The source svg stays hidden; page clones show the content
+    svg.style.position   = "relative";
+    svg.style.zIndex     = "5";      // low; clones are z=12
+    svg.style.visibility = "hidden"; // keep as source only
+
+    const hostH = host.clientHeight;
+    if (!hostH) return;
+
+    const pageH    = Math.max(1, Math.floor(hostH - TOP_BOTTOM_PAD * 2));
+    const pageW    = Math.max(1, Math.floor(pageH * LETTER_RATIO));
+    const svgRect  = svg.getBoundingClientRect();
+    const hostRect = host.getBoundingClientRect();
+    const contentW = Math.max(1, Math.ceil(svgRect.width));
+    const count    = Math.max(1, Math.ceil(contentW / pageW));
+
+    // Create/position: frames (z:1), page-views (z:12), page-clips (z:20 for overlays)
+    const frames    = ensureLayer(host, ".aa-pageframes", "position:absolute;inset:0;pointer-events:none;z-index:1;");
+    const pageviews = ensureLayer(host, ".aa-pageviews", "position:absolute;inset:0;pointer-events:none;z-index:12;");
+    const clips     = ensureLayer(host, ".aa-pageclips",  "position:absolute;inset:0;pointer-events:none;z-index:20;");
+
+    // children counts
+    adjustChildren(frames,    count, makeFrame);
+    adjustChildren(pageviews, count, makeView);
+    adjustChildren(clips,     count, makeClip);
+
+    // metrics
+    const leftPad  = Math.max(LEFT_MIN_PAD, parseInt(getComputedStyle(host).paddingLeft || "0", 10));
+    const offsetX  = svgRect.left - hostRect.left;  // svg origin relative to host
+    const offsetY  = svgRect.top  - hostRect.top;
+
+    for (let i = 0; i < count; i++) {
+      const pageX = leftPad + i * (pageW + GAP_BETWEEN);
+      // frames
+      positionBlock(frames.children[i],  pageX, TOP_BOTTOM_PAD, pageW, pageH);
+      // clipped views
+      const view = pageviews.children[i];
+      positionBlock(view, pageX, TOP_BOTTOM_PAD, pageW, pageH);
+      ensureClippedSvg(view, svg, { pageX, offsetX, offsetY });
+      // overlay clip boxes (for page-1 overlay only)
+      const clip = clips.children[i];
+      positionBlock(clip, pageX, TOP_BOTTOM_PAD, pageW, pageH);
+    }
+
+    // Prepare page-1 overlay container and mirror M7 overlay into it
+    setupPageOverlay(host, { pageW, pageH });
+    syncOverlayToPage1(host, { pageW, pageH });
+    watchM7Overlay(host, { pageW, pageH });
+  }
+
+  // --- helpers ----------------------------------------------------------
+
+  function ensureLayer(host, sel, css) {
+    let el = host.querySelector(sel);
+    if (!el) {
+      el = document.createElement("div");
+      el.className = sel.replace(/^\./, "");
+      el.style.cssText = css;
+      host.appendChild(el);
+    } else {
+      el.style.cssText = css;
+    }
+    return el;
+  }
+
+  function makeFrame() {
+    const f = document.createElement("div");
+    f.className = "aa-pageframe";
+    f.style.cssText = [
+      "position:absolute",
+      "border-radius:8px",
+      "background:#fff",
+      "box-shadow:0 4px 28px rgba(0,0,0,.12)",
+      "outline:1px solid rgba(0,0,0,.06)"
+    ].join(";");
+    return f;
+  }
+  function makeView() {
+    const v = document.createElement("div");
+    v.className = "aa-pageview";
+    v.style.cssText = [
+      "position:absolute",
+      "overflow:hidden",
+      "pointer-events:none"
+    ].join(";");
+    return v;
+  }
+  function makeClip() {
+    const c = document.createElement("div");
+    c.className = "aa-pageclip";
+    c.style.cssText = [
+      "position:absolute",
+      "overflow:hidden",
+      "pointer-events:none"
+    ].join(";");
+    return c;
   }
 
   function adjustChildren(container, targetCount, factory) {
     const current = container.children.length;
     if (current < targetCount) {
-      for (let i = current; i < targetCount; i++) {
-        container.appendChild(factory());
-      }
+      for (let i = current; i < targetCount; i++) container.appendChild(factory());
     } else if (current > targetCount) {
-      for (let i = current; i > targetCount; i--) {
-        container.lastChild && container.removeChild(container.lastChild);
-      }
+      for (let i = current; i > targetCount; i--) container.lastChild && container.removeChild(container.lastChild);
     }
   }
+
+  function positionBlock(el, x, y, w, h) {
+    el.style.left   = x + "px";
+    el.style.top    = y + "px";
+    el.style.width  = w + "px";
+    el.style.height = h + "px";
+  }
+
+  // Put a cloned SVG inside the pageview and offset it so only that page region shows
+  function ensureClippedSvg(pageview, sourceSvg, { pageX, offsetX, offsetY }) {
+    // container for the clone and its offset
+    let holder = pageview.querySelector(".aa-svgholder");
+    if (!holder) {
+      holder = document.createElement("div");
+      holder.className = "aa-svgholder";
+      holder.style.cssText = "position:absolute;left:0;top:0;";
+      pageview.appendChild(holder);
+    }
+    // always refresh clone on rerender
+    while (holder.firstChild) holder.removeChild(holder.firstChild);
+
+    const clone = sourceSvg.cloneNode(true);
+    // reset any width set by M7 so the clone matches true intrinsic width
+    clone.style.removeProperty("width");
+    clone.style.position = "relative";
+    holder.appendChild(clone);
+
+    // Negative offset so the correct slice of the big SVG appears inside this pageview
+    // pageview.left = pageX; host.left = 0; svg is at offsetX from host
+    holder.style.left = -(pageX + offsetX) + "px";
+    holder.style.top  = -(offsetY) + "px";
+  }
+
+  // --- overlay mirroring into page 1 ------------------------------------
 
   function setupPageOverlay(host, { pageW, pageH }) {
     const clips = host.querySelector(".aa-pageclips");
@@ -2962,12 +3215,7 @@ function ensureXmlHeader(xml) {
     if (!pageOverlay) {
       pageOverlay = document.createElement("div");
       pageOverlay.className = "aa-overlay-page1";
-      pageOverlay.style.cssText = [
-        "position:absolute",
-        "inset:0",
-        "pointer-events:none",
-        "z-index:21"
-      ].join(";");
+      pageOverlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:21;";
       clips.firstElementChild.appendChild(pageOverlay);
     }
     pageOverlay.style.width  = pageW + "px";
@@ -2988,13 +3236,11 @@ function ensureXmlHeader(xml) {
       if (!pageOverlay) return;
     }
 
-    // If source has no children yet, don't hide it and don't sync
-    if (!overlaySrc.firstChild) return;
+    if (!overlaySrc.firstChild) return; // nothing to mirror yet
 
     const sig = (overlaySrc.textContent || "").trim();
     if (!sig) return;
-
-    if (pageOverlay.dataset.sig === sig) return; // already synced
+    if (pageOverlay.dataset.sig === sig) return; // already mirrored
 
     while (pageOverlay.firstChild) pageOverlay.removeChild(pageOverlay.firstChild);
 
@@ -3003,9 +3249,8 @@ function ensureXmlHeader(xml) {
       pageOverlay.appendChild(overlaySrc.firstChild);
       moved = true;
     }
-
     if (moved) {
-      overlaySrc.style.display = "none";  // only hide after successful move
+      overlaySrc.style.display = "none";  // avoid duplicate overlays
       pageOverlay.dataset.sig = sig;
       requestAnimationFrame(() => positionPage1Labels(pageOverlay, pageW, pageH));
     }
@@ -3031,12 +3276,9 @@ function ensureXmlHeader(xml) {
             pageW: overlaySrc._m9Watcher?._pageW || pageW,
             pageH: overlaySrc._m9Watcher?._pageH || pageH
           });
-        } finally {
-          ticking = false;
-        }
+        } finally { ticking = false; }
       });
     });
-
     mo.observe(overlaySrc, { childList: true, subtree: false });
     overlaySrc._m9Watcher = mo;
     overlaySrc._m9Watcher._pageW = pageW;
@@ -3080,18 +3322,14 @@ function ensureXmlHeader(xml) {
     }
   }
 
+  // --- orchestration / hooks -------------------------------------------
+
   function ensureAll(host) {
     if (!host) return;
     const svg = host.querySelector("svg");
     if (!svg) return;
 
-    ensureFrames(host);
-
-    const pageH = Math.max(1, Math.floor(host.clientHeight - TOP_BOTTOM_PAD * 2));
-    const pageW = Math.max(1, Math.floor(pageH * LETTER_RATIO));
-
-    syncOverlayToPage1(host, { pageW, pageH });
-    watchM7Overlay(host, { pageW, pageH });
+    ensureLayout(host);
   }
 
   function hookHost(host) {
@@ -3103,10 +3341,7 @@ function ensureXmlHeader(xml) {
 
     const mo = new MutationObserver((muts) => {
       for (const m of muts) {
-        if (m.type === "childList") {
-          ensureAll(host);
-          return;
-        }
+        if (m.type === "childList") { ensureAll(host); return; }
       }
     });
     mo.observe(host, { childList: true, subtree: true });
@@ -3145,4 +3380,3 @@ function ensureXmlHeader(xml) {
     AA.on("viewer:rendered", ({ host }) => ensureAll(host));
   }
 })();
-
