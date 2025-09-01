@@ -2825,7 +2825,7 @@ function ensureXmlHeader(xml) {
 
 /* =========================================================================
    M9) Visual Page Frames (Letter) + True Horizontal Pagination (sliced SVG)
-       + Overlay pinned & positioned on first page
+       + Overlay anchored to the first page only
    ------------------------------------------------------------------------- */
 ;(function () {
   const LETTER_RATIO   = 8.5 / 11; // width/height
@@ -2838,7 +2838,7 @@ function ensureXmlHeader(xml) {
       const svg = host.querySelector("svg");
       if (!svg) return;
 
-      // Keep base SVG for metrics/overlay only.
+      // Base SVG stays for metrics/overlay source only (invisible)
       svg.style.position      = "absolute";
       svg.style.left          = "0";
       svg.style.top           = "0";
@@ -2846,7 +2846,7 @@ function ensureXmlHeader(xml) {
       svg.style.pointerEvents = "none";
       svg.style.zIndex        = "0";
 
-      // Layers: frames (0) < slices (1) < overlay (2)
+      // Layers: frames (0) < page clips (1) < overlay-on-page1 (2)
       let frames = host.querySelector(".aa-pageframes");
       if (!frames) {
         frames = document.createElement("div");
@@ -2863,19 +2863,19 @@ function ensureXmlHeader(xml) {
       }
 
       // Fixed page size from host height (no vertical scrolling).
-      const hostHeight = host.clientHeight || host.getBoundingClientRect().height || 0;
-      if (!hostHeight) return;
+      const hostH = host.clientHeight || host.getBoundingClientRect().height || 0;
+      if (!hostH) return;
 
-      const pageH = Math.max(1, Math.floor(hostHeight - TOP_BOTTOM_PAD * 2));
+      const pageH = Math.max(1, Math.floor(hostH - TOP_BOTTOM_PAD * 2));
       const pageW = Math.max(1, Math.floor(pageH * LETTER_RATIO));
 
-      // Publish page inner height for M7’s 90% vertical fit.
+      // let M7 know the inner page height for 90% vertical fit
       host.style.setProperty("--aa-page-inner-height", pageH + "px");
       if (typeof AA !== "undefined" && AA.emit) {
         AA.emit("viewer:pageMetrics", { host, pageH });
       }
 
-      // Score content width (SVG coordinate space).
+      // Score width in SVG space
       const vb = svg.viewBox && svg.viewBox.baseVal;
       let contentW = vb && vb.width ? vb.width : 0;
       if (!contentW) { try { contentW = svg.getBBox().width; } catch (_) {} }
@@ -2888,7 +2888,7 @@ function ensureXmlHeader(xml) {
       const leftPad   = Math.max(14, parseInt(getComputedStyle(host).paddingLeft || "0", 10));
       const pageCount = Math.max(1, Math.ceil(contentW / pageW));
 
-      // Ensure correct number of frames and clip panes.
+      // Build frames & clips
       syncChildren(frames, pageCount, () => {
         const f = document.createElement("div");
         f.className = "aa-pageframe";
@@ -2906,7 +2906,6 @@ function ensureXmlHeader(xml) {
         return c;
       });
 
-      // Build/update each page slice.
       for (let i = 0; i < pageCount; i++) {
         const x = leftPad + i * (pageW + GAP_BETWEEN);
 
@@ -2940,74 +2939,75 @@ function ensureXmlHeader(xml) {
           inner.appendChild(clone);
         }
 
-        // Shift horizontally to show this page’s slice.
+        // Horizontal slice offset
         const sliceOffset = i * pageW;
         inner.style.transform = `translateX(${-sliceOffset}px)`;
       }
 
-      // Pin + clip overlay to the first page AND normalize its children
-      // so labels render at the top-left / top-right of page 1.
-      pinAndNormalizeOverlay(host, svg, { pageW, pageH, leftPad, topPad: TOP_BOTTOM_PAD });
+      // Move & normalize overlay into FIRST page, so it scrolls with page 1 only
+      moveOverlayIntoFirstPage(host, { pageW, pageH });
+
     } catch (e) {
       console.warn("[M9] ensurePages skipped:", e);
     }
   }
 
-  // Pin overlay to the first page and re-position its children inside that page.
-  function pinAndNormalizeOverlay(host, svg, { pageW, pageH, leftPad, topPad }) {
-    const overlay = host.querySelector(".aa-overlay");
-    if (!overlay) return;
+  // Take .aa-overlay (from M7), move its children into the first page clip, and position them.
+  function moveOverlayIntoFirstPage(host, { pageW, pageH }) {
+    const overlaySrc = host.querySelector(".aa-overlay");
+    if (!overlaySrc) return;
 
-    overlay.style.zIndex = "2";
-    overlay.style.position = "absolute";
+    const firstClip = host.querySelector(".aa-pageclips .aa-pageclip:first-child");
+    if (!firstClip) return;
 
-    // Translate overlay so (0,0) aligns to the first page’s top-left.
-    const hostRect = host.getBoundingClientRect();
-    const svgRect  = svg.getBoundingClientRect();
-    const deltaX = leftPad - (svgRect.left - hostRect.left);
-    const deltaY = topPad  - (svgRect.top  - hostRect.top);
-    overlay.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
-    overlay.style.willChange = "transform";
-
-    // Clip overlay to the first page region.
-    const rightInset  = `calc(100% - ${leftPad + pageW}px)`;
-    const bottomInset = `calc(100% - ${topPad + pageH}px)`;
-    overlay.style.clipPath = `inset(${topPad}px ${rightInset} ${bottomInset} ${leftPad}px)`;
-    overlay.style.pointerEvents = "none";
-
-    // --- Normalize children so they’re positioned within page 1 ---
-    // We expect two children appended by M7: [part/score label, arranger].
-    const kids = Array.from(overlay.children);
-    if (!kids.length) return;
-
-    // constants (visual padding inside the page)
-    const LEFT_MARGIN   = 18; // px
-    const TOP_MARGIN    = 10; // px
-    const RIGHT_MARGIN  = 40; // px (distance from page-right)
-    const TOP_MARGIN_R  = 14; // px (arranger’s top)
-
-    // Helper to force absolute positioning relative to overlay origin (0,0)
-    function absolutize(el) {
-      el.style.left = "0";
-      el.style.top  = "0";
-      el.style.right = "auto";   // neutralize any previous `right: ...`
-      el.style.bottom = "auto";
-      el.style.position = "absolute";
+    // Create/refresh a page-anchored overlay container
+    let pageOverlay = firstClip.querySelector(".aa-overlay-page1");
+    if (!pageOverlay) {
+      pageOverlay = document.createElement("div");
+      pageOverlay.className = "aa-overlay-page1";
+      pageOverlay.style.cssText =
+        "position:absolute;inset:0;pointer-events:none;z-index:5;";
+      firstClip.appendChild(pageOverlay);
+    } else {
+      pageOverlay.innerHTML = "";
     }
 
-    // Left/top label (first child)
-    absolutize(kids[0]);
-    kids[0].style.transform = `translate(${LEFT_MARGIN}px, ${TOP_MARGIN}px)`;
+    // Move only the children (keep original overlay element for M7 reuse)
+    while (overlaySrc.firstChild) {
+      pageOverlay.appendChild(overlaySrc.firstChild);
+    }
+    // Hide the source container so it doesn't visually interfere
+    overlaySrc.style.display = "none";
 
-    // Right/top arranger (last child)
+    // Position labels within the first page
+    const kids = Array.from(pageOverlay.children);
+    if (!kids.length) return;
+
+    const LEFT_MARGIN  = 18;
+    const TOP_MARGIN_L = 10;
+    const RIGHT_MARGIN = 40;
+    const TOP_MARGIN_R = 14;
+
+    function absolutize(el) {
+      el.style.position = "absolute";
+      el.style.left = "0";
+      el.style.top  = "0";
+      el.style.right = "auto";
+      el.style.bottom = "auto";
+      el.style.transform = "none";
+    }
+
+    // Left/top label (first)
+    absolutize(kids[0]);
+    kids[0].style.transform = `translate(${LEFT_MARGIN}px, ${TOP_MARGIN_L}px)`;
+
+    // Right/top label (last)
     const rightEl = kids[kids.length - 1];
     absolutize(rightEl);
-
-    // We need its width to align to the page’s right edge.
+    // Measure after insertion to compute right alignment
     const w = rightEl.getBoundingClientRect().width || 0;
     const x = Math.max(0, pageW - RIGHT_MARGIN - w);
-    const y = TOP_MARGIN_R;
-    rightEl.style.transform = `translate(${x}px, ${y}px)`;
+    rightEl.style.transform = `translate(${x}px, ${TOP_MARGIN_R}px)`;
   }
 
   function hookHost(host) {
@@ -3019,10 +3019,7 @@ function ensureXmlHeader(xml) {
 
     const mo = new MutationObserver((muts) => {
       for (const m of muts) {
-        if (m.type === "childList") {
-          ensurePages(host);
-          return;
-        }
+        if (m.type === "childList") { ensurePages(host); return; }
       }
     });
     mo.observe(host, { childList: true, subtree: true });
@@ -3041,9 +3038,7 @@ function ensureXmlHeader(xml) {
       for (let i = count; i < cur; i++) parent.lastChild && parent.removeChild(parent.lastChild);
     }
   }
-  function clearNode(n) {
-    while (n && n.firstChild) n.removeChild(n.firstChild);
-  }
+  function clearNode(n) { while (n && n.firstChild) n.removeChild(n.firstChild); }
 
   function tryHookNow() {
     const host = document.getElementById("aa-osmd-box");
@@ -3065,10 +3060,11 @@ function ensureXmlHeader(xml) {
   });
   docMO.observe(document.documentElement, { childList: true, subtree: true });
 
-  // Refresh after each M7 render.
+  // Refresh after each render from M7
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => ensurePages(host));
   }
 })();
+
 
 
