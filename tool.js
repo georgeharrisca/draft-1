@@ -2824,57 +2824,30 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M9) Viewer Page Frames (Letter) + Horizontal Pagination (clipped pages)
-   + Per-page horizontal stretch (every page)
-   + Frames locked to viewer height (no vertical shrinking)
+   M9) Visual Page Frames (Letter) + True Horizontal Pagination (sliced SVG)
    ------------------------------------------------------------------------- */
 ;(function () {
-  const LETTER_RATIO = 8.5 / 11;   // width / height
-  const GAP_BETWEEN = 28;          // px gap between page frames
-  const TOP_BOTTOM_PAD = 12;       // px inset from host top/bottom for frames
-  const MAX_PAGE_STRETCH = 1.6;    // safety cap for horizontal stretch
+  // Letter page geometry and layout
+  const LETTER_RATIO     = 8.5 / 11; // width / height
+  const GAP_BETWEEN      = 28;       // px gap between page frames
+  const TOP_BOTTOM_PAD   = 12;       // px inset from host top/bottom for frames
 
-  // (A) Nudge OSMD to justify systems (before our visual stretch)
-  if (typeof AA !== "undefined" && AA.on) {
-    AA.on("viewer:rendered", ({ osmd }) => {
-      try {
-        const r = osmd && (osmd.EngravingRules || osmd.rules);
-        if (!r) return;
-        for (const k of [
-          "JustifySystemLines","justifySystemLines",
-          "StretchLastSystemLine","stretchLastSystemLine",
-          "JustifyLastSystem","justifyLastSystem",
-          "justifyLastSystemLines","FillLastSystemLine","fillLastSystemLine"
-        ]) if (k in r) r[k] = true;
-      } catch(_) {}
-    });
-  }
-
-  // (B) Visual paging with fixed-height frames + per-page horizontal stretch
+  // Build/refresh the page frames and sliced clones
   function ensurePages(host) {
     try {
       if (!host) return;
       const svg = host.querySelector("svg");
       if (!svg) return;
 
-       // after you compute pageH
-host.style.setProperty('--aa-page-inner-height', pageH + 'px');
+      // Base SVG is required for metrics/overlay but hidden visually.
+      svg.style.position       = "absolute";
+      svg.style.left           = "0";
+      svg.style.top            = "0";
+      svg.style.opacity        = "0";
+      svg.style.pointerEvents  = "none";
+      svg.style.zIndex         = "0";
 
-// (optional but snappy) let M7 know page metrics changed
-if (typeof AA !== "undefined" && AA.emit) {
-  AA.emit("viewer:pageMetrics", { host, pageH });
-}
-
-
-      // Base SVG stays for metrics/overlay, but is visually hidden.
-      svg.style.position = "absolute";
-      svg.style.left = "0";
-      svg.style.top = "0";
-      svg.style.opacity = "0";
-      svg.style.pointerEvents = "none";
-      svg.style.zIndex = "0";
-
-      // Layers: frames (0) < clips (1) < overlay (2)
+      // Layers: frames (0) < clips/slices (1) < overlay (2)
       let frames = host.querySelector(".aa-pageframes");
       if (!frames) {
         frames = document.createElement("div");
@@ -2892,198 +2865,159 @@ if (typeof AA !== "undefined" && AA.emit) {
       const ov = host.querySelector(".aa-overlay");
       if (ov) ov.style.zIndex = "2";
 
-      // --- IMPORTANT: lock page height to the viewer's visible height
-      // Use clientHeight so it's independent of SVG reflow / OSMD zoom.
+      // --- Compute fixed page size from host height (no vertical scroll) ---
       const hostHeight = host.clientHeight || host.getBoundingClientRect().height || 0;
       if (!hostHeight) return;
 
-      const pageH = Math.max(1, Math.floor(hostHeight - TOP_BOTTOM_PAD * 2)); // fixed
+      // Page inner height (fixed) and width (letter aspect)
+      const pageH = Math.max(1, Math.floor(hostHeight - TOP_BOTTOM_PAD * 2));
       const pageW = Math.max(1, Math.floor(pageH * LETTER_RATIO));
 
-      // SVG live pixel size (for content width & unit conversion)
+      // Publish the page inner height for M7 (fit-to-height ~90%)
+      host.style.setProperty("--aa-page-inner-height", pageH + "px");
+      if (typeof AA !== "undefined" && AA.emit) {
+        AA.emit("viewer:pageMetrics", { host, pageH });
+      }
+
+      // Content metrics in px (use viewBox when possible, fallback to bbox)
       const svgRect = svg.getBoundingClientRect();
-      const contentW = Math.max(1, Math.floor(svgRect.width));
-      const pageCount = Math.max(1, Math.ceil(contentW / pageW));
+      const vb      = svg.viewBox && svg.viewBox.baseVal;
+      let contentW  = vb && vb.width ? vb.width : 0;
+      if (!contentW) {
+        try { contentW = svg.getBBox().width; } catch (_) {}
+      }
+      if (!contentW) contentW = svgRect.width || 0;
+      if (!contentW) return;
 
-      // Convert SVG units → CSS px for content measurement
-      const vb = svg.viewBox && svg.viewBox.baseVal;
-      const unit2px = vb && vb.width ? (svgRect.width / vb.width) : 1;
-
-      // sync frame nodes
-      syncChildren(frames, pageCount, () => {
-        const f = document.createElement("div");
-        f.className = "aa-pageframe";
-        f.style.cssText = [
-          "position:absolute",
-          "border-radius:8px",
-          "background:#fff",
-          "box-shadow:0 4px 28px rgba(0,0,0,.12)",
-          "outline:1px solid rgba(0,0,0,.06)"
-        ].join(";");
-        return f;
-      });
-
-      // sync clip nodes
-      syncChildren(clips, pageCount, () => {
-        const c = document.createElement("div");
-        c.className = "aa-pageclip";
-        c.style.cssText = [
-          "position:absolute",
-          "overflow:hidden",
-          "border-radius:8px",
-          "pointer-events:none"
-        ].join(";");
-        return c;
-      });
-
-      // left pad respects host padding to keep frames nicely inset
       const leftPad = Math.max(
         14,
         parseInt(getComputedStyle(host).paddingLeft || "0", 10)
       );
 
-      // Normalize clone box to measured svgRect (predictable transforms)
-      const normalizedWidth  = Math.ceil(svgRect.width);
-      const normalizedHeight = Math.ceil(svgRect.height);
-      function makeSvgClone() {
-        const clone = svg.cloneNode(true);
-        clone.style.cssText = [
-          "position:absolute",
-          "left:0",
-          "top:0",
-          "opacity:1",
-          "pointer-events:none",
-          `width:${normalizedWidth}px`,
-          `height:${normalizedHeight}px`,
-          "transform-origin:left top"
-        ].join(";");
-        return clone;
-      }
+      // How many pages to show as horizontal slices of the full score width?
+      const pageCount = Math.max(1, Math.ceil(contentW / pageW));
 
+      // Keep the correct number of frames and clip containers
+      syncChildren(frames, pageCount, () => {
+        const f = document.createElement("div");
+        f.className = "aa-pageframe";
+        f.style.cssText =
+          "position:absolute;" +
+          "border-radius:8px;background:#fff;" +
+          "box-shadow:0 4px 28px rgba(0,0,0,.12);" +
+          "outline:1px solid rgba(0,0,0,.06);";
+        return f;
+      });
+      syncChildren(clips, pageCount, () => {
+        const c = document.createElement("div");
+        c.className = "aa-pageclip";
+        c.style.cssText = "position:absolute;overflow:hidden;pointer-events:none;";
+        return c;
+      });
+
+      // Update geometry + (re)build slices
       for (let i = 0; i < pageCount; i++) {
         const x = leftPad + i * (pageW + GAP_BETWEEN);
 
-        // frame geometry (fixed height)
-        const frame = frames.children[i];
-        frame.style.left   = x + "px";
-        frame.style.top    = TOP_BOTTOM_PAD + "px";
-        frame.style.width  = pageW + "px";
-        frame.style.height = pageH + "px";
+        // 1) Frame positioning (white page)
+        const f = frames.children[i];
+        f.style.left   = x + "px";
+        f.style.top    = TOP_BOTTOM_PAD + "px";
+        f.style.width  = pageW + "px";
+        f.style.height = pageH + "px";
 
-        // clip geometry (fixed height)
-        const clip = clips.children[i];
-        clip.style.left   = x + "px";
-        clip.style.top    = TOP_BOTTOM_PAD + "px";
-        clip.style.width  = pageW + "px";
-        clip.style.height = pageH + "px";
+        // 2) Clip container positioning (same rect as frame)
+        const c = clips.children[i];
+        c.style.left   = x + "px";
+        c.style.top    = TOP_BOTTOM_PAD + "px";
+        c.style.width  = pageW + "px";
+        c.style.height = pageH + "px";
 
-        // ensure one clone per clip
-        let clone = clip.firstElementChild;
-        if (!clone || clone.tagName.toLowerCase() !== "svg") {
-          clip.innerHTML = "";
-          clone = makeSvgClone();
-          clip.appendChild(clone);
-        } else {
-          clone.style.width  = normalizedWidth  + "px";
-          clone.style.height = normalizedHeight + "px";
+        // 3) Ensure we have an inner wrapper + a cloned SVG
+        let inner = c.querySelector(".pg-inner");
+        if (!inner) {
+          inner = document.createElement("div");
+          inner.className = "pg-inner";
+          inner.style.cssText = "position:absolute;left:0;top:0;transform-origin:0 0;";
+          c.appendChild(inner);
         }
 
-        // --- per-page measurement & stretch
-        const slice = measureSliceContent(svg, unit2px, i, pageW);
-        let translateX, scaleX;
-
-        if (slice && slice.widthPx > 0) {
-          translateX = -slice.minPx;
-          scaleX = Math.min(MAX_PAGE_STRETCH, pageW / slice.widthPx);
-        } else {
-          // fallback if we couldn't measure
-          translateX = -i * pageW;
-          const leftover = Math.max(1, contentW - i * pageW);
-          scaleX = Math.min(MAX_PAGE_STRETCH, pageW / Math.min(pageW, leftover));
+        let clone = inner.querySelector("svg");
+        if (!clone) {
+          clearNode(inner);
+          // Clone the base SVG; keep attributes/styles
+          clone = svg.cloneNode(true);
+          clone.style.opacity        = "1";     // visible in slice
+          clone.style.pointerEvents  = "none";
+          clone.style.position       = "static";
+          clone.style.left           = "";
+          clone.style.top            = "";
+          inner.appendChild(clone);
         }
 
-        clone.style.transform = `translateX(${translateX}px) scaleX(${scaleX})`;
+        // 4) Translate the clone so that this page shows its horizontal slice
+        // Slice start in the *original SVG coordinate space*
+        const sliceOffset = i * pageW;
+
+        // We don't distort horizontally here — M7 already stretches systems across
+        // the total width. Just shift to reveal this page's window.
+        inner.style.transform = `translateX(${-sliceOffset}px)`;
       }
     } catch (e) {
       console.warn("[M9] ensurePages skipped:", e);
     }
   }
 
-  // measure content that falls inside page slice i (in CSS px)
-  function measureSliceContent(svg, unit2px, pageIndex, pageW) {
-    try {
-      const pageLeft = pageIndex * pageW;
-      const pageRight = (pageIndex + 1) * pageW;
-
-      const elems = svg.querySelectorAll("path,rect,line,polyline,polygon,text,g");
-      let minPx = Infinity;
-      let maxPx = -Infinity;
-
-      for (const el of elems) {
-        if (typeof el.getBBox !== "function") continue;
-        let b;
-        try { b = el.getBBox(); } catch(_) { continue; }
-        if (!b || !isFinite(b.x) || !isFinite(b.width)) continue;
-
-        const leftPx  = b.x * unit2px;
-        const rightPx = (b.x + b.width) * unit2px;
-        if (rightPx <= pageLeft || leftPx >= pageRight) continue;
-
-        const clampedLeft  = Math.max(pageLeft, leftPx);
-        const clampedRight = Math.min(pageRight, rightPx);
-
-        if (clampedRight > clampedLeft) {
-          if (clampedLeft < minPx) minPx = clampedLeft;
-          if (clampedRight > maxPx) maxPx = clampedRight;
-        }
-      }
-
-      if (!isFinite(minPx) || !isFinite(maxPx) || maxPx <= minPx) return null;
-      return { minPx, maxPx, widthPx: maxPx - minPx };
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function syncChildren(container, wantedCount, createNode) {
-    const cur = container.children.length;
-    if (cur < wantedCount) {
-      for (let i = cur; i < wantedCount; i++) container.appendChild(createNode());
-    } else if (cur > wantedCount) {
-      for (let i = 0; i < cur - wantedCount; i++) container.lastChild && container.removeChild(container.lastChild);
-    }
-  }
-
-  // Hookups: recompute on host resize and OSMD re-render
+  // Keep host hooked and refresh on changes
   function hookHost(host) {
     if (!host || host._m9Hooked) return;
     host._m9Hooked = true;
 
+    // Resize of the viewer box => recompute page size/positions
     const ro = new ResizeObserver(() => ensurePages(host));
     ro.observe(host);
 
+    // DOM changes inside (new SVG render etc.) => rebuild frames/clips
     const mo = new MutationObserver((muts) => {
       for (const m of muts) {
         if (m.type === "childList") {
-          requestAnimationFrame(() => ensurePages(host));
+          ensurePages(host);
           return;
         }
       }
     });
     mo.observe(host, { childList: true, subtree: true });
 
+    // Stash for optional cleanup
     host._m9ro = ro;
     host._m9mo = mo;
 
-    ensurePages(host); // initial paint
+    // Initial paint
+    ensurePages(host);
   }
 
+  // Utility: ensure child count matches; create via factory; recycle existing nodes
+  function syncChildren(parent, count, factory) {
+    const cur = parent.children.length;
+    if (cur < count) {
+      for (let i = cur; i < count; i++) parent.appendChild(factory());
+    } else if (cur > count) {
+      for (let i = count; i < cur; i++) parent.lastChild && parent.removeChild(parent.lastChild);
+    }
+  }
+
+  function clearNode(n) {
+    while (n && n.firstChild) n.removeChild(n.firstChild);
+  }
+
+  // Try to hook immediately if the viewer is already there
   function tryHookNow() {
     const host = document.getElementById("aa-osmd-box");
     if (host) hookHost(host);
   }
   document.addEventListener("DOMContentLoaded", tryHookNow);
 
+  // Hook when the viewer appears later
   const docMO = new MutationObserver((muts) => {
     for (const m of muts) {
       for (const n of m.addedNodes) {
@@ -3098,6 +3032,7 @@ if (typeof AA !== "undefined" && AA.emit) {
   });
   docMO.observe(document.documentElement, { childList: true, subtree: true });
 
+  // Refresh after each M7 render
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => ensurePages(host));
   }
