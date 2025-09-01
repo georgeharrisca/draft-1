@@ -2794,6 +2794,7 @@ function ensureXmlHeader(xml) {
 /* =========================================================================
    M9) Viewer Page Frames (Letter) + Horizontal Pagination (clipped pages)
    + Per-page horizontal stretch (every page)
+   + Frames locked to viewer height (no vertical shrinking)
    ------------------------------------------------------------------------- */
 ;(function () {
   const LETTER_RATIO = 8.5 / 11;   // width / height
@@ -2801,25 +2802,23 @@ function ensureXmlHeader(xml) {
   const TOP_BOTTOM_PAD = 12;       // px inset from host top/bottom for frames
   const MAX_PAGE_STRETCH = 1.6;    // safety cap for horizontal stretch
 
-  // --- (A) Try to tell OSMD to justify systems (helps before visual stretch)
+  // (A) Nudge OSMD to justify systems (before our visual stretch)
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ osmd }) => {
       try {
         const r = osmd && (osmd.EngravingRules || osmd.rules);
         if (!r) return;
         for (const k of [
-          "JustifySystemLines", "justifySystemLines",
-          "StretchLastSystemLine", "stretchLastSystemLine",
-          "JustifyLastSystem", "justifyLastSystem",
-          "justifyLastSystemLines", "FillLastSystemLine", "fillLastSystemLine"
-        ]) {
-          if (k in r) r[k] = true;
-        }
-      } catch (_) {}
+          "JustifySystemLines","justifySystemLines",
+          "StretchLastSystemLine","stretchLastSystemLine",
+          "JustifyLastSystem","justifyLastSystem",
+          "justifyLastSystemLines","FillLastSystemLine","fillLastSystemLine"
+        ]) if (k in r) r[k] = true;
+      } catch(_) {}
     });
   }
 
-  // --- (B) Visual paging with per-page horizontal stretch
+  // (B) Visual paging with fixed-height frames + per-page horizontal stretch
   function ensurePages(host) {
     try {
       if (!host) return;
@@ -2834,7 +2833,7 @@ function ensureXmlHeader(xml) {
       svg.style.pointerEvents = "none";
       svg.style.zIndex = "0";
 
-      // Layer stack: frames (0) < clips (1) < overlay (2)
+      // Layers: frames (0) < clips (1) < overlay (2)
       let frames = host.querySelector(".aa-pageframes");
       if (!frames) {
         frames = document.createElement("div");
@@ -2842,7 +2841,6 @@ function ensureXmlHeader(xml) {
         frames.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:0;";
         host.appendChild(frames);
       }
-
       let clips = host.querySelector(".aa-pageclips");
       if (!clips) {
         clips = document.createElement("div");
@@ -2850,24 +2848,27 @@ function ensureXmlHeader(xml) {
         clips.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:1;";
         host.appendChild(clips);
       }
-
       const ov = host.querySelector(".aa-overlay");
       if (ov) ov.style.zIndex = "2";
 
-      // Live pixel size of OSMD SVG
-      const svgRect = svg.getBoundingClientRect();
-      if (!svgRect.height || !svgRect.width) return;
+      // --- IMPORTANT: lock page height to the viewer's visible height
+      // Use clientHeight so it's independent of SVG reflow / OSMD zoom.
+      const hostHeight = host.clientHeight || host.getBoundingClientRect().height || 0;
+      if (!hostHeight) return;
 
-      // Convert SVG user units to CSS px (so we can measure content by pages in px)
-      const vb = svg.viewBox && svg.viewBox.baseVal;
-      const unit2px = vb && vb.width ? (svgRect.width / vb.width) : 1;
-
-      const pageH = Math.max(1, Math.floor(svgRect.height)); // vertical fit is handled by M7 zoom
+      const pageH = Math.max(1, Math.floor(hostHeight - TOP_BOTTOM_PAD * 2)); // fixed
       const pageW = Math.max(1, Math.floor(pageH * LETTER_RATIO));
+
+      // SVG live pixel size (for content width & unit conversion)
+      const svgRect = svg.getBoundingClientRect();
       const contentW = Math.max(1, Math.floor(svgRect.width));
       const pageCount = Math.max(1, Math.ceil(contentW / pageW));
 
-      // sync FRAMES
+      // Convert SVG units → CSS px for content measurement
+      const vb = svg.viewBox && svg.viewBox.baseVal;
+      const unit2px = vb && vb.width ? (svgRect.width / vb.width) : 1;
+
+      // sync frame nodes
       syncChildren(frames, pageCount, () => {
         const f = document.createElement("div");
         f.className = "aa-pageframe";
@@ -2881,7 +2882,7 @@ function ensureXmlHeader(xml) {
         return f;
       });
 
-      // sync CLIPS
+      // sync clip nodes
       syncChildren(clips, pageCount, () => {
         const c = document.createElement("div");
         c.className = "aa-pageclip";
@@ -2894,13 +2895,13 @@ function ensureXmlHeader(xml) {
         return c;
       });
 
+      // left pad respects host padding to keep frames nicely inset
       const leftPad = Math.max(
         14,
         parseInt(getComputedStyle(host).paddingLeft || "0", 10)
       );
-      const usableH = Math.max(1, pageH - TOP_BOTTOM_PAD * 2);
 
-      // Normalize the clone’s CSS box to the measured SVG rect (so transforms are predictable)
+      // Normalize clone box to measured svgRect (predictable transforms)
       const normalizedWidth  = Math.ceil(svgRect.width);
       const normalizedHeight = Math.ceil(svgRect.height);
       function makeSvgClone() {
@@ -2921,19 +2922,19 @@ function ensureXmlHeader(xml) {
       for (let i = 0; i < pageCount; i++) {
         const x = leftPad + i * (pageW + GAP_BETWEEN);
 
-        // layout frames
+        // frame geometry (fixed height)
         const frame = frames.children[i];
         frame.style.left   = x + "px";
         frame.style.top    = TOP_BOTTOM_PAD + "px";
         frame.style.width  = pageW + "px";
-        frame.style.height = usableH + "px";
+        frame.style.height = pageH + "px";
 
-        // layout clips
+        // clip geometry (fixed height)
         const clip = clips.children[i];
         clip.style.left   = x + "px";
         clip.style.top    = TOP_BOTTOM_PAD + "px";
         clip.style.width  = pageW + "px";
-        clip.style.height = usableH + "px";
+        clip.style.height = pageH + "px";
 
         // ensure one clone per clip
         let clone = clip.firstElementChild;
@@ -2946,16 +2947,15 @@ function ensureXmlHeader(xml) {
           clone.style.height = normalizedHeight + "px";
         }
 
-        // --- Per-page measurement: find content width inside this page slice
+        // --- per-page measurement & stretch
         const slice = measureSliceContent(svg, unit2px, i, pageW);
         let translateX, scaleX;
 
         if (slice && slice.widthPx > 0) {
-          // Align content to left of page and stretch to fill the page width
           translateX = -slice.minPx;
           scaleX = Math.min(MAX_PAGE_STRETCH, pageW / slice.widthPx);
         } else {
-          // Fallback: default slice view (no per-page measurement available)
+          // fallback if we couldn't measure
           translateX = -i * pageW;
           const leftover = Math.max(1, contentW - i * pageW);
           scaleX = Math.min(MAX_PAGE_STRETCH, pageW / Math.min(pageW, leftover));
@@ -2968,13 +2968,12 @@ function ensureXmlHeader(xml) {
     }
   }
 
-  // Measure content that actually falls inside page slice i (in CSS px)
+  // measure content that falls inside page slice i (in CSS px)
   function measureSliceContent(svg, unit2px, pageIndex, pageW) {
     try {
       const pageLeft = pageIndex * pageW;
       const pageRight = (pageIndex + 1) * pageW;
 
-      // Limit query to likely drawing elements (broad but avoids defs/clipPath)
       const elems = svg.querySelectorAll("path,rect,line,polyline,polygon,text,g");
       let minPx = Infinity;
       let maxPx = -Infinity;
@@ -2987,9 +2986,8 @@ function ensureXmlHeader(xml) {
 
         const leftPx  = b.x * unit2px;
         const rightPx = (b.x + b.width) * unit2px;
-        if (rightPx <= pageLeft || leftPx >= pageRight) continue; // no overlap
+        if (rightPx <= pageLeft || leftPx >= pageRight) continue;
 
-        // clamp to slice boundaries
         const clampedLeft  = Math.max(pageLeft, leftPx);
         const clampedRight = Math.min(pageRight, rightPx);
 
@@ -2999,9 +2997,7 @@ function ensureXmlHeader(xml) {
         }
       }
 
-      if (!isFinite(minPx) || !isFinite(maxPx) || maxPx <= minPx) {
-        return null;
-      }
+      if (!isFinite(minPx) || !isFinite(maxPx) || maxPx <= minPx) return null;
       return { minPx, maxPx, widthPx: maxPx - minPx };
     } catch (_) {
       return null;
@@ -3011,26 +3007,20 @@ function ensureXmlHeader(xml) {
   function syncChildren(container, wantedCount, createNode) {
     const cur = container.children.length;
     if (cur < wantedCount) {
-      for (let i = cur; i < wantedCount; i++) {
-        container.appendChild(createNode());
-      }
+      for (let i = cur; i < wantedCount; i++) container.appendChild(createNode());
     } else if (cur > wantedCount) {
-      for (let i = 0; i < cur - wantedCount; i++) {
-        container.lastChild && container.removeChild(container.lastChild);
-      }
+      for (let i = 0; i < cur - wantedCount; i++) container.lastChild && container.removeChild(container.lastChild);
     }
   }
 
-  // observe the viewer box and its content so pages stay in sync
+  // Hookups: recompute on host resize and OSMD re-render
   function hookHost(host) {
     if (!host || host._m9Hooked) return;
     host._m9Hooked = true;
 
-    // Recompute on host resize (M7 zoom updates svgRect)
     const ro = new ResizeObserver(() => ensurePages(host));
     ro.observe(host);
 
-    // Recompute on OSMD re-render (new SVG)
     const mo = new MutationObserver((muts) => {
       for (const m of muts) {
         if (m.type === "childList") {
@@ -3044,18 +3034,15 @@ function ensureXmlHeader(xml) {
     host._m9ro = ro;
     host._m9mo = mo;
 
-    // initial paint
-    ensurePages(host);
+    ensurePages(host); // initial paint
   }
 
-  // If the viewer is already present
   function tryHookNow() {
     const host = document.getElementById("aa-osmd-box");
     if (host) hookHost(host);
   }
   document.addEventListener("DOMContentLoaded", tryHookNow);
 
-  // If the viewer appears later, catch it
   const docMO = new MutationObserver((muts) => {
     for (const m of muts) {
       for (const n of m.addedNodes) {
@@ -3070,10 +3057,10 @@ function ensureXmlHeader(xml) {
   });
   docMO.observe(document.documentElement, { childList: true, subtree: true });
 
-  // Re-run after each M7 render
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => ensurePages(host));
   }
 })();
+
 
 
