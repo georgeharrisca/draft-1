@@ -2974,85 +2974,75 @@ function ensureXmlHeader(xml) {
     }
   }
 
-  // Copy children from M7 overlay into page 1 overlay and position them
-  function syncOverlayToPage1(host, { pageW, pageH }) {
-    const overlaySrc = host.querySelector(".aa-overlay");
-    if (!overlaySrc) return;
+// Copy children from M7 overlay into page 1 overlay (dedup + clear)
+function syncOverlayToPage1(host, { pageW, pageH }) {
+  const overlaySrc = host.querySelector(".aa-overlay");
+  if (!overlaySrc) return;
 
-    const firstClip = host.querySelector(".aa-pageclips .aa-pageclip:first-child");
-    if (!firstClip) return;
+  const firstClip = host.querySelector(".aa-pageclips .aa-pageclip:first-child");
+  if (!firstClip) return;
 
-    let pageOverlay = firstClip.querySelector(".aa-overlay-page1");
-    if (!pageOverlay) {
-      setupPageOverlay(host, { pageW, pageH });
-      pageOverlay = firstClip.querySelector(".aa-overlay-page1");
-      if (!pageOverlay) return;
-    }
-
-    // move (not clone) — keep source clean
-    while (overlaySrc.firstChild) {
-      pageOverlay.appendChild(overlaySrc.firstChild);
-    }
-    // keep the source hidden so M7 can keep writing into it
-    overlaySrc.style.display = "none";
-
-    // position labels within page 1
-    requestAnimationFrame(() => positionPage1Labels(pageOverlay, pageW, pageH));
+  let pageOverlay = firstClip.querySelector(".aa-overlay-page1");
+  if (!pageOverlay) {
+    setupPageOverlay(host, { pageW, pageH });
+    pageOverlay = firstClip.querySelector(".aa-overlay-page1");
+    if (!pageOverlay) return;
   }
 
-  function positionPage1Labels(pageOverlay, pageW, pageH) {
-    const kids = Array.from(pageOverlay.children);
-    if (!kids.length) return;
-
-    const LEFT_MARGIN  = 18;
-    const TOP_MARGIN_L = 10;
-    const RIGHT_MARGIN = 40;
-    const TOP_MARGIN_R = 14;
-
-    function absolutize(el) {
-      el.style.position = "absolute";
-      el.style.left = "0";
-      el.style.top  = "0";
-      el.style.right = "auto";
-      el.style.bottom = "auto";
-      el.style.transform = "none";
-    }
-
-    // Left/top label — use the first text node we got
-    const leftEl = kids[0];
-    absolutize(leftEl);
-    leftEl.style.transform = `translate(${LEFT_MARGIN}px, ${TOP_MARGIN_L}px)`;
-
-    // Right/top label — use the last (if there are two)
-    const rightEl = kids[kids.length - 1];
-    if (rightEl && rightEl !== leftEl) {
-      absolutize(rightEl);
-      // measure after layout to right-align
-      const w = rightEl.getBoundingClientRect().width || 0;
-      const x = Math.max(0, pageW - RIGHT_MARGIN - w);
-      rightEl.style.transform = `translate(${x}px, ${TOP_MARGIN_R}px)`;
-    }
+  // Create a cheap signature of the source content to avoid duplicates
+  const sig = (overlaySrc.textContent || "").trim();
+  if (pageOverlay.dataset.sig === sig) {
+    // nothing new to sync
+    return;
   }
 
-  // Observe the M7 overlay so future updates get mirrored automatically
-  function watchM7Overlay(host, { pageW, pageH }) {
-    const overlaySrc = host.querySelector(".aa-overlay");
-    if (!overlaySrc) return;
+  // Clear page-1 overlay before moving new nodes in
+  while (pageOverlay.firstChild) pageOverlay.removeChild(pageOverlay.firstChild);
 
-    // if we already watch, refresh sizes and return
-    if (overlaySrc._m9Watcher) {
-      overlaySrc._m9Watcher._pageW = pageW;
-      overlaySrc._m9Watcher._pageH = pageH;
-      return;
-    }
+  // Move (not clone) current overlay children into the page overlay
+  while (overlaySrc.firstChild) pageOverlay.appendChild(overlaySrc.firstChild);
 
-    const mo = new MutationObserver(() => {
-      // pull whatever M7 just wrote and push to page1
-      syncOverlayToPage1(host, { pageW, pageH });
+  // Hide the source overlay so it doesn't render on top
+  overlaySrc.style.display = "none";
+
+  // Store signature for dedupe
+  pageOverlay.dataset.sig = sig;
+
+  // Position the two labels in page-1 coords
+  requestAnimationFrame(() => positionPage1Labels(pageOverlay, pageW, pageH));
+}
+
+// Observe the M7 overlay so future updates get mirrored automatically (debounced)
+function watchM7Overlay(host, { pageW, pageH }) {
+  const overlaySrc = host.querySelector(".aa-overlay");
+  if (!overlaySrc) return;
+
+  // Already watching? Just refresh metrics.
+  if (overlaySrc._m9Watcher) {
+    overlaySrc._m9Watcher._pageW = pageW;
+    overlaySrc._m9Watcher._pageH = pageH;
+    return;
+  }
+
+  let ticking = false;
+  const mo = new MutationObserver(() => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => {
+      try {
+        syncOverlayToPage1(host, { pageW: overlaySrc._m9Watcher?._pageW || pageW, pageH: overlaySrc._m9Watcher?._pageH || pageH });
+      } finally {
+        ticking = false;
+      }
     });
-    mo.observe(overlaySrc, { childList: true, subtree: false });
-    overlaySrc._m9Watcher = mo;
-  }
+  });
+
+  mo.observe(overlaySrc, { childList: true, subtree: false });
+  overlaySrc._m9Watcher = mo;
+  overlaySrc._m9Watcher._pageW = pageW;
+  overlaySrc._m9Watcher._pageH = pageH;
+}
+
 
   function hookHost(host) {
     if (!host || host._m9Hooked) return;
