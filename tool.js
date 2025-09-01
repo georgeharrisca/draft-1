@@ -1954,16 +1954,6 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       newPageFromXML: true
     });
 
-     if (typeof AA !== "undefined" && AA.on) {
-  AA.on("viewer:pageMetrics", ({ host }) => {
-    if (host === osmdBox) {
-      fitScoreToHeight(osmd, osmdBox);
-      scheduleOverlay();
-    }
-  });
-}
-
-
     const btnPDF    = btnRow.querySelector("#aa-btn-pdf");
     const btnXML    = btnRow.querySelector("#aa-btn-xml");
     const btnPDFAll = btnRow.querySelector("#aa-btn-pdf-all");
@@ -2054,6 +2044,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
         btnXML.disabled = false;
         scheduleOverlay();
 
+        // <-- emit AFTER a successful render (M9 listens to this)
         if (typeof AA !== "undefined" && AA.emit) {
           AA.emit("viewer:rendered", { osmd, host: osmdBox });
         }
@@ -2143,6 +2134,7 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
           xmlWork = applyScalingForBars(xmlWork, barsPerSystemChoice);
           if (window.AA_forceLetterLayoutXML) xmlWork = AA_forceLetterLayoutXML(xmlWork);
           xmlWork = withXmlProlog(xmlWork);
+
           zip.file(`${safe(songName)} - ${safe(it.label)}.musicxml`, xmlWork);
         }
         const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
@@ -2266,42 +2258,20 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 100);
   }
 
- // Vertical-fit only; keep intrinsic width for horizontal scroll
-function fitScoreToHeight(osmd, host){
-  const svg = host.querySelector("svg"); if (!svg) return;
-
-  // preferred: page height published by M9
-  const cs = getComputedStyle(host);
-  let avail = parseFloat(cs.getPropertyValue('--aa-page-inner-height')) || 0;
-
-  // fallback: host height minus vertical padding
-  if (!isFinite(avail) || avail <= 0) {
-    avail = host.clientHeight || 0;
-    const padTop = parseFloat(cs.paddingTop) || 0;
-    const padBottom = parseFloat(cs.paddingBottom) || 0;
-    avail = Math.max(0, avail - padTop - padBottom);
+  // Vertical-fit only; keep intrinsic width for horizontal scroll
+  function fitScoreToHeight(osmd, host){
+    const svg = host.querySelector("svg"); if (!svg) return;
+    const maxH = host.clientHeight; if (!maxH) return;
+    let svgH = 0; try { svgH = svg.getBBox().height; } catch(e){}
+    if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
+    if (!svgH) return;
+    const current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
+    const SHRINK = 0.90; // 90% vertical fit
+    let target = Math.min(current, (maxH * SHRINK) / svgH);
+    if (!isFinite(target) || target <= 0) target = 1;
+    target = Math.max(0.3, Math.min(1.5, target));
+    if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
   }
-  if (!avail) return;
-
-  // current rendered SVG height
-  let svgH = 0;
-  try { svgH = svg.getBBox().height; } catch(e){}
-  if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
-  if (!svgH) return;
-
-  const current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
-  const SHRINK = 0.90; // 90% of frame height
-  let target = Math.min(current, (avail * SHRINK) / svgH);
-
-  if (!isFinite(target) || target <= 0) target = 1;
-  target = Math.max(0.3, Math.min(2.0, target));
-
-  if (Math.abs(target - current) > 0.01) {
-    osmd.zoom = target;
-    osmd.render();
-  }
-}
-
   function forceIntrinsicSvgWidth(host){
     const svg = host.querySelector("svg"); if (!svg) return;
     let vbw = 0;
@@ -2480,7 +2450,6 @@ function fitScoreToHeight(osmd, host){
     // IMPORTANT: merge-only reset so instrumentData / libraryData remain
     if (typeof mergeState === "function") {
       mergeState({
-        // clear only what should reset
         instrumentSelections: [],
         parts: [],
         assignedResults: [],
@@ -3050,318 +3019,117 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M9) Viewer Page Frames (Letter) + Horizontal Pagination + Page-1 Overlays
-       + Clipped Page Views (score cut into pages above frames)
+   M9) Viewer Page Frames (Letter) + Horizontal Pagination
    ------------------------------------------------------------------------- */
 ;(function () {
-  const LETTER_RATIO    = 8.5 / 11;  // width / height
-  const GAP_BETWEEN     = 28;        // px gap between page frames
-  const TOP_BOTTOM_PAD  = 12;        // px inset from host top/bottom for frames
-  const LEFT_MIN_PAD    = 14;        // ensure a small left margin
+  const LETTER_RATIO = 8.5 / 11;   // width / height
+  const GAP_BETWEEN = 28;          // px gap between page frames
+  const TOP_BOTTOM_PAD = 12;       // px inset from host top/bottom for frames
 
-  function ensureLayout(host) {
-    const svg = host && host.querySelector("svg");
-    if (!host || !svg) return;
-
-    // host/SVG basic stacking
-    if (!/relative|absolute|fixed/.test(getComputedStyle(host).position)) {
-      host.style.position = "relative";
-    }
-    // The source svg stays hidden; page clones show the content
-    svg.style.position   = "relative";
-    svg.style.zIndex     = "5";      // low; clones are z=12
-    svg.style.visibility = "hidden"; // keep as source only
-
-    const hostH = host.clientHeight;
-    if (!hostH) return;
-
-    const pageH    = Math.max(1, Math.floor(hostH - TOP_BOTTOM_PAD * 2));
-    const pageW    = Math.max(1, Math.floor(pageH * LETTER_RATIO));
-    const svgRect  = svg.getBoundingClientRect();
-    const hostRect = host.getBoundingClientRect();
-    const contentW = Math.max(1, Math.ceil(svgRect.width));
-    const count    = Math.max(1, Math.ceil(contentW / pageW));
-
-    // Create/position: frames (z:1), page-views (z:12), page-clips (z:20 for overlays)
-    const frames    = ensureLayer(host, ".aa-pageframes", "position:absolute;inset:0;pointer-events:none;z-index:1;");
-    const pageviews = ensureLayer(host, ".aa-pageviews", "position:absolute;inset:0;pointer-events:none;z-index:12;");
-    const clips     = ensureLayer(host, ".aa-pageclips",  "position:absolute;inset:0;pointer-events:none;z-index:20;");
-
-    // children counts
-    adjustChildren(frames,    count, makeFrame);
-    adjustChildren(pageviews, count, makeView);
-    adjustChildren(clips,     count, makeClip);
-
-    // metrics
-    const leftPad  = Math.max(LEFT_MIN_PAD, parseInt(getComputedStyle(host).paddingLeft || "0", 10));
-    const offsetX  = svgRect.left - hostRect.left;  // svg origin relative to host
-    const offsetY  = svgRect.top  - hostRect.top;
-
-    for (let i = 0; i < count; i++) {
-      const pageX = leftPad + i * (pageW + GAP_BETWEEN);
-      // frames
-      positionBlock(frames.children[i],  pageX, TOP_BOTTOM_PAD, pageW, pageH);
-      // clipped views
-      const view = pageviews.children[i];
-      positionBlock(view, pageX, TOP_BOTTOM_PAD, pageW, pageH);
-      ensureClippedSvg(view, svg, { pageX, offsetX, offsetY });
-      // overlay clip boxes (for page-1 overlay only)
-      const clip = clips.children[i];
-      positionBlock(clip, pageX, TOP_BOTTOM_PAD, pageW, pageH);
-    }
-
-    // Prepare page-1 overlay container and mirror M7 overlay into it
-    setupPageOverlay(host, { pageW, pageH });
-    syncOverlayToPage1(host, { pageW, pageH });
-    watchM7Overlay(host, { pageW, pageH });
-  }
-
-  // --- helpers ----------------------------------------------------------
-
-  function ensureLayer(host, sel, css) {
-    let el = host.querySelector(sel);
-    if (!el) {
-      el = document.createElement("div");
-      el.className = sel.replace(/^\./, "");
-      el.style.cssText = css;
-      host.appendChild(el);
-    } else {
-      el.style.cssText = css;
-    }
-    return el;
-  }
-
-  function makeFrame() {
-    const f = document.createElement("div");
-    f.className = "aa-pageframe";
-    f.style.cssText = [
-      "position:absolute",
-      "border-radius:8px",
-      "background:#fff",
-      "box-shadow:0 4px 28px rgba(0,0,0,.12)",
-      "outline:1px solid rgba(0,0,0,.06)"
-    ].join(";");
-    return f;
-  }
-  function makeView() {
-    const v = document.createElement("div");
-    v.className = "aa-pageview";
-    v.style.cssText = [
-      "position:absolute",
-      "overflow:hidden",
-      "pointer-events:none"
-    ].join(";");
-    return v;
-  }
-  function makeClip() {
-    const c = document.createElement("div");
-    c.className = "aa-pageclip";
-    c.style.cssText = [
-      "position:absolute",
-      "overflow:hidden",
-      "pointer-events:none"
-    ].join(";");
-    return c;
-  }
-
-  function adjustChildren(container, targetCount, factory) {
-    const current = container.children.length;
-    if (current < targetCount) {
-      for (let i = current; i < targetCount; i++) container.appendChild(factory());
-    } else if (current > targetCount) {
-      for (let i = current; i > targetCount; i--) container.lastChild && container.removeChild(container.lastChild);
-    }
-  }
-
-  function positionBlock(el, x, y, w, h) {
-    el.style.left   = x + "px";
-    el.style.top    = y + "px";
-    el.style.width  = w + "px";
-    el.style.height = h + "px";
-  }
-
-  // Put a cloned SVG inside the pageview and offset it so only that page region shows
-  function ensureClippedSvg(pageview, sourceSvg, { pageX, offsetX, offsetY }) {
-    // container for the clone and its offset
-    let holder = pageview.querySelector(".aa-svgholder");
-    if (!holder) {
-      holder = document.createElement("div");
-      holder.className = "aa-svgholder";
-      holder.style.cssText = "position:absolute;left:0;top:0;";
-      pageview.appendChild(holder);
-    }
-    // always refresh clone on rerender
-    while (holder.firstChild) holder.removeChild(holder.firstChild);
-
-    const clone = sourceSvg.cloneNode(true);
-    // reset any width set by M7 so the clone matches true intrinsic width
-    clone.style.removeProperty("width");
-    clone.style.position = "relative";
-    holder.appendChild(clone);
-
-    // Negative offset so the correct slice of the big SVG appears inside this pageview
-    // pageview.left = pageX; host.left = 0; svg is at offsetX from host
-    holder.style.left = -(pageX + offsetX) + "px";
-    holder.style.top  = -(offsetY) + "px";
-  }
-
-  // --- overlay mirroring into page 1 ------------------------------------
-
-  function setupPageOverlay(host, { pageW, pageH }) {
-    const clips = host.querySelector(".aa-pageclips");
-    if (!clips || !clips.firstElementChild) return;
-
-    let pageOverlay = clips.firstElementChild.querySelector(".aa-overlay-page1");
-    if (!pageOverlay) {
-      pageOverlay = document.createElement("div");
-      pageOverlay.className = "aa-overlay-page1";
-      pageOverlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:21;";
-      clips.firstElementChild.appendChild(pageOverlay);
-    }
-    pageOverlay.style.width  = pageW + "px";
-    pageOverlay.style.height = pageH + "px";
-  }
-
-  function syncOverlayToPage1(host, { pageW, pageH }) {
-    const overlaySrc = host.querySelector(".aa-overlay");
-    if (!overlaySrc) return;
-
-    const firstClip = host.querySelector(".aa-pageclips .aa-pageclip:first-child");
-    if (!firstClip) return;
-
-    let pageOverlay = firstClip.querySelector(".aa-overlay-page1");
-    if (!pageOverlay) {
-      setupPageOverlay(host, { pageW, pageH });
-      pageOverlay = firstClip.querySelector(".aa-overlay-page1");
-      if (!pageOverlay) return;
-    }
-
-    if (!overlaySrc.firstChild) return; // nothing to mirror yet
-
-    const sig = (overlaySrc.textContent || "").trim();
-    if (!sig) return;
-    if (pageOverlay.dataset.sig === sig) return; // already mirrored
-
-    while (pageOverlay.firstChild) pageOverlay.removeChild(pageOverlay.firstChild);
-
-    let moved = false;
-    while (overlaySrc.firstChild) {
-      pageOverlay.appendChild(overlaySrc.firstChild);
-      moved = true;
-    }
-    if (moved) {
-      overlaySrc.style.display = "none";  // avoid duplicate overlays
-      pageOverlay.dataset.sig = sig;
-      requestAnimationFrame(() => positionPage1Labels(pageOverlay, pageW, pageH));
-    }
-  }
-
-  function watchM7Overlay(host, { pageW, pageH }) {
-    const overlaySrc = host.querySelector(".aa-overlay");
-    if (!overlaySrc) return;
-
-    if (overlaySrc._m9Watcher) {
-      overlaySrc._m9Watcher._pageW = pageW;
-      overlaySrc._m9Watcher._pageH = pageH;
-      return;
-    }
-
-    let ticking = false;
-    const mo = new MutationObserver(() => {
-      if (ticking) return;
-      ticking = true;
-      requestAnimationFrame(() => {
-        try {
-          syncOverlayToPage1(host, {
-            pageW: overlaySrc._m9Watcher?._pageW || pageW,
-            pageH: overlaySrc._m9Watcher?._pageH || pageH
-          });
-        } finally { ticking = false; }
-      });
-    });
-    mo.observe(overlaySrc, { childList: true, subtree: false });
-    overlaySrc._m9Watcher = mo;
-    overlaySrc._m9Watcher._pageW = pageW;
-    overlaySrc._m9Watcher._pageH = pageH;
-  }
-
-  function positionPage1Labels(pageOverlay, pageW, pageH) {
+  function ensureFrames(host) {
     try {
-      const nodes = Array.prototype.slice.call(pageOverlay.children || []);
-      if (!nodes.length) return;
+      if (!host) return;
+      const svg = host.querySelector("svg");
+      if (!svg) return;
 
-      for (const n of nodes) {
-        n.style.position = "absolute";
-        n.style.whiteSpace = "nowrap";
-        n.style.left = n.style.top = n.style.right = "";
+      // layer ordering: frames (0) < score SVG (1) < overlay titles (2)
+      svg.style.position = "relative";
+      svg.style.zIndex = "1";
+
+      let frames = host.querySelector(".aa-pageframes");
+      if (!frames) {
+        frames = document.createElement("div");
+        frames.className = "aa-pageframes";
+        frames.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:0;";
+        host.appendChild(frames);
       }
 
-      const inlineHadRight = (el) => /(^|;) *right *:/.test((el.getAttribute("style")||""));
-      let arranger = nodes.find(inlineHadRight);
-      if (!arranger && nodes.length > 1) arranger = nodes[nodes.length - 1];
-      const part = nodes.find(n => n !== arranger) || nodes[0];
+      // keep overlay titles above frames
+      const ov = host.querySelector(".aa-overlay");
+      if (ov) ov.style.zIndex = "2";
 
-      const TOP   = 10;
-      const LEFT  = 18;
-      const RIGHT = 20;
+      // actual drawn size
+      const svgRect = svg.getBoundingClientRect();
+      if (!svgRect.height || !svgRect.width) return;
 
-      if (part) {
-        part.style.left  = LEFT + "px";
-        part.style.top   = TOP  + "px";
-        part.style.right = "auto";
-        part.style.textAlign = "left";
+      const pageH = Math.max(1, Math.floor(svgRect.height)); // px
+      const pageW = Math.max(1, Math.floor(pageH * LETTER_RATIO));
+      const contentW = Math.max(1, Math.floor(svgRect.width));
+      const count = Math.max(1, Math.ceil(contentW / pageW));
+
+      // add/remove frames to match count
+      const current = frames.children.length;
+      if (current < count) {
+        for (let i = current; i < count; i++) {
+          const f = document.createElement("div");
+          f.className = "aa-pageframe";
+          f.style.cssText =
+            "position:absolute;" +
+            "border-radius:8px;background:#fff;" +
+            "box-shadow:0 4px 28px rgba(0,0,0,.12);" +   // <- fixed
+            "outline:1px solid rgba(0,0,0,.06);";        // <- fixed
+          frames.appendChild(f);
+        }
+      } else if (current > count) {
+        for (let i = 0; i < current - count; i++) {
+          frames.lastChild && frames.lastChild.remove();
+        }
       }
-      if (arranger) {
-        arranger.style.right = RIGHT + "px";
-        arranger.style.top   = TOP   + "px";
-        arranger.style.left  = "auto";
-        arranger.style.textAlign = "right";
-      }
+
+      const leftPad = Math.max(
+        14,
+        parseInt(getComputedStyle(host).paddingLeft || "0", 10)
+      );
+      const usableH = Math.max(1, pageH - TOP_BOTTOM_PAD * 2);
+
+      // position frames as a horizontal row
+      [...frames.children].forEach((f, idx) => {
+        const x = leftPad + idx * (pageW + GAP_BETWEEN);
+        f.style.left = x + "px";
+        f.style.top = TOP_BOTTOM_PAD + "px";
+        f.style.width = pageW + "px";
+        f.style.height = usableH + "px";
+      });
     } catch (e) {
-      console.warn("[M9] positionPage1Labels skipped:", e);
+      console.warn("[M9] ensureFrames skipped:", e);
     }
   }
 
-  // --- orchestration / hooks -------------------------------------------
-
-  function ensureAll(host) {
-    if (!host) return;
-    const svg = host.querySelector("svg");
-    if (!svg) return;
-
-    ensureLayout(host);
-  }
-
+  // observe the viewer box and its content so frames stay in sync
   function hookHost(host) {
     if (!host || host._m9Hooked) return;
     host._m9Hooked = true;
 
-    const ro = new ResizeObserver(() => ensureAll(host));
+    const ro = new ResizeObserver(() => ensureFrames(host));
     ro.observe(host);
 
     const mo = new MutationObserver((muts) => {
       for (const m of muts) {
-        if (m.type === "childList") { ensureAll(host); return; }
+        if (m.type === "childList") {
+          // new SVG or re-render — refresh frames
+          ensureFrames(host);
+          return;
+        }
       }
     });
     mo.observe(host, { childList: true, subtree: true });
 
+    // stash for optional cleanup
     host._m9ro = ro;
     host._m9mo = mo;
 
-    ensureAll(host);
+    // initial paint
+    ensureFrames(host);
   }
 
+  // If the viewer is already present
   function tryHookNow() {
     const host = document.getElementById("aa-osmd-box");
     if (host) hookHost(host);
   }
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", tryHookNow);
-  } else {
-    tryHookNow();
-  }
+  document.addEventListener("DOMContentLoaded", tryHookNow);
 
+  // If the viewer appears later, catch it
   const docMO = new MutationObserver((muts) => {
     for (const m of muts) {
       for (const n of m.addedNodes) {
@@ -3376,7 +3144,9 @@ function ensureXmlHeader(xml) {
   });
   docMO.observe(document.documentElement, { childList: true, subtree: true });
 
+  // React to the post-render event from M7
   if (typeof AA !== "undefined" && AA.on) {
-    AA.on("viewer:rendered", ({ host }) => ensureAll(host));
+    AA.on("viewer:rendered", ({ host }) => ensureFrames(host));
   }
 })();
+
