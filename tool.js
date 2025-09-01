@@ -2825,7 +2825,7 @@ function ensureXmlHeader(xml) {
 
 /* =========================================================================
    M9) Visual Page Frames (Letter) + True Horizontal Pagination (sliced SVG)
-       + Overlay anchored to the first page only
+       + Overlay anchored to first page (auto-sync)
    ------------------------------------------------------------------------- */
 ;(function () {
   const LETTER_RATIO   = 8.5 / 11; // width/height
@@ -2869,13 +2869,13 @@ function ensureXmlHeader(xml) {
       const pageH = Math.max(1, Math.floor(hostH - TOP_BOTTOM_PAD * 2));
       const pageW = Math.max(1, Math.floor(pageH * LETTER_RATIO));
 
-      // let M7 know the inner page height for 90% vertical fit
+      // share page height with M7 if needed
       host.style.setProperty("--aa-page-inner-height", pageH + "px");
       if (typeof AA !== "undefined" && AA.emit) {
         AA.emit("viewer:pageMetrics", { host, pageH });
       }
 
-      // Score width in SVG space
+      // Content width in SVG units
       const vb = svg.viewBox && svg.viewBox.baseVal;
       let contentW = vb && vb.width ? vb.width : 0;
       if (!contentW) { try { contentW = svg.getBBox().width; } catch (_) {} }
@@ -2921,6 +2921,7 @@ function ensureXmlHeader(xml) {
         clip.style.width  = pageW + "px";
         clip.style.height = pageH + "px";
 
+        // inner holder that we shift left to reveal each slice of the full SVG
         let inner = clip.querySelector(".pg-inner");
         if (!inner) {
           inner = document.createElement("div");
@@ -2929,6 +2930,7 @@ function ensureXmlHeader(xml) {
           clip.appendChild(inner);
         }
 
+        // clone the current score SVG (visible copy)
         let clone = inner.querySelector("svg");
         if (!clone) {
           clearNode(inner);
@@ -2939,47 +2941,66 @@ function ensureXmlHeader(xml) {
           inner.appendChild(clone);
         }
 
-        // Horizontal slice offset
+        // Horizontal slice offset (in SVG units)
         const sliceOffset = i * pageW;
         inner.style.transform = `translateX(${-sliceOffset}px)`;
       }
 
-      // Move & normalize overlay into FIRST page, so it scrolls with page 1 only
-      moveOverlayIntoFirstPage(host, { pageW, pageH });
+      // Make sure we have a page-anchored overlay container on page 1
+      setupPageOverlay(host, { pageW, pageH });
+
+      // Sync current M7 overlay content into page-1 overlay now
+      syncOverlayToPage1(host, { pageW, pageH });
+
+      // Start/refresh a watcher so future M7 overlay updates get mirrored too
+      watchM7Overlay(host, { pageW, pageH });
 
     } catch (e) {
       console.warn("[M9] ensurePages skipped:", e);
     }
   }
 
-  // Take .aa-overlay (from M7), move its children into the first page clip, and position them.
-  function moveOverlayIntoFirstPage(host, { pageW, pageH }) {
+  // Create overlay container on page 1 (if absent)
+  function setupPageOverlay(host, { pageW, pageH }) {
+    const firstClip = host.querySelector(".aa-pageclips .aa-pageclip:first-child");
+    if (!firstClip) return;
+
+    let pageOverlay = firstClip.querySelector(".aa-overlay-page1");
+    if (!pageOverlay) {
+      pageOverlay = document.createElement("div");
+      pageOverlay.className = "aa-overlay-page1";
+      pageOverlay.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:5;";
+      firstClip.appendChild(pageOverlay);
+    }
+  }
+
+  // Copy children from M7 overlay into page 1 overlay and position them
+  function syncOverlayToPage1(host, { pageW, pageH }) {
     const overlaySrc = host.querySelector(".aa-overlay");
     if (!overlaySrc) return;
 
     const firstClip = host.querySelector(".aa-pageclips .aa-pageclip:first-child");
     if (!firstClip) return;
 
-    // Create/refresh a page-anchored overlay container
     let pageOverlay = firstClip.querySelector(".aa-overlay-page1");
     if (!pageOverlay) {
-      pageOverlay = document.createElement("div");
-      pageOverlay.className = "aa-overlay-page1";
-      pageOverlay.style.cssText =
-        "position:absolute;inset:0;pointer-events:none;z-index:5;";
-      firstClip.appendChild(pageOverlay);
-    } else {
-      pageOverlay.innerHTML = "";
+      setupPageOverlay(host, { pageW, pageH });
+      pageOverlay = firstClip.querySelector(".aa-overlay-page1");
+      if (!pageOverlay) return;
     }
 
-    // Move only the children (keep original overlay element for M7 reuse)
+    // move (not clone) — keep source clean
     while (overlaySrc.firstChild) {
       pageOverlay.appendChild(overlaySrc.firstChild);
     }
-    // Hide the source container so it doesn't visually interfere
+    // keep the source hidden so M7 can keep writing into it
     overlaySrc.style.display = "none";
 
-    // Position labels within the first page
+    // position labels within page 1
+    requestAnimationFrame(() => positionPage1Labels(pageOverlay, pageW, pageH));
+  }
+
+  function positionPage1Labels(pageOverlay, pageW, pageH) {
     const kids = Array.from(pageOverlay.children);
     if (!kids.length) return;
 
@@ -2997,17 +3018,40 @@ function ensureXmlHeader(xml) {
       el.style.transform = "none";
     }
 
-    // Left/top label (first)
-    absolutize(kids[0]);
-    kids[0].style.transform = `translate(${LEFT_MARGIN}px, ${TOP_MARGIN_L}px)`;
+    // Left/top label — use the first text node we got
+    const leftEl = kids[0];
+    absolutize(leftEl);
+    leftEl.style.transform = `translate(${LEFT_MARGIN}px, ${TOP_MARGIN_L}px)`;
 
-    // Right/top label (last)
+    // Right/top label — use the last (if there are two)
     const rightEl = kids[kids.length - 1];
-    absolutize(rightEl);
-    // Measure after insertion to compute right alignment
-    const w = rightEl.getBoundingClientRect().width || 0;
-    const x = Math.max(0, pageW - RIGHT_MARGIN - w);
-    rightEl.style.transform = `translate(${x}px, ${TOP_MARGIN_R}px)`;
+    if (rightEl && rightEl !== leftEl) {
+      absolutize(rightEl);
+      // measure after layout to right-align
+      const w = rightEl.getBoundingClientRect().width || 0;
+      const x = Math.max(0, pageW - RIGHT_MARGIN - w);
+      rightEl.style.transform = `translate(${x}px, ${TOP_MARGIN_R}px)`;
+    }
+  }
+
+  // Observe the M7 overlay so future updates get mirrored automatically
+  function watchM7Overlay(host, { pageW, pageH }) {
+    const overlaySrc = host.querySelector(".aa-overlay");
+    if (!overlaySrc) return;
+
+    // if we already watch, refresh sizes and return
+    if (overlaySrc._m9Watcher) {
+      overlaySrc._m9Watcher._pageW = pageW;
+      overlaySrc._m9Watcher._pageH = pageH;
+      return;
+    }
+
+    const mo = new MutationObserver(() => {
+      // pull whatever M7 just wrote and push to page1
+      syncOverlayToPage1(host, { pageW, pageH });
+    });
+    mo.observe(overlaySrc, { childList: true, subtree: false });
+    overlaySrc._m9Watcher = mo;
   }
 
   function hookHost(host) {
@@ -3019,7 +3063,10 @@ function ensureXmlHeader(xml) {
 
     const mo = new MutationObserver((muts) => {
       for (const m of muts) {
-        if (m.type === "childList") { ensurePages(host); return; }
+        if (m.type === "childList") {
+          ensurePages(host);
+          return;
+        }
       }
     });
     mo.observe(host, { childList: true, subtree: true });
