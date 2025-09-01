@@ -3026,24 +3026,24 @@ function ensureXmlHeader(xml) {
   const TOP_BOTTOM_PAD = 12;        // px inset from host top/bottom for frames
   const LEFT_MIN_PAD   = 14;        // min left pad inside host (align with host padding)
 
-  // z-order (host must be position:relative)
-  // 0: host background
-  // 1: frames (visual pages with shadow)
-  // 2: OSMD SVG (score)
-  // 3: cuts/scrims (hide score outside pages & between pages)
-  // 4: overlay titles (part/score & arranger)
-  const Z_FRAMES = 1;
-  const Z_SVG    = 2;
-  const Z_CUTS   = 3;
-  const Z_OVLY   = 4;
+  // z-order inside #aa-osmd-box (host must be position:relative)
+  // 0: frames (visual pages with shadow)
+  // 1: OSMD SVG (score)
+  // 2: cuts/scrims (hide score outside pages & between pages)
+  // 3: overlay titles (part/score & arranger)
+  const Z_FRAMES = 0;
+  const Z_SVG    = 1;
+  const Z_CUTS   = 2;
+  const Z_OVLY   = 3;
 
   // ---- main hook --------------------------------------------------------
   function hookHost(host) {
     if (!host || host._m9Hooked) return;
     host._m9Hooked = true;
-    if (getComputedStyle(host).position === "static") {
-      host.style.position = "relative";
-    }
+
+    // Make sure the host forms a stacking context
+    const cs = getComputedStyle(host);
+    if (cs.position === "static") host.style.position = "relative";
 
     const ro = new ResizeObserver(() => layout(host));
     ro.observe(host);
@@ -3059,14 +3059,12 @@ function ensureXmlHeader(xml) {
     });
     mo.observe(host, { childList:true, subtree:true });
 
+    // Pin overlays to page 1 regardless of horizontal scroll
     const onScroll = () => {
-      // keep overlays pinned to viewport (page 1 corner), independent of scroll
       const ov = host.querySelector(".aa-overlay");
-      if (ov) {
-        ov.style.transform = `translateX(${host.scrollLeft}px)`;
-      }
+      if (ov) ov.style.transform = `translateX(${host.scrollLeft}px)`;
     };
-    host.addEventListener("scroll", onScroll);
+    host.addEventListener("scroll", onScroll, { passive: true });
 
     host._m9ro = ro;
     host._m9mo = mo;
@@ -3076,12 +3074,12 @@ function ensureXmlHeader(xml) {
     layout(host);
   }
 
-  // called by M7 after each successful render
+  // Listen for M7 after each successful render
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => layout(host));
   }
 
-  // safety nets: try to hook if viewer already exists or appears later
+  // Hook if viewer already exists / appears later
   document.addEventListener("DOMContentLoaded", () => {
     const host = document.getElementById("aa-osmd-box");
     if (host) hookHost(host);
@@ -3106,15 +3104,15 @@ function ensureXmlHeader(xml) {
       const svg = host.querySelector("svg");
       if (!svg) return;
 
-      // layer the SVG above frames
+      // Stack the layers explicitly
       svg.style.position = "relative";
       svg.style.zIndex   = String(Z_SVG);
 
       const dims = computeDims(host, svg);
-      ensureFrames(host, dims);
-      ensureCuts(host, dims);
-      ensureScrims(host, dims);
-      pinOverlayToPage1(host, dims);
+      ensureFrames(host, dims);     // z-index 0  (behind score)
+      ensureCuts(host, dims);       // z-index 2  (clip between/above/below)
+      ensureScrims(host, dims);     // z-index 2
+      pinOverlayToPage1(host, dims);// z-index 3  (top)
     } catch (e) {
       console.warn("[M9] layout skipped:", e);
     }
@@ -3129,7 +3127,7 @@ function ensureXmlHeader(xml) {
 
     // page height locked to host height (no vertical scroll), with small top/bottom pad
     const usableH  = Math.max(1, hostH - TOP_BOTTOM_PAD * 2);
-    const pageH    = usableH; // the inner page height we show
+    const pageH    = usableH;
     const pageW    = Math.max(1, Math.floor(pageH * LETTER_RATIO));
 
     // actual drawn width of the SVG (after OSMD zoom)
@@ -3171,8 +3169,8 @@ function ensureXmlHeader(xml) {
         "position:absolute",
         "border-radius:8px",
         "background:#fff",
-        "box-shadow:0 4px 28px rgba(0,0,0,.12)",
-        "outline:1px solid rgba(0,0,0,.06)"
+        "box-shadow:0 6px 28px rgba(0,0,0,.16)",
+        "outline:2px solid rgba(0,0,0,.12)"
       ].join(";");
       return f;
     });
@@ -3206,7 +3204,7 @@ function ensureXmlHeader(xml) {
       g.className = "aa-pagecut";
       g.style.cssText = [
         "position:absolute",
-        "background:#fff" // same as frame background to visually cut the score
+        "background:#fff"
       ].join(";");
       return g;
     });
@@ -3228,13 +3226,13 @@ function ensureXmlHeader(xml) {
       scrims = document.createElement("div");
       scrims.className = "aa-pagescrims";
       scrims.style.cssText = "position:absolute;inset:0;pointer-events:none;";
-      scrims.style.zIndex = String(Z_CUTS); // same layer as cuts, above svg
+      scrims.style.zIndex = String(Z_CUTS); // above svg, same as cuts
       host.appendChild(scrims);
     } else {
       scrims.style.zIndex = String(Z_CUTS);
     }
 
-    // we keep exactly two scrims: top & bottom
+    // exactly two scrims: top & bottom
     syncChildCount(scrims, 2, (i) => {
       const s = document.createElement("div");
       s.className = i === 0 ? "aa-scrim-top" : "aa-scrim-bottom";
@@ -3260,25 +3258,24 @@ function ensureXmlHeader(xml) {
     const overlay = host.querySelector(".aa-overlay");
     if (!overlay) return;
 
-    // ensure overlay is on top and pinned horizontally to viewport
+    // Overlay container lives above everything and cancels horizontal scroll
     overlay.style.position = "absolute";
     overlay.style.inset    = "0";
     overlay.style.pointerEvents = "none";
     overlay.style.zIndex   = String(Z_OVLY);
-    overlay.style.transform = `translateX(${host.scrollLeft}px)`; // pin against horizontal scroll
+    overlay.style.transform = `translateX(${host.scrollLeft}px)`; // keep pinned to viewport
 
-    // locate overlay children created by M7 (expected: [part/score, arranger])
+    // locate overlay children created by M7 (expected: first two)
     const kids = overlay.querySelectorAll("div");
     const partEl = kids[0] || null;
     const arrEl  = kids[1] || null;
 
-    // base font sizing stays as M7 computed; we just move them to page 1 corners
-    // page 1 rect inside host:
+    // page 1 geometry inside host:
     const pageLeft  = d.padLeft;
     const pageTop   = TOP_BOTTOM_PAD;
     const pageRight = d.padLeft + d.pageW;
 
-    // small inner insets on the page for titles
+    // inner insets on the page
     const PART_LEFT_INSET = 18;
     const PART_TOP_INSET  = 10;
 
@@ -3286,16 +3283,20 @@ function ensureXmlHeader(xml) {
     const ARR_TOP_INSET   = 14;
 
     if (partEl) {
+      // anchor to top-left of page 1
+      partEl.style.position = "absolute";
       partEl.style.left = (pageLeft + PART_LEFT_INSET) + "px";
       partEl.style.top  = (pageTop  + PART_TOP_INSET)  + "px";
-      // clear right alignment if any
       partEl.style.right = "";
     }
 
     if (arrEl) {
-      arrEl.style.right = (Math.max(0, host.clientWidth - pageRight) + ARR_RIGHT_INSET) + "px";
+      // anchor to top-right of page 1
+      arrEl.style.position = "absolute";
+      // distance from overlay’s right edge to page 1 right edge:
+      const rightOffset = Math.max(0, host.clientWidth - pageRight) + ARR_RIGHT_INSET;
+      arrEl.style.right = rightOffset + "px";
       arrEl.style.top   = (pageTop + ARR_TOP_INSET) + "px";
-      // clear left alignment if any
       arrEl.style.left = "";
       arrEl.style.textAlign = "right";
     }
@@ -3315,3 +3316,4 @@ function ensureXmlHeader(xml) {
     }
   }
 })();
+
