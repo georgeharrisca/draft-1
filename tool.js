@@ -3211,90 +3211,101 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M10) Sequential pagination fit (robust)
-        - find OSMD systems; if none, synthesize from measures
-        - stretch each system to page inner width
-        - left-align to first page and paginate top→bottom
+   M10) Sequential pagination fit (diagnostic + robust)
+        - Find systems (native OSMD -> fallback to vf-stave clustering)
+        - If nothing found, print a selector report to console
+        - Stretch each system to page inner width, stack into pages
+        - Left-align to page 1; stacking respects page frames from M9
    ------------------------------------------------------------------------- */
 ;(function () {
-  // Run after M7 finishes a render
+  // Wire into M7 render cycle
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => {
-      try { m10_fit(host); } catch (e) { console.warn("[M10] error:", e); }
+      try { m10_run(host); } catch (e) { console.warn("[M10] error:", e); }
     });
   }
 
-  // Re-run on viewer resize (keeps vertical-fit feel)
+  // Also react to host resize (keeps the “fit vertically minus 10%” feel)
   const ro = new ResizeObserver(() => {
     const host = document.getElementById("aa-osmd-box");
     if (host && host.querySelector("svg")) {
-      try { m10_fit(host); } catch (_) {}
+      try { m10_run(host); } catch(_) {}
     }
   });
-  const initRO = () => { const h = document.getElementById("aa-osmd-box"); if (h) ro.observe(h); };
+  const tryRO = () => { const h = document.getElementById("aa-osmd-box"); if (h) ro.observe(h); };
   (document.readyState === "loading")
-    ? document.addEventListener("DOMContentLoaded", initRO)
-    : initRO();
+    ? document.addEventListener("DOMContentLoaded", tryRO)
+    : tryRO();
 
-  function m10_fit(host) {
+  // ---------------- core ----------------
+  function m10_run(host) {
     if (!host) return;
     const svg = host.querySelector("svg");
     const framesWrap = host.querySelector(".aa-pageframes");
     if (!svg || !framesWrap) return;
 
-    // Stacking: frames (1) < svg (2) < overlays (3)
+    // z-order: frames (1) < svg (2) < overlays (3)
     const ov = host.querySelector(".aa-overlay");
     framesWrap.style.zIndex = "1";
     svg.style.position = "relative"; svg.style.zIndex = "2";
     if (ov) ov.style.zIndex = "3";
 
-    // Clear old transforms from previous runs
+    // clear previous transforms from M10
     cleanupOld(svg);
 
     const frames = collectFrames(framesWrap);
     if (!frames.length) return;
 
-    // 1) Try native OSMD systems
-    let systems = findOsmdSystems(svg);
-    let mode = "native";
+    // 1) try several “native” system patterns
+    let systems = findSystemsNative(svg);
 
-    // 2) Fallback: synthesize systems by clustering measures by Y
+    // 2) fallback: cluster by VexFlow staves (vf-stave) if present
+    let mode = "native";
     if (!systems.length) {
-      systems = synthesizeSystems(svg);
-      mode = "synth";
+      systems = synthesizeSystemsFromVexStaves(svg);
+      mode = systems.length ? "stave-cluster" : "none";
+    }
+
+    // 3) ultimate fallback: very broad measure clustering (more inclusive)
+    if (!systems.length) {
+      systems = synthesizeSystemsBroad(svg);
+      if (systems.length) mode = "broad-cluster";
     }
 
     if (!systems.length) {
-      console.info("[M10] no systems found (native or synth) — skipping.");
+      // print a compact debug report to help target your exact SVG
+      debugSelectorReport(svg);
+      console.info("[M10] no systems found — skipping fit/pagination.");
       return;
     }
+
     console.log(`[M10] mode=${mode}; systems=${systems.length}; frames=${frames.length}`);
 
-    // Precompute original bboxes
+    // Precompute bboxes and order in reading order
     const items = systems.map(g => ({ g, bb: safeBBox(g) }))
+                         .filter(it => it.bb.width > 0 && it.bb.height > 0)
                          .sort((a,b) => (a.bb.y === b.bb.y ? a.bb.x - b.bb.x : a.bb.y - b.bb.y));
 
-    // Paginate sequentially from page 0
-    let pIdx = 0;
+    // paginate
+    let pageIdx = 0;
     let cursorY = pageInnerTop(frames[0]);
     const vGap = 14;
 
     for (const it of items) {
-      if (!frames[pIdx]) break;
-
-      const frame = frames[pIdx];
+      if (!frames[pageIdx]) break;
+      const frame = frames[pageIdx];
       const inner = innerRect(frame);
 
       const bb0 = it.bb;
-      // horizontal scale only
+      // horizontal stretch only
       const sx  = clamp(inner.width / Math.max(1, bb0.width), 0.5, 3.0);
       const sysH = bb0.height;
 
-      // overflow → next page
+      // move to next page when overflowing vertically
       if ((cursorY + sysH) > (inner.top + inner.height)) {
-        pIdx++;
-        if (!frames[pIdx]) break;
-        cursorY = pageInnerTop(frames[pIdx]);
+        pageIdx++;
+        if (!frames[pageIdx]) break;
+        cursorY = pageInnerTop(frames[pageIdx]);
       }
 
       const tx = inner.left - bb0.x;
@@ -3305,76 +3316,116 @@ function ensureXmlHeader(xml) {
     }
   }
 
-  // ---------- discovery/selectors ----------
-  function findOsmdSystems(svg) {
-    // Prefer page->System direct children
-    const pages = Array.from(svg.querySelectorAll('g[id^="page"], g[id^="Page"], g[id^="osmdPage"]'));
+  // -------------- discovery (native) --------------
+  function findSystemsNative(svg) {
+    // page -> System children
+    const pageCandidates = Array.from(
+      svg.querySelectorAll('g[id^="page"], g[id^="Page"], g[id^="osmdPage"], g[id^="osmdSvgPage"], g[id^="osmdSvgPage"], g[id^="osmdPage"]')
+    );
     let systems = [];
-    for (const pg of pages) {
+    for (const pg of pageCandidates) {
       const direct = Array.from(pg.children)
-        .filter(n => n.nodeName.toLowerCase() === "g" && /(^system\d+$)|(^System\d+$)/.test(n.id || ""));
+        .filter(n => n.nodeName.toLowerCase() === "g" && /(^system\d+$)|(^System\d+$)|(^System[-_]\d+$)/.test(n.id || ""));
       if (direct.length) systems.push(...direct);
     }
     if (systems.length) return systems;
 
-    // Common alternates
-    systems = Array.from(svg.querySelectorAll('g.system, g.System'));
+    // direct system classes
+    systems = Array.from(svg.querySelectorAll('g.system, g.System, g[class*="system"]'));
     if (systems.length) return systems;
 
-    // Loose id match (avoid inner subgroups with underscores)
+    // ids containing “System”, avoid obvious subgroups (with underscores) to reduce noise
     systems = Array.from(svg.querySelectorAll('g[id]'))
       .filter(g => /system/i.test(g.id || "") && !/_/.test(g.id || ""));
     return systems;
   }
 
-  // Fallback: cluster measures by Y to build synthetic systems
-  function synthesizeSystems(svg) {
-    const measureGs = Array.from(svg.querySelectorAll('g[id*="Measure"], g[id*="measure"]'));
-    if (!measureGs.length) return [];
+  // -------------- fallback: cluster from VexFlow staves --------------
+  function synthesizeSystemsFromVexStaves(svg) {
+    const staves = Array.from(svg.querySelectorAll('.vf-stave, [class*="vf-stave"]'))
+      .map(el => ({ el, bb: safeBBox(el) }))
+      .filter(s => s.bb.width > 0 && s.bb.height > 0)
+      .sort((a,b) => (a.bb.y === b.bb.y ? a.bb.x - b.bb.x : a.bb.y - b.bb.y));
 
-    const measures = measureGs.map(g => ({ g, bb: safeBBox(g) }))
-                              .filter(m => isFinite(m.bb.y) && m.bb.height > 0)
-                              .sort((a,b) => (a.bb.y === b.bb.y ? a.bb.x - b.bb.x : a.bb.y - b.bb.y));
+    if (!staves.length) return [];
 
-    const clusters = [];
-    const Y_THRESH = 28; // measures within this Y diff belong to same system (tweakable)
-    for (const m of measures) {
-      const yMid = m.bb.y + m.bb.height / 2;
+    // group staves by vertical proximity into “systems”
+    const systems = [];
+    const Y_THRESH = estimateYThresh(staves.map(s => s.bb.height)); // adaptive
+    for (const s of staves) {
+      const yMid = s.bb.y + s.bb.height / 2;
       let placed = false;
-      for (const c of clusters) {
-        if (Math.abs(c.yRef - yMid) <= Y_THRESH) {
-          c.items.push(m); c.yRef = (c.yRef * c.items.length + yMid) / (c.items.length + 1);
+      for (const sys of systems) {
+        if (Math.abs(sys.yRef - yMid) <= Y_THRESH) {
+          sys.items.push(s); sys.yRef = (sys.yRef * sys.items.length + yMid) / (sys.items.length + 1);
           placed = true; break;
         }
       }
-      if (!placed) clusters.push({ items:[m], yRef: yMid });
+      if (!placed) systems.push({ items:[s], yRef: yMid });
     }
 
-    // Wrap each cluster into a synthetic system group
+    // wrap every item in a page-level group band (union bbox of items)
     let idx = 1;
-    const systems = [];
-    for (const c of clusters) {
-      const items = c.items.map(x => x.g);
-      if (!items.length) continue;
-      const sys = wrapAsGroup(svg, items, `m10SynthSystem${idx++}`);
-      if (sys) systems.push(sys);
+    const out = [];
+    for (const c of systems) {
+      const nodes = c.items.map(x => x.el);
+      const g = wrapAsGroup(svg, nodes, `m10_stave_sys_${idx++}`);
+      if (g) out.push(g);
     }
-    return systems;
+    return out;
   }
 
-  // Create a <g> wrapper and move nodes into it (keeps relative order)
-  function wrapAsGroup(svg, nodes, id) {
-    if (!nodes || !nodes.length) return null;
-    const parent = nodes[0].parentNode;
-    if (!parent) return null;
-    const g = document.createElementNS(svg.namespaceURI, "g");
-    g.setAttribute("id", id);
-    parent.insertBefore(g, nodes[0]);
-    for (const n of nodes) g.appendChild(n);
-    return g;
+  // -------------- very broad fallback: cluster any “measure-like” groups --------------
+  function synthesizeSystemsBroad(svg) {
+    const groups = Array.from(svg.querySelectorAll('g[id], g[class]'));
+    // keep only reasonably “line-ish” things to reduce noise
+    const candidates = groups.map(g => ({ g, bb: safeBBox(g) }))
+      .filter(x => x.bb.width > 60 && x.bb.height > 6)            // non-trivial size
+      .sort((a,b) => (a.bb.y === b.bb.y ? a.bb.x - b.bb.x : a.bb.y - b.bb.y));
+
+    if (!candidates.length) return [];
+
+    // cluster by Y, but be stricter to form fewer, wider bands
+    const systems = [];
+    const Y_THRESH = estimateYThresh(candidates.map(c => c.bb.height)) * 1.25;
+    for (const c of candidates) {
+      const yMid = c.bb.y + c.bb.height / 2;
+      let placed = false;
+      for (const sys of systems) {
+        if (Math.abs(sys.yRef - yMid) <= Y_THRESH) {
+          sys.items.push(c); sys.yRef = (sys.yRef * sys.items.length + yMid) / (sys.items.length + 1);
+          placed = true; break;
+        }
+      }
+      if (!placed) systems.push({ items:[c], yRef: yMid });
+    }
+
+    // merge tiny systems (caused by titles/credits) into neighbors when close
+    const merged = [];
+    const MIN_ITEMS = 4; // tweak
+    for (const s of systems) {
+      if (!merged.length) { merged.push(s); continue; }
+      const prev = merged[merged.length - 1];
+      if (s.items.length < MIN_ITEMS && Math.abs(prev.yRef - s.yRef) < (Y_THRESH * 0.8)) {
+        prev.items.push(...s.items);
+        prev.yRef = (prev.yRef + s.yRef) / 2;
+      } else {
+        merged.push(s);
+      }
+    }
+
+    // wrap
+    let idx = 1;
+    const out = [];
+    for (const c of merged) {
+      const nodes = c.items.map(x => x.g);
+      const g = wrapAsGroup(svg, nodes, `m10_broad_sys_${idx++}`);
+      if (g) out.push(g);
+    }
+    return out;
   }
 
-  // ---------- layout helpers ----------
+  // -------------- layout helpers & utils --------------
   function collectFrames(framesWrap) {
     const out = [];
     framesWrap.querySelectorAll(".aa-pageframe").forEach(el => {
@@ -3395,7 +3446,6 @@ function ensureXmlHeader(xml) {
     };
   }
 
-  // ---------- transform & bbox ----------
   function cleanupOld(svg) {
     svg.querySelectorAll("[data-m10]").forEach(g => {
       const orig = g.getAttribute("data-m10-transform-orig");
@@ -3414,11 +3464,62 @@ function ensureXmlHeader(xml) {
     g.setAttribute("transform", `translate(${tx},${ty}) scale(${sx},1)`);
     g.setAttribute("data-m10", "1");
   }
+  function wrapAsGroup(svg, nodes, id) {
+    if (!nodes || !nodes.length) return null;
+    // find a common ancestor to keep z-order stable; use the parent of the first node
+    const parent = nodes[0].parentNode;
+    if (!parent) return null;
+    const g = document.createElementNS(svg.namespaceURI, "g");
+    g.setAttribute("id", id);
+    parent.insertBefore(g, nodes[0]);
+    for (const n of nodes) g.appendChild(n);
+    return g;
+  }
   function safeBBox(el) {
     try { return el.getBBox(); }
-    catch (_) { return { x:0, y:0, width:1, height:1 }; }
+    catch (_) { return { x:0, y:0, width:0, height:0 }; }
   }
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  function estimateYThresh(heights) {
+    if (!heights.length) return 24;
+    const sorted = heights.slice().sort((a,b)=>a-b);
+    const med = sorted[Math.floor(sorted.length/2)] || 24;
+    return Math.max(12, Math.min(80, med * 1.25));
+  }
+
+  // -------------- debug report --------------
+  function debugSelectorReport(svg) {
+    // quick counts to see what the SVG actually contains
+    const count = sel => svg.querySelectorAll(sel).length;
+    const report = {
+      g_total: svg.querySelectorAll("g").length,
+      page_id_counts: {
+        page: count('g[id^="page"]'),
+        Page: count('g[id^="Page"]'),
+        osmdPage: count('g[id^="osmdPage"]'),
+        osmdSvgPage: count('g[id^="osmdSvgPage"]')
+      },
+      system_candidates: {
+        byClass_system: count('g.system, g.System, g[class*="system"]'),
+        byId_system: count('g[id*="System"], g[id*="system"]')
+      },
+      vexflow: {
+        vf_stave: count('.vf-stave, [class*="vf-stave"]'),
+        vf_note: count('[class*="vf-note"], [class*="vf-stavenote"]')
+      },
+      measures_guess: {
+        id_measure: count('g[id*="Measure"], g[id*="measure"]'),
+        class_measure: count('g[class*="measure"]')
+      }
+    };
+    console.log("[M10] selector report:", report);
+
+    // sample the first ~20 group ids/classes so we can pattern-match quickly
+    const sample = Array.from(svg.querySelectorAll("g"))
+      .slice(0, 20)
+      .map(g => ({ id: g.id || "", class: (g.getAttribute("class") || "").split(/\s+/).slice(0,3).join(" ") }));
+    console.log("[M10] sample g (first 20):", sample);
+  }
 })();
 
 
