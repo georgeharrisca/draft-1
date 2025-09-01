@@ -1758,6 +1758,16 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
       newPageFromXML: true
     });
 
+     if (typeof AA !== "undefined" && AA.on) {
+  AA.on("viewer:pageMetrics", ({ host }) => {
+    if (host === osmdBox) {
+      fitScoreToHeight(osmd, osmdBox);
+      scheduleOverlay();
+    }
+  });
+}
+
+
     const btnPDF    = btnRow.querySelector("#aa-btn-pdf");
     const btnXML    = btnRow.querySelector("#aa-btn-xml");
     const btnPDFAll = btnRow.querySelector("#aa-btn-pdf-all");
@@ -2060,20 +2070,42 @@ window.ensureCombinedTitle = window.ensureCombinedTitle || function ensureCombin
     setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 100);
   }
 
-  // Vertical-fit only; keep intrinsic width for horizontal scroll
-  function fitScoreToHeight(osmd, host){
-    const svg = host.querySelector("svg"); if (!svg) return;
-    const maxH = host.clientHeight; if (!maxH) return;
-    let svgH = 0; try { svgH = svg.getBBox().height; } catch(e){}
-    if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
-    if (!svgH) return;
-    const current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
-    const SHRINK = 0.90;
-    let target = Math.min(current, (maxH * SHRINK) / svgH);
-    if (!isFinite(target) || target <= 0) target = 1;
-    target = Math.max(0.3, Math.min(1.5, target));
-    if (Math.abs(target - current) > 0.01) { osmd.zoom = target; osmd.render(); }
+ // Vertical-fit only; keep intrinsic width for horizontal scroll
+function fitScoreToHeight(osmd, host){
+  const svg = host.querySelector("svg"); if (!svg) return;
+
+  // preferred: page height published by M9
+  const cs = getComputedStyle(host);
+  let avail = parseFloat(cs.getPropertyValue('--aa-page-inner-height')) || 0;
+
+  // fallback: host height minus vertical padding
+  if (!isFinite(avail) || avail <= 0) {
+    avail = host.clientHeight || 0;
+    const padTop = parseFloat(cs.paddingTop) || 0;
+    const padBottom = parseFloat(cs.paddingBottom) || 0;
+    avail = Math.max(0, avail - padTop - padBottom);
   }
+  if (!avail) return;
+
+  // current rendered SVG height
+  let svgH = 0;
+  try { svgH = svg.getBBox().height; } catch(e){}
+  if (!svgH) svgH = svg.clientHeight || svg.scrollHeight || svg.offsetHeight || 0;
+  if (!svgH) return;
+
+  const current = (typeof osmd.zoom === "number") ? osmd.zoom : 1;
+  const SHRINK = 0.90; // 90% of frame height
+  let target = Math.min(current, (avail * SHRINK) / svgH);
+
+  if (!isFinite(target) || target <= 0) target = 1;
+  target = Math.max(0.3, Math.min(2.0, target));
+
+  if (Math.abs(target - current) > 0.01) {
+    osmd.zoom = target;
+    osmd.render();
+  }
+}
+
   function forceIntrinsicSvgWidth(host){
     const svg = host.querySelector("svg"); if (!svg) return;
     let vbw = 0;
@@ -2824,6 +2856,15 @@ function ensureXmlHeader(xml) {
       if (!host) return;
       const svg = host.querySelector("svg");
       if (!svg) return;
+
+       // after you compute pageH
+host.style.setProperty('--aa-page-inner-height', pageH + 'px');
+
+// (optional but snappy) let M7 know page metrics changed
+if (typeof AA !== "undefined" && AA.emit) {
+  AA.emit("viewer:pageMetrics", { host, pageH });
+}
+
 
       // Base SVG stays for metrics/overlay, but is visually hidden.
       svg.style.position = "absolute";
