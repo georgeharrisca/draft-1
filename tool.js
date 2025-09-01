@@ -3211,25 +3211,24 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M10) Sequential pagination fit
-        - lay systems left→right, top→bottom across M9 page frames
-        - stretch every system to page inner width (incl. last)
-        - left-align to the first page (overlays page)
-        - push overflow to the next page
+   M10) Sequential pagination fit (robust)
+        - find OSMD systems; if none, synthesize from measures
+        - stretch each system to page inner width
+        - left-align to first page and paginate top→bottom
    ------------------------------------------------------------------------- */
 ;(function () {
   // Run after M7 finishes a render
   if (typeof AA !== "undefined" && AA.on) {
-    AA.on("viewer:rendered", ({ osmd, host }) => {
+    AA.on("viewer:rendered", ({ host }) => {
       try { m10_fit(host); } catch (e) { console.warn("[M10] error:", e); }
     });
   }
 
-  // Re-run on viewer resize (keeps vertical fit feel)
+  // Re-run on viewer resize (keeps vertical-fit feel)
   const ro = new ResizeObserver(() => {
     const host = document.getElementById("aa-osmd-box");
     if (host && host.querySelector("svg")) {
-      try { m10_fit(host); } catch (e) {}
+      try { m10_fit(host); } catch (_) {}
     }
   });
   const initRO = () => { const h = document.getElementById("aa-osmd-box"); if (h) ro.observe(h); };
@@ -3243,69 +3242,139 @@ function ensureXmlHeader(xml) {
     const framesWrap = host.querySelector(".aa-pageframes");
     if (!svg || !framesWrap) return;
 
-    // Ensure stacking: frames (0/1) < svg(2) < overlays(3)
+    // Stacking: frames (1) < svg (2) < overlays (3)
     const ov = host.querySelector(".aa-overlay");
-    if (framesWrap) { framesWrap.style.zIndex = "1"; }
+    framesWrap.style.zIndex = "1";
     svg.style.position = "relative"; svg.style.zIndex = "2";
-    if (ov) { ov.style.zIndex = "3"; }
+    if (ov) ov.style.zIndex = "3";
 
-    // Reset any previous transforms from us
+    // Clear old transforms from previous runs
     cleanupOld(svg);
 
     const frames = collectFrames(framesWrap);
     if (!frames.length) return;
 
-    const systems = findOsmdSystems(svg);
-    if (!systems.length) return;
+    // 1) Try native OSMD systems
+    let systems = findOsmdSystems(svg);
+    let mode = "native";
 
-    // Compute static bboxes before moving
+    // 2) Fallback: synthesize systems by clustering measures by Y
+    if (!systems.length) {
+      systems = synthesizeSystems(svg);
+      mode = "synth";
+    }
+
+    if (!systems.length) {
+      console.info("[M10] no systems found (native or synth) — skipping.");
+      return;
+    }
+    console.log(`[M10] mode=${mode}; systems=${systems.length}; frames=${frames.length}`);
+
+    // Precompute original bboxes
     const items = systems.map(g => ({ g, bb: safeBBox(g) }))
                          .sort((a,b) => (a.bb.y === b.bb.y ? a.bb.x - b.bb.x : a.bb.y - b.bb.y));
 
-    // Sequential pagination: fill page 0, then 1, etc.
+    // Paginate sequentially from page 0
     let pIdx = 0;
     let cursorY = pageInnerTop(frames[0]);
     const vGap = 14;
 
     for (const it of items) {
-      // If page index exceeded frames count, stop gracefully
       if (!frames[pIdx]) break;
 
       const frame = frames[pIdx];
       const inner = innerRect(frame);
 
       const bb0 = it.bb;
+      // horizontal scale only
       const sx  = clamp(inner.width / Math.max(1, bb0.width), 0.5, 3.0);
-      const sysH = bb0.height; // keep vertical scale = 1 (no distortion)
+      const sysH = bb0.height;
 
-      // Overflow to next page?
+      // overflow → next page
       if ((cursorY + sysH) > (inner.top + inner.height)) {
         pIdx++;
         if (!frames[pIdx]) break;
-        const nf = frames[pIdx];
-        cursorY = pageInnerTop(nf);
+        cursorY = pageInnerTop(frames[pIdx]);
       }
 
-      // Place left-aligned on this page and stretch to width
-      const tx = (inner.left) - bb0.x;
-      const ty = (cursorY)    - bb0.y;
+      const tx = inner.left - bb0.x;
+      const ty = cursorY   - bb0.y;
 
       applyTransform(it.g, tx, ty, sx);
       cursorY += sysH + vGap;
     }
   }
 
-  // ---------- helpers ----------
-  function cleanupOld(svg) {
-    svg.querySelectorAll("[data-m10]").forEach(g => {
-      const orig = g.getAttribute("data-m10-transform-orig");
-      if (orig != null) g.setAttribute("transform", orig);
-      else g.removeAttribute("transform");
-      g.removeAttribute("data-m10-transform-orig");
-      g.removeAttribute("data-m10");
-    });
+  // ---------- discovery/selectors ----------
+  function findOsmdSystems(svg) {
+    // Prefer page->System direct children
+    const pages = Array.from(svg.querySelectorAll('g[id^="page"], g[id^="Page"], g[id^="osmdPage"]'));
+    let systems = [];
+    for (const pg of pages) {
+      const direct = Array.from(pg.children)
+        .filter(n => n.nodeName.toLowerCase() === "g" && /(^system\d+$)|(^System\d+$)/.test(n.id || ""));
+      if (direct.length) systems.push(...direct);
+    }
+    if (systems.length) return systems;
+
+    // Common alternates
+    systems = Array.from(svg.querySelectorAll('g.system, g.System'));
+    if (systems.length) return systems;
+
+    // Loose id match (avoid inner subgroups with underscores)
+    systems = Array.from(svg.querySelectorAll('g[id]'))
+      .filter(g => /system/i.test(g.id || "") && !/_/.test(g.id || ""));
+    return systems;
   }
 
+  // Fallback: cluster measures by Y to build synthetic systems
+  function synthesizeSystems(svg) {
+    const measureGs = Array.from(svg.querySelectorAll('g[id*="Measure"], g[id*="measure"]'));
+    if (!measureGs.length) return [];
+
+    const measures = measureGs.map(g => ({ g, bb: safeBBox(g) }))
+                              .filter(m => isFinite(m.bb.y) && m.bb.height > 0)
+                              .sort((a,b) => (a.bb.y === b.bb.y ? a.bb.x - b.bb.x : a.bb.y - b.bb.y));
+
+    const clusters = [];
+    const Y_THRESH = 28; // measures within this Y diff belong to same system (tweakable)
+    for (const m of measures) {
+      const yMid = m.bb.y + m.bb.height / 2;
+      let placed = false;
+      for (const c of clusters) {
+        if (Math.abs(c.yRef - yMid) <= Y_THRESH) {
+          c.items.push(m); c.yRef = (c.yRef * c.items.length + yMid) / (c.items.length + 1);
+          placed = true; break;
+        }
+      }
+      if (!placed) clusters.push({ items:[m], yRef: yMid });
+    }
+
+    // Wrap each cluster into a synthetic system group
+    let idx = 1;
+    const systems = [];
+    for (const c of clusters) {
+      const items = c.items.map(x => x.g);
+      if (!items.length) continue;
+      const sys = wrapAsGroup(svg, items, `m10SynthSystem${idx++}`);
+      if (sys) systems.push(sys);
+    }
+    return systems;
+  }
+
+  // Create a <g> wrapper and move nodes into it (keeps relative order)
+  function wrapAsGroup(svg, nodes, id) {
+    if (!nodes || !nodes.length) return null;
+    const parent = nodes[0].parentNode;
+    if (!parent) return null;
+    const g = document.createElementNS(svg.namespaceURI, "g");
+    g.setAttribute("id", id);
+    parent.insertBefore(g, nodes[0]);
+    for (const n of nodes) g.appendChild(n);
+    return g;
+  }
+
+  // ---------- layout helpers ----------
   function collectFrames(framesWrap) {
     const out = [];
     framesWrap.querySelectorAll(".aa-pageframe").forEach(el => {
@@ -3314,7 +3383,6 @@ function ensureXmlHeader(xml) {
     });
     return out;
   }
-
   function innerPad(f) { return Math.max(14, Math.floor(f.width * 0.04)); }
   function pageInnerTop(f) { return f.top + 12; }
   function innerRect(f) {
@@ -3325,46 +3393,32 @@ function ensureXmlHeader(xml) {
       width:  Math.max(1, f.width  - pad*2),
       height: Math.max(1, f.height - (12 + 18))
     };
-    // (12 top, 18 bottom) mirrors the M9 frame visuals
   }
 
-  function findOsmdSystems(svg) {
-    // Prefer the canonical OSMD structure: pages -> direct child Systems
-    const pages = Array.from(svg.querySelectorAll('g[id^="page"], g[id^="Page"], g[id^="osmdPage"]'));
-    let systems = [];
-    for (const pg of pages) {
-      const direct = Array.from(pg.children)
-        .filter(n => n.nodeName.toLowerCase() === "g" && /^system\d+$/i.test(n.id || ""));
-      if (direct.length) systems.push(...direct);
-    }
-    if (systems.length) return systems;
-
-    // Fallback: top-level System groups by strict id pattern
-    systems = Array.from(svg.querySelectorAll('g[id]'))
-      .filter(g => /^system\d+$/i.test(g.id || ""));
-    if (systems.length) return systems;
-
-    // Last resort: heuristic (avoid inner _subgroups)
-    return Array.from(svg.querySelectorAll('g[id^="System"]'))
-      .filter(g => !/_/.test(g.id || ""));
+  // ---------- transform & bbox ----------
+  function cleanupOld(svg) {
+    svg.querySelectorAll("[data-m10]").forEach(g => {
+      const orig = g.getAttribute("data-m10-transform-orig");
+      if (orig != null) g.setAttribute("transform", orig);
+      else g.removeAttribute("transform");
+      g.removeAttribute("data-m10-transform-orig");
+      g.removeAttribute("data-m10");
+    });
   }
-
-  function safeBBox(el) {
-    try { return el.getBBox(); }
-    catch(_) { return { x:0, y:0, width:1, height:1 }; }
-  }
-
   function applyTransform(g, tx, ty, sx) {
     const orig = g.getAttribute("transform");
     if (!g.hasAttribute("data-m10-transform-orig")) {
       if (orig != null) g.setAttribute("data-m10-transform-orig", orig);
       else g.setAttribute("data-m10-transform-orig", "");
     }
-    // translate then scale X-only; keeps vertical proportions intact
     g.setAttribute("transform", `translate(${tx},${ty}) scale(${sx},1)`);
     g.setAttribute("data-m10", "1");
   }
-
+  function safeBBox(el) {
+    try { return el.getBBox(); }
+    catch (_) { return { x:0, y:0, width:1, height:1 }; }
+  }
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 })();
+
 
