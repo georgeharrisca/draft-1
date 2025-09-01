@@ -2825,29 +2825,28 @@ function ensureXmlHeader(xml) {
 
 /* =========================================================================
    M9) Visual Page Frames (Letter) + True Horizontal Pagination (sliced SVG)
+       + Overlay pinned to first page
    ------------------------------------------------------------------------- */
 ;(function () {
-  // Letter page geometry and layout
-  const LETTER_RATIO     = 8.5 / 11; // width / height
-  const GAP_BETWEEN      = 28;       // px gap between page frames
-  const TOP_BOTTOM_PAD   = 12;       // px inset from host top/bottom for frames
+  const LETTER_RATIO   = 8.5 / 11; // width/height
+  const GAP_BETWEEN    = 28;
+  const TOP_BOTTOM_PAD = 12;
 
-  // Build/refresh the page frames and sliced clones
   function ensurePages(host) {
     try {
       if (!host) return;
       const svg = host.querySelector("svg");
       if (!svg) return;
 
-      // Base SVG is required for metrics/overlay but hidden visually.
-      svg.style.position       = "absolute";
-      svg.style.left           = "0";
-      svg.style.top            = "0";
-      svg.style.opacity        = "0";
-      svg.style.pointerEvents  = "none";
-      svg.style.zIndex         = "0";
+      // Keep the base SVG for metrics/overlay, but hide it visually.
+      svg.style.position      = "absolute";
+      svg.style.left          = "0";
+      svg.style.top           = "0";
+      svg.style.opacity       = "0";
+      svg.style.pointerEvents = "none";
+      svg.style.zIndex        = "0";
 
-      // Layers: frames (0) < clips/slices (1) < overlay (2)
+      // Layers: frames (0) < slices (1) < overlay (2)
       let frames = host.querySelector(".aa-pageframes");
       if (!frames) {
         frames = document.createElement("div");
@@ -2862,42 +2861,39 @@ function ensureXmlHeader(xml) {
         clips.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:1;";
         host.appendChild(clips);
       }
-      const ov = host.querySelector(".aa-overlay");
-      if (ov) ov.style.zIndex = "2";
 
-      // --- Compute fixed page size from host height (no vertical scroll) ---
+      // Fixed page size from host height (no vertical scrolling)
       const hostHeight = host.clientHeight || host.getBoundingClientRect().height || 0;
       if (!hostHeight) return;
 
-      // Page inner height (fixed) and width (letter aspect)
       const pageH = Math.max(1, Math.floor(hostHeight - TOP_BOTTOM_PAD * 2));
       const pageW = Math.max(1, Math.floor(pageH * LETTER_RATIO));
 
-      // Publish the page inner height for M7 (fit-to-height ~90%)
+      // Publish for M7's 90% vertical fit
       host.style.setProperty("--aa-page-inner-height", pageH + "px");
       if (typeof AA !== "undefined" && AA.emit) {
         AA.emit("viewer:pageMetrics", { host, pageH });
       }
 
-      // Content metrics in px (use viewBox when possible, fallback to bbox)
-      const svgRect = svg.getBoundingClientRect();
-      const vb      = svg.viewBox && svg.viewBox.baseVal;
-      let contentW  = vb && vb.width ? vb.width : 0;
+      // Score content width (SVG coordinate space)
+      const vb = svg.viewBox && svg.viewBox.baseVal;
+      let contentW = vb && vb.width ? vb.width : 0;
       if (!contentW) {
         try { contentW = svg.getBBox().width; } catch (_) {}
       }
-      if (!contentW) contentW = svgRect.width || 0;
+      if (!contentW) {
+        const r = svg.getBoundingClientRect();
+        contentW = r.width || 0;
+      }
       if (!contentW) return;
 
       const leftPad = Math.max(
         14,
         parseInt(getComputedStyle(host).paddingLeft || "0", 10)
       );
-
-      // How many pages to show as horizontal slices of the full score width?
       const pageCount = Math.max(1, Math.ceil(contentW / pageW));
 
-      // Keep the correct number of frames and clip containers
+      // Ensure correct number of frames and clip panes
       syncChildren(frames, pageCount, () => {
         const f = document.createElement("div");
         f.className = "aa-pageframe";
@@ -2915,69 +2911,89 @@ function ensureXmlHeader(xml) {
         return c;
       });
 
-      // Update geometry + (re)build slices
+      // Build/update each page slice
       for (let i = 0; i < pageCount; i++) {
         const x = leftPad + i * (pageW + GAP_BETWEEN);
 
-        // 1) Frame positioning (white page)
-        const f = frames.children[i];
-        f.style.left   = x + "px";
-        f.style.top    = TOP_BOTTOM_PAD + "px";
-        f.style.width  = pageW + "px";
-        f.style.height = pageH + "px";
+        const frame = frames.children[i];
+        frame.style.left   = x + "px";
+        frame.style.top    = TOP_BOTTOM_PAD + "px";
+        frame.style.width  = pageW + "px";
+        frame.style.height = pageH + "px";
 
-        // 2) Clip container positioning (same rect as frame)
-        const c = clips.children[i];
-        c.style.left   = x + "px";
-        c.style.top    = TOP_BOTTOM_PAD + "px";
-        c.style.width  = pageW + "px";
-        c.style.height = pageH + "px";
+        const clip = clips.children[i];
+        clip.style.left   = x + "px";
+        clip.style.top    = TOP_BOTTOM_PAD + "px";
+        clip.style.width  = pageW + "px";
+        clip.style.height = pageH + "px";
 
-        // 3) Ensure we have an inner wrapper + a cloned SVG
-        let inner = c.querySelector(".pg-inner");
+        let inner = clip.querySelector(".pg-inner");
         if (!inner) {
           inner = document.createElement("div");
           inner.className = "pg-inner";
           inner.style.cssText = "position:absolute;left:0;top:0;transform-origin:0 0;";
-          c.appendChild(inner);
+          clip.appendChild(inner);
         }
 
         let clone = inner.querySelector("svg");
         if (!clone) {
           clearNode(inner);
-          // Clone the base SVG; keep attributes/styles
           clone = svg.cloneNode(true);
-          clone.style.opacity        = "1";     // visible in slice
-          clone.style.pointerEvents  = "none";
-          clone.style.position       = "static";
-          clone.style.left           = "";
-          clone.style.top            = "";
+          clone.style.opacity       = "1";
+          clone.style.pointerEvents = "none";
+          clone.style.position      = "static";
           inner.appendChild(clone);
         }
 
-        // 4) Translate the clone so that this page shows its horizontal slice
-        // Slice start in the *original SVG coordinate space*
+        // Shift horizontally to show this page's slice
         const sliceOffset = i * pageW;
-
-        // We don't distort horizontally here — M7 already stretches systems across
-        // the total width. Just shift to reveal this page's window.
         inner.style.transform = `translateX(${-sliceOffset}px)`;
       }
+
+      // Finally, pin and clip the overlay to FIRST page
+      pinOverlayToFirstPage(host, svg, { pageW, pageH, leftPad, topPad: TOP_BOTTOM_PAD });
     } catch (e) {
       console.warn("[M9] ensurePages skipped:", e);
     }
   }
 
-  // Keep host hooked and refresh on changes
+  // Move/clip the .aa-overlay so labels sit at the first page’s corners
+  function pinOverlayToFirstPage(host, svg, { pageW, pageH, leftPad, topPad }) {
+    const overlay = host.querySelector(".aa-overlay");
+    if (!overlay) return;
+
+    // Ensure overlay is above slices
+    overlay.style.zIndex = "2";
+    overlay.style.position = "absolute";
+
+    // Compute translation so overlay elements (which M7 positions
+    // using host/svg rects) align to the first page window.
+    const hostRect = host.getBoundingClientRect();
+    const svgRect  = svg.getBoundingClientRect();
+
+    // We want: final overlay-child positions appear as if svg’s
+    // (0,0) is at (leftPad, topPad) instead of svgRect - hostRect.
+    const deltaX = leftPad - (svgRect.left - hostRect.left);
+    const deltaY = topPad  - (svgRect.top  - hostRect.top);
+
+    overlay.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
+    overlay.style.willChange = "transform";
+
+    // Clip overlay to first page area
+    // inset(top right bottom left) from the overlay’s full box
+    const rightInset  = `calc(100% - ${leftPad + pageW}px)`;
+    const bottomInset = `calc(100% - ${topPad + pageH}px)`;
+    overlay.style.clipPath = `inset(${topPad}px ${rightInset} ${bottomInset} ${leftPad}px)`;
+    overlay.style.pointerEvents = "none";
+  }
+
   function hookHost(host) {
     if (!host || host._m9Hooked) return;
     host._m9Hooked = true;
 
-    // Resize of the viewer box => recompute page size/positions
     const ro = new ResizeObserver(() => ensurePages(host));
     ro.observe(host);
 
-    // DOM changes inside (new SVG render etc.) => rebuild frames/clips
     const mo = new MutationObserver((muts) => {
       for (const m of muts) {
         if (m.type === "childList") {
@@ -2988,15 +3004,12 @@ function ensureXmlHeader(xml) {
     });
     mo.observe(host, { childList: true, subtree: true });
 
-    // Stash for optional cleanup
     host._m9ro = ro;
     host._m9mo = mo;
 
-    // Initial paint
     ensurePages(host);
   }
 
-  // Utility: ensure child count matches; create via factory; recycle existing nodes
   function syncChildren(parent, count, factory) {
     const cur = parent.children.length;
     if (cur < count) {
@@ -3005,19 +3018,16 @@ function ensureXmlHeader(xml) {
       for (let i = count; i < cur; i++) parent.lastChild && parent.removeChild(parent.lastChild);
     }
   }
-
   function clearNode(n) {
     while (n && n.firstChild) n.removeChild(n.firstChild);
   }
 
-  // Try to hook immediately if the viewer is already there
   function tryHookNow() {
     const host = document.getElementById("aa-osmd-box");
     if (host) hookHost(host);
   }
   document.addEventListener("DOMContentLoaded", tryHookNow);
 
-  // Hook when the viewer appears later
   const docMO = new MutationObserver((muts) => {
     for (const m of muts) {
       for (const n of m.addedNodes) {
@@ -3032,11 +3042,9 @@ function ensureXmlHeader(xml) {
   });
   docMO.observe(document.documentElement, { childList: true, subtree: true });
 
-  // Refresh after each M7 render
+  // Refresh pages (and overlay pinning) after each render from M7
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => ensurePages(host));
   }
 })();
-
-
 
