@@ -3018,32 +3018,41 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M9) Viewer Page Frames (Letter) + Horizontal Pagination + Cuts + Pinned Overlays
+   M9) Viewer Page Frames (Letter) + Horizontal Pagination + Pinned Overlays
    ------------------------------------------------------------------------- */
 ;(function () {
   const LETTER_RATIO   = 8.5 / 11;  // width / height
   const GAP_BETWEEN    = 28;        // px gap between page frames
   const TOP_BOTTOM_PAD = 12;        // px inset from host top/bottom for frames
-  const LEFT_MIN_PAD   = 14;        // min left pad inside host (align with host padding)
+  const LEFT_MIN_PAD   = 14;        // min left pad inside host
 
-  // z-order inside #aa-osmd-box (host must be position:relative)
-  // 0: frames (visual pages with shadow)
-  // 1: OSMD SVG (score)
-  // 2: cuts/scrims (hide score outside pages & between pages)
-  // 3: overlay titles (part/score & arranger)
-  const Z_FRAMES = 0;
-  const Z_SVG    = 1;
+  // layer order inside #aa-osmd-box (host must be position:relative)
+  // 1: frames (behind)
+  // 2: cuts/scrims (between/above/below)
+  // 3: OSMD SVG (score)
+  // 4: overlay titles (part/score & arranger)
+  const Z_FRAMES = 1;
   const Z_CUTS   = 2;
-  const Z_OVLY   = 3;
+  const Z_SVG    = 3;
+  const Z_OVLY   = 4;
 
-  // ---- main hook --------------------------------------------------------
+  // --- hook host once ----------------------------------------------------
   function hookHost(host) {
     if (!host || host._m9Hooked) return;
     host._m9Hooked = true;
 
-    // Make sure the host forms a stacking context
-    const cs = getComputedStyle(host);
-    if (cs.position === "static") host.style.position = "relative";
+    // Make sure the host is a positioning context
+    if (getComputedStyle(host).position === "static") {
+      host.style.position = "relative";
+    }
+
+    // Keep overlays pinned to page 1 while scrolling horizontally
+    const onScroll = () => {
+      const ov = host.querySelector(".aa-overlay");
+      if (ov) ov.style.transform = `translateX(${host.scrollLeft}px)`;
+    };
+    host.addEventListener("scroll", onScroll, { passive: true });
+    host._m9OnScroll = onScroll;
 
     const ro = new ResizeObserver(() => layout(host));
     ro.observe(host);
@@ -3051,35 +3060,24 @@ function ensureXmlHeader(xml) {
     const mo = new MutationObserver(muts => {
       for (const m of muts) {
         if (m.type === "childList") {
-          // new SVG or re-render
-          layout(host);
+          layout(host); // re-render → refresh layout
           return;
         }
       }
     });
-    mo.observe(host, { childList:true, subtree:true });
-
-    // Pin overlays to page 1 regardless of horizontal scroll
-    const onScroll = () => {
-      const ov = host.querySelector(".aa-overlay");
-      if (ov) ov.style.transform = `translateX(${host.scrollLeft}px)`;
-    };
-    host.addEventListener("scroll", onScroll, { passive: true });
-
+    mo.observe(host, { childList: true, subtree: true });
     host._m9ro = ro;
     host._m9mo = mo;
-    host._m9OnScroll = onScroll;
 
-    // initial pass
     layout(host);
   }
 
-  // Listen for M7 after each successful render
+  // Re-run after M7 renders
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => layout(host));
   }
 
-  // Hook if viewer already exists / appears later
+  // Hook if already present / or appears later
   document.addEventListener("DOMContentLoaded", () => {
     const host = document.getElementById("aa-osmd-box");
     if (host) hookHost(host);
@@ -3096,60 +3094,50 @@ function ensureXmlHeader(xml) {
       }
     }
   });
-  docMO.observe(document.documentElement, { childList:true, subtree:true });
+  docMO.observe(document.documentElement, { childList: true, subtree: true });
 
-  // ---- layout pipeline --------------------------------------------------
+  // --- layout core -------------------------------------------------------
   function layout(host) {
     try {
       const svg = host.querySelector("svg");
       if (!svg) return;
 
-      // Stack the layers explicitly
+      // stack the layers explicitly
       svg.style.position = "relative";
       svg.style.zIndex   = String(Z_SVG);
 
-      const dims = computeDims(host, svg);
-      ensureFrames(host, dims);     // z-index 0  (behind score)
-      ensureCuts(host, dims);       // z-index 2  (clip between/above/below)
-      ensureScrims(host, dims);     // z-index 2
-      pinOverlayToPage1(host, dims);// z-index 3  (top)
+      const d = computeDims(host, svg);
+      ensureFrames(host, d);      // z:1
+      ensureCuts(host, d);        // z:2
+      ensureEdgeScrims(host, d);  // z:2 (thin top/bottom only)
+      pinOverlayToPage1(host, d); // z:4
     } catch (e) {
       console.warn("[M9] layout skipped:", e);
     }
   }
 
-  // compute all geometry once
   function computeDims(host, svg) {
     const hostCS   = getComputedStyle(host);
     const padLeft  = Math.max(LEFT_MIN_PAD, parseInt(hostCS.paddingLeft || "0", 10));
     const padRight = parseInt(hostCS.paddingRight || "0", 10);
-    const hostH    = host.clientHeight; // available height inside the viewer pane
+    const hostH    = host.clientHeight;
 
-    // page height locked to host height (no vertical scroll), with small top/bottom pad
+    // Pages fill the host vertically (no vertical scroll inside viewer)
     const usableH  = Math.max(1, hostH - TOP_BOTTOM_PAD * 2);
     const pageH    = usableH;
     const pageW    = Math.max(1, Math.floor(pageH * LETTER_RATIO));
 
-    // actual drawn width of the SVG (after OSMD zoom)
+    // current drawn width of the SVG (after zoom)
     const svgRect  = svg.getBoundingClientRect();
     const svgW     = Math.max(1, Math.floor(svgRect.width));
 
-    // how many pages we need to span the SVG content horizontally
     const count    = Math.max(1, Math.ceil(svgW / pageW));
+    const totalW   = padLeft + count * pageW + (count - 1) * GAP_BETWEEN + padRight;
 
-    return {
-      padLeft,
-      padRight,
-      hostH,
-      usableH,
-      pageH,
-      pageW,
-      svgW,
-      count
-    };
+    return { padLeft, padRight, hostH, usableH, pageH, pageW, svgW, count, totalW };
   }
 
-  // ---- frames (background pages) ---------------------------------------
+  // --- page frames (behind the score) -----------------------------------
   function ensureFrames(host, d) {
     let frames = host.querySelector(".aa-pageframes");
     if (!frames) {
@@ -3169,7 +3157,7 @@ function ensureXmlHeader(xml) {
         "position:absolute",
         "border-radius:8px",
         "background:#fff",
-        "box-shadow:0 6px 28px rgba(0,0,0,.16)",
+        "box-shadow:0 6px 26px rgba(0,0,0,.14)",
         "outline:2px solid rgba(0,0,0,.12)"
       ].join(";");
       return f;
@@ -3184,7 +3172,7 @@ function ensureXmlHeader(xml) {
     });
   }
 
-  // ---- cuts between pages (hide score in the gaps) ---------------------
+  // --- narrow gap cuts (between pages only) ------------------------------
   function ensureCuts(host, d) {
     let cuts = host.querySelector(".aa-pagecuts");
     if (!cuts) {
@@ -3197,20 +3185,15 @@ function ensureXmlHeader(xml) {
       cuts.style.zIndex = String(Z_CUTS);
     }
 
-    // we need N-1 vertical cut strips between pages
     const cutCount = Math.max(0, d.count - 1);
     syncChildCount(cuts, cutCount, () => {
       const g = document.createElement("div");
       g.className = "aa-pagecut";
-      g.style.cssText = [
-        "position:absolute",
-        "background:#fff"
-      ].join(";");
+      g.style.cssText = "position:absolute;background:#fff;";
       return g;
     });
 
     [...cuts.children].forEach((g, idx) => {
-      // idx runs 0..(d.count-2); place a gap right after each page (except last)
       const x = d.padLeft + (idx + 1) * d.pageW + idx * GAP_BETWEEN;
       g.style.left   = x + "px";
       g.style.top    = TOP_BOTTOM_PAD + "px";
@@ -3219,90 +3202,94 @@ function ensureXmlHeader(xml) {
     });
   }
 
-  // ---- scrims (hide above/below pages so score is fully “inside”) ------
-  function ensureScrims(host, d) {
+  // --- thin top/bottom scrims (no full white blanket) -------------------
+  function ensureEdgeScrims(host, d) {
     let scrims = host.querySelector(".aa-pagescrims");
     if (!scrims) {
       scrims = document.createElement("div");
       scrims.className = "aa-pagescrims";
       scrims.style.cssText = "position:absolute;inset:0;pointer-events:none;";
-      scrims.style.zIndex = String(Z_CUTS); // above svg, same as cuts
+      scrims.style.zIndex = String(Z_CUTS);
       host.appendChild(scrims);
     } else {
       scrims.style.zIndex = String(Z_CUTS);
     }
 
-    // exactly two scrims: top & bottom
-    syncChildCount(scrims, 2, (i) => {
-      const s = document.createElement("div");
-      s.className = i === 0 ? "aa-scrim-top" : "aa-scrim-bottom";
-      s.style.cssText = "position:absolute;background:#fff;";
-      return s;
+    syncChildCount(scrims, 2, i => {
+      const el = document.createElement("div");
+      el.className = i === 0 ? "aa-scrim-top" : "aa-scrim-bottom";
+      el.style.cssText = "position:absolute;background:#fff;";
+      return el;
     });
 
     const [topS, botS] = scrims.children;
+
+    // Limit scrim width to where the pages actually are (not 100%)
+    const left   = d.padLeft;
+    const rightX = d.padLeft + d.count * d.pageW + (d.count - 1) * GAP_BETWEEN;
+
     // top strip
-    topS.style.left   = "0px";
+    topS.style.left   = left + "px";
     topS.style.top    = "0px";
-    topS.style.width  = "100%";
+    topS.style.width  = (rightX - left) + "px";
     topS.style.height = TOP_BOTTOM_PAD + "px";
+
     // bottom strip
-    botS.style.left   = "0px";
+    botS.style.left   = left + "px";
     botS.style.top    = (TOP_BOTTOM_PAD + d.usableH) + "px";
-    botS.style.width  = "100%";
-    botS.style.height = Math.max(0, host.clientHeight - (TOP_BOTTOM_PAD + d.usableH)) + "px";
+    botS.style.width  = (rightX - left) + "px";
+    botS.style.height = TOP_BOTTOM_PAD + "px";
   }
 
-  // ---- pin the overlay titles to page 1’s corners ----------------------
+  // --- pin overlay labels to page 1’s corners ---------------------------
   function pinOverlayToPage1(host, d) {
     const overlay = host.querySelector(".aa-overlay");
     if (!overlay) return;
 
-    // Overlay container lives above everything and cancels horizontal scroll
-    overlay.style.position = "absolute";
-    overlay.style.inset    = "0";
-    overlay.style.pointerEvents = "none";
-    overlay.style.zIndex   = String(Z_OVLY);
-    overlay.style.transform = `translateX(${host.scrollLeft}px)`; // keep pinned to viewport
+    // make the container transparent + on top + pinned
+    overlay.style.position       = "absolute";
+    overlay.style.inset          = "0";
+    overlay.style.pointerEvents  = "none";
+    overlay.style.background     = "transparent";       // <- prevent white panel
+    overlay.style.zIndex         = String(Z_OVLY);
+    overlay.style.transform      = `translateX(${host.scrollLeft}px)`; // counter scroll
 
-    // locate overlay children created by M7 (expected: first two)
+    // try to use M7’s two children (left label then right label)
     const kids = overlay.querySelectorAll("div");
-    const partEl = kids[0] || null;
-    const arrEl  = kids[1] || null;
+    const partEl = kids[0] || null; // usually the Part/Score label
+    const arrEl  = kids[1] || null; // usually the Arranger label
 
-    // page 1 geometry inside host:
+    // page 1 geometry
     const pageLeft  = d.padLeft;
     const pageTop   = TOP_BOTTOM_PAD;
     const pageRight = d.padLeft + d.pageW;
 
-    // inner insets on the page
     const PART_LEFT_INSET = 18;
     const PART_TOP_INSET  = 10;
 
     const ARR_RIGHT_INSET = 20;
-    const ARR_TOP_INSET   = 14;
+    const ARR_TOP_INSET   = 12;
 
     if (partEl) {
-      // anchor to top-left of page 1
       partEl.style.position = "absolute";
-      partEl.style.left = (pageLeft + PART_LEFT_INSET) + "px";
-      partEl.style.top  = (pageTop  + PART_TOP_INSET)  + "px";
-      partEl.style.right = "";
+      partEl.style.left     = (pageLeft + PART_LEFT_INSET) + "px";
+      partEl.style.top      = (pageTop  + PART_TOP_INSET)  + "px";
+      partEl.style.right    = "";
+      partEl.style.background = "transparent";
     }
-
     if (arrEl) {
-      // anchor to top-right of page 1
-      arrEl.style.position = "absolute";
-      // distance from overlay’s right edge to page 1 right edge:
+      arrEl.style.position  = "absolute";
+      arrEl.style.left      = "";
+      // distance from overlay right edge to page 1 right edge
       const rightOffset = Math.max(0, host.clientWidth - pageRight) + ARR_RIGHT_INSET;
-      arrEl.style.right = rightOffset + "px";
-      arrEl.style.top   = (pageTop + ARR_TOP_INSET) + "px";
-      arrEl.style.left = "";
-      arrEl.style.textAlign = "right";
+      arrEl.style.right    = rightOffset + "px";
+      arrEl.style.top      = (pageTop + ARR_TOP_INSET) + "px";
+      arrEl.style.textAlign= "right";
+      arrEl.style.background = "transparent";
     }
   }
 
-  // ---- helpers ---------------------------------------------------------
+  // --- util --------------------------------------------------------------
   function syncChildCount(container, desired, factory) {
     const cur = container.children.length;
     if (cur < desired) {
