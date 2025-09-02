@@ -3211,29 +3211,20 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M10) Sequential pagination fit (v2)
-        - Find systems (native → vex-stave cluster → broad cluster)
-        - Stretch each system to the page’s inner width (incl. the last)
-        - Anchor left edge to page 1 frame; center vertically on page 1
-        - Keep pages stacked top→bottom and align under overlays
+   M10) Sequential pagination fit (v2, self-contained)
+        - Find systems (native → vf-stave clustering → broad clustering)
+        - Stretch each system to the page’s inner width (incl. last system)
+        - Anchor left edge to page-1 frame (under overlays)
+        - Center vertically on page 1 only
    ------------------------------------------------------------------------- */
 ;(function () {
-  // Run after OSMD paints (wired from your render pipeline)
+  // Run after OSMD paints (wired by your render pipeline)
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => {
       try { m10_run(host); } catch (e) { console.warn("[M10] error:", e); }
     });
-  } else {
-    // Fallback if AA bus isn't present
-    document.addEventListener("DOMContentLoaded", () => {
-      const host = document.getElementById("aa-osmd-box");
-      if (host && host.querySelector("svg")) {
-        try { m10_run(host); } catch (e) { console.warn("[M10] error:", e); }
-      }
-    });
   }
-
-  // Re-fit on container resize (maintains fit feel)
+  // Keep things fitted when the container resizes
   const ro = new ResizeObserver(() => {
     const host = document.getElementById("aa-osmd-box");
     if (host && host.querySelector("svg")) {
@@ -3245,10 +3236,10 @@ function ensureXmlHeader(xml) {
     ? document.addEventListener("DOMContentLoaded", bootRO)
     : bootRO();
 
-  // ---- main ----
+  // ---------------- core ----------------
   function m10_run(host) {
     if (!host) return;
-    const svg = host.querySelector("svg");
+    const svg        = host.querySelector("svg");
     const framesWrap = host.querySelector(".aa-pageframes");
     if (!svg || !framesWrap) return;
 
@@ -3258,26 +3249,30 @@ function ensureXmlHeader(xml) {
     svg.style.position = "relative"; svg.style.zIndex = "2";
     if (ov) ov.style.zIndex = "3";
 
-    // --- inline cleanup of prior M10 transforms ---
-    svg.querySelectorAll("[data-m10]").forEach(g => {
-      const orig = g.getAttribute("data-m10-transform-orig");
-      if (orig != null) g.setAttribute("transform", orig);
-      else g.removeAttribute("transform");
-      g.removeAttribute("data-m10-transform-orig");
-      g.removeAttribute("data-m10");
-    });
+    // Clear previous transforms from M10
+    cleanupOld(svg);
 
     const frames = collectFrames(framesWrap);
     if (!frames.length) return;
 
-    // --- discover systems (using your existing helpers) ---
+    // --- discover systems ---------------------------------------------------
     let systems = findSystemsNative(svg);
     let mode = "native";
-    if (!systems.length) { systems = synthesizeSystemsFromVexStaves(svg); mode = systems.length ? "stave-cluster" : "none"; }
-    if (!systems.length) { systems = synthesizeSystemsBroad(svg); if (systems.length) mode = "broad-cluster"; }
-    if (!systems.length) { debugSelectorReport(svg); console.info("[M10] no systems found — skipping."); return; }
+    if (!systems.length) {
+      systems = synthesizeSystemsFromVexStaves(svg);
+      mode = systems.length ? "stave-cluster" : "none";
+    }
+    if (!systems.length) {
+      systems = synthesizeSystemsBroad(svg);
+      if (systems.length) mode = "broad-cluster";
+    }
+    if (!systems.length) {
+      debugSelectorReport(svg);
+      console.info("[M10] no systems found — skipping.");
+      return;
+    }
 
-    // normalize + order
+    // Normalize + order
     const items = systems
       .map(g => ({ g, bb: safeBBox(g) }))
       .filter(it => it.bb.width > 0 && it.bb.height > 0)
@@ -3287,9 +3282,9 @@ function ensureXmlHeader(xml) {
 
     // --- paginate & fit -----------------------------------------------------
     let pageIdx = 0;
-    const vGap = 14;
+    const vGap  = 14;
 
-    // Center vertically on page 1 (only)
+    // Vertically center on page 1 only
     const firstInner = innerRect(frames[0]);
     let used = 0;
     for (const it of items) {
@@ -3307,7 +3302,7 @@ function ensureXmlHeader(xml) {
       const bb0  = it.bb;
       const sysH = bb0.height;
 
-      // Next page if vertical overflow
+      // move to next page if vertical overflow would occur
       if ((cursorY + sysH) > (inner.top + inner.height)) {
         pageIdx++;
         if (!frames[pageIdx]) break;
@@ -3315,29 +3310,175 @@ function ensureXmlHeader(xml) {
         cursorY = pageInnerTop(frames[pageIdx]);
       }
 
-      // Stretch to exactly the inner width of the frame
+      // Stretch horizontally to fill the frame’s inner width
       const sx = clamp(inner.width / Math.max(1, bb0.width), 0.5, 3.0);
 
-      // Key: translate gets scaled by sx; pre-divide to anchor left edge
+      // IMPORTANT: translate is scaled by the following scale(sx,1).
+      // Pre-divide X translation by sx so the left edge anchors to inner.left.
       const tx = (inner.left - bb0.x) / sx;
-      const ty = (cursorY - bb0.y); // y not scaled
+      const ty = (cursorY   - bb0.y); // Y is not scaled
 
-      // Apply transform (remember original for future cleanup)
-      const orig = it.g.getAttribute("transform");
-      if (!it.g.hasAttribute("data-m10-transform-orig")) {
-        it.g.setAttribute("data-m10-transform-orig", orig != null ? orig : "");
-      }
-      it.g.setAttribute("transform", `translate(${tx},${ty}) scale(${sx},1)`);
-      it.g.setAttribute("data-m10", "1");
-
+      applyTransform(it.g, tx, ty, sx);
       cursorY += sysH + vGap;
     }
 
-    // Snap viewing position to page 1, flush left under overlays
+    // Ensure we’re on page 1 and flush-left under overlays
     host.scrollLeft = 0;
     svg.style.marginLeft = "0";
     svg.style.left = "0";
     svg.style.position = "relative";
+  }
+
+  // ---------------- utils (self-contained) ----------------
+  function collectFrames(framesWrap) {
+    const out = [];
+    framesWrap.querySelectorAll(".aa-pageframe").forEach(el => {
+      const r = el.getBoundingClientRect();
+      out.push({ el, left:r.left, top:r.top, right:r.right, bottom:r.bottom, width:r.width, height:r.height });
+    });
+    return out;
+  }
+  function innerPad(f)     { return Math.max(14, Math.floor(f.width * 0.04)); }
+  function pageInnerTop(f) { return f.top + 12; }
+  function innerRect(f) {
+    const pad = innerPad(f);
+    return {
+      left:   f.left + pad,
+      top:    f.top  + 12,
+      right:  f.right - pad,
+      bottom: f.bottom - 12,
+      width:  Math.max(0, f.width  - pad*2),
+      height: Math.max(0, f.height - 24),
+    };
+  }
+  function safeBBox(el) { try { return el.getBBox(); } catch(_) { return { x:0, y:0, width:0, height:0 }; } }
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  function estimateYThresh(heights) {
+    if (!heights.length) return 24;
+    const sorted = heights.slice().sort((a,b)=>a-b);
+    const med = sorted[Math.floor(sorted.length/2)] || 24;
+    return Math.max(12, Math.min(Math.round(med * 0.75), 60));
+  }
+  function clusterNearest(rects, yThresh) {
+    const rows = [];
+    rects.sort((a,b) => (a.y === b.y ? a.x - b.x : a.y - b.y));
+    for (const r of rects) {
+      let row = rows[rows.length-1];
+      if (!row || Math.abs(r.y - row.y) > yThresh) {
+        rows.push({ y: r.y, items: [r] });
+      } else {
+        row.items.push(r);
+      }
+    }
+    return rows.map(row => {
+      const items = row.items;
+      let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+      items.forEach(it => {
+        minX = Math.min(minX, it.x);
+        minY = Math.min(minY, it.y);
+        maxX = Math.max(maxX, it.x + it.width);
+        maxY = Math.max(maxY, it.y + it.height);
+      });
+      return { x:minX, y:minY, width:maxX-minX, height:maxY-minY, items };
+    });
+  }
+
+  // ---- native (preferred) --------------------------------------------------
+  function findSystemsNative(svg) {
+    const pages = svg.querySelectorAll('g[id^="page"]');
+    if (!pages.length) return [];
+
+    const systems = [];
+    pages.forEach(pg => {
+      const sysKids = Array.from(pg.children)
+        .filter(ch => /System|system|osmd-system/i.test(ch.id || ch.getAttribute("class") || ""));
+      if (sysKids.length) systems.push(...sysKids);
+    });
+
+    if (systems.length) return systems;
+
+    // other OSMD shapes
+    const fallback = svg.querySelectorAll('g[id*="System"], g[class*="system"]');
+    return Array.from(fallback || []);
+  }
+
+  // ---- VexFlow stave clustering (secondary) --------------------------------
+  function synthesizeSystemsFromVexStaves(svg) {
+    const staves = Array.from(svg.querySelectorAll('g[class*="vf-stave"], g[class*="vf-stavenote"]'));
+    if (!staves.length) return [];
+
+    const rects   = staves.map(g => safeBBox(g));
+    const yThresh = estimateYThresh(rects.map(r => r.height));
+    const rows    = clusterNearest(rects, yThresh);
+
+    // wrap original stave children into row groups (preserve z-order)
+    const systems = [];
+    rows.forEach((row, idx) => {
+      const nodes = staves.filter((g, i) => row.items.includes(rects[i]));
+      const grp   = wrapAsGroup(svg, nodes, `m10-synth-sys-${idx}`);
+      if (grp) systems.push(grp);
+    });
+    return systems;
+  }
+
+  // ---- Broad clustering across note heads/measures (last resort) -----------
+  function synthesizeSystemsBroad(svg) {
+    const candidates = Array.from(svg.querySelectorAll('g[class*="vf-"], g[id*="System"], g[class*="system"], g[class*="measure"]'));
+    if (!candidates.length) return [];
+
+    const rects   = candidates.map(g => safeBBox(g));
+    const yThresh = estimateYThresh(rects.map(r => r.height));
+    const rows    = clusterNearest(rects, yThresh);
+
+    const systems = [];
+    rows.forEach((row, idx) => {
+      const nodes = candidates.filter((g, i) => row.items.includes(rects[i]));
+      const grp   = wrapAsGroup(svg, nodes, `m10-broad-sys-${idx}`);
+      if (grp) systems.push(grp);
+    });
+    return systems;
+  }
+
+  // ---- Diag helper ---------------------------------------------------------
+  function debugSelectorReport(svg) {
+    const count = (sel) => svg.querySelectorAll(sel).length;
+    console.log("[M10] selector report:", {
+      'g[id^="page"]':            count('g[id^="page"]'),
+      'g[id*="System"]':          count('g[id*="System"]'),
+      'g[class*="system"]':       count('g[class*="system"]'),
+      'g[class*="vf-stave"]':     count('g[class*="vf-stave"]'),
+      'g[class*="vf-stavenote"]': count('g[class*="vf-stavenote"]'),
+      'g[class*="measure"]':      count('g[class*="measure"]'),
+    });
+  }
+
+  // ---- transform helpers ---------------------------------------------------
+  function cleanupOld(svg) {
+    svg.querySelectorAll("[data-m10]").forEach(g => {
+      const orig = g.getAttribute("data-m10-transform-orig");
+      if (orig != null) g.setAttribute("transform", orig);
+      else g.removeAttribute("transform");
+      g.removeAttribute("data-m10-transform-orig");
+      g.removeAttribute("data-m10");
+    });
+  }
+  function applyTransform(g, tx, ty, sx) {
+    const orig = g.getAttribute("transform");
+    if (!g.hasAttribute("data-m10-transform-orig")) {
+      g.setAttribute("data-m10-transform-orig", orig != null ? orig : "");
+    }
+    g.setAttribute("transform", `translate(${tx},${ty}) scale(${sx},1)`);
+    g.setAttribute("data-m10", "1");
+  }
+  function wrapAsGroup(svg, nodes, id) {
+    if (!nodes || !nodes.length) return null;
+    const parent = nodes[0].parentNode;
+    const grp = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    grp.setAttribute("id", id);
+    nodes.forEach(n => grp.appendChild(n));
+    parent.appendChild(grp);
+    return grp;
   }
 })();
 
