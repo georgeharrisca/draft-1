@@ -3210,25 +3210,31 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M10) Sequential pagination fit (v4, self-contained; safe wrappers + CSS→SVG)
-        - Convert page-frame rects from CSS pixels to SVG units
-        - Wrap each system so we never overwrite OSMD transforms
-        - Scale-to-fit width (including last system), then translate
-        - Anchor flush-left under page 1 overlays; center vertically on page 1
+   M10) Left-justify score into the first (left-most) page frame
+        - No re-pagination or scaling, only a horizontal translate
+        - Safe wrapper so OSMD’s own transforms are untouched
+        - CSS→SVG conversion so frame coords match music coords
    ------------------------------------------------------------------------- */
 ;(function () {
   // Run after OSMD paints
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => {
-      try { m10_run(host); } catch (e) { console.warn("[M10] error:", e); }
+      try { m10_leftJustify(host); } catch (e) { console.warn("[M10] error:", e); }
+    });
+  } else {
+    document.addEventListener("DOMContentLoaded", () => {
+      const host = document.getElementById("aa-osmd-box");
+      if (host && host.querySelector("svg")) {
+        try { m10_leftJustify(host); } catch (e) { console.warn("[M10] error:", e); }
+      }
     });
   }
 
-  // Re-fit on container resize
+  // Re-apply on resize
   const ro = new ResizeObserver(() => {
     const host = document.getElementById("aa-osmd-box");
     if (host && host.querySelector("svg")) {
-      try { m10_run(host); } catch (_) {}
+      try { m10_leftJustify(host); } catch (_) {}
     }
   });
   const bootRO = () => { const h = document.getElementById("aa-osmd-box"); if (h) ro.observe(h); };
@@ -3236,287 +3242,76 @@ function ensureXmlHeader(xml) {
     ? document.addEventListener("DOMContentLoaded", bootRO)
     : bootRO();
 
-  // ---------------- main ----------------
-  function m10_run(host) {
-    if (!host) return;
+  function m10_leftJustify(host) {
     const svg        = host.querySelector("svg");
     const framesWrap = host.querySelector(".aa-pageframes");
     if (!svg || !framesWrap) return;
 
-    // z-order: frames (1) < svg (2) < overlays (3)
-    const ov = host.querySelector(".aa-overlay");
-    framesWrap.style.zIndex = "1";
-    svg.style.position = "relative"; svg.style.zIndex = "2";
-    if (ov) ov.style.zIndex = "3";
-
-    // Clear prior transforms & wrappers
-    cleanupOld(svg);
-
-    // Convert page frames to SVG units
-    const frames = collectFrames(svg, framesWrap);
-    if (!frames.length) {
-      console.info("[M10] no frames found");
-      return;
+    // 1) Remove any prior wrapper we added
+    const prev = svg.querySelector('g[data-m10-leftwrap="1"]');
+    if (prev) {
+      while (prev.firstChild) prev.parentNode.insertBefore(prev.firstChild, prev);
+      prev.remove();
     }
 
-    // Discover systems (native → clustered → broad)
-    let systems = findSystemsNative(svg);
-    let mode = "native";
-    if (!systems.length) { systems = synthesizeSystemsFromVexStaves(svg); mode = systems.length ? "stave-cluster" : "none"; }
-    if (!systems.length) { systems = synthesizeSystemsBroad(svg); if (systems.length) mode = "broad-cluster"; }
-    if (!systems.length) { debugSelectorReport(svg); console.info("[M10] no systems found — skipping."); return; }
-
-    // Normalize + order (reading order)
-    const items = systems
-      .map(g => ({ g, bb: worldBBox(svg, g) }))
-      .filter(it => it.bb.width > 0 && it.bb.height > 0)
-      .sort((a,b) => (a.bb.y === b.bb.y ? a.bb.x - b.bb.x : a.bb.y - b.bb.y));
-
-    console.log(`[M10 v4] mode=${mode}; systems=${items.length}; frames=${frames.length}`);
-
-    // ------------- paginate & fit -------------
-    let pageIdx = 0;
-    const vGap  = 14;
-
-    // Vertically center on page 1 only
-    const firstInner = innerRect(frames[0]);
-    let used = 0;
-    for (const it of items) {
-      const add = (used === 0 ? 0 : vGap) + it.bb.height;
-      if (used + add <= firstInner.height) used += add; else break;
-    }
-    let cursorY = (used > 0 && used < firstInner.height)
-      ? firstInner.top + Math.floor((firstInner.height - used) / 2)
-      : pageInnerTop(frames[0]);
-
-    for (const it of items) {
-      if (!frames[pageIdx]) break;
-      let inner = innerRect(frames[pageIdx]);
-
-      // Move to next page if vertical overflow
-      if ((cursorY + it.bb.height) > (inner.top + inner.height)) {
-        pageIdx++;
-        if (!frames[pageIdx]) break;
-        inner = innerRect(frames[pageIdx]);
-        cursorY = pageInnerTop(frames[pageIdx]);
-      }
-
-      // Scale horizontally to fill inner width
-      const sx = clamp(inner.width / Math.max(1, it.bb.width), 0.5, 3.0);
-
-      // Wrap the system to avoid disturbing OSMD's internal transforms
-      const wrap = ensureWrapper(svg, it.g);
-
-      // compute translation AFTER scale:
-      // newLeft = it.bb.x * sx + tx  =>  tx = inner.left - it.bb.x * sx
-      const tx = inner.left - it.bb.x * sx;
-      // y is not scaled
-      const ty = cursorY - it.bb.y;
-
-      applyTransform(wrap, sx, tx, ty);
-
-      // advance cursor
-      cursorY += it.bb.height + vGap;
-
-      // refresh bb for debugging (optional)
-      // it.bb = worldBBox(svg, wrap);
-    }
-
-    // Snap view to page 1 left (under overlays)
-    host.scrollLeft = 0;
-    svg.style.marginLeft = "0";
-    svg.style.left = "0";
-    svg.style.position = "relative";
-  }
-
-  // ---------------- utils (self-contained) ----------------
-
-  // Convert CSS pixel rects to SVG user units using screenCTM inverse
-  function collectFrames(svg, framesWrap) {
-    const toSvg = makeCssToSvg(svg);
-    const out = [];
-    framesWrap.querySelectorAll(".aa-pageframe").forEach(el => {
-      const r = el.getBoundingClientRect();
-      const tl = toSvg(r.left,  r.top);
-      const br = toSvg(r.right, r.bottom);
-      out.push({
-        el,
-        left: tl.x, top: tl.y, right: br.x, bottom: br.y,
-        width: br.x - tl.x, height: br.y - tl.y
-      });
-    });
-    return out;
-  }
-
-  function makeCssToSvg(svg) {
-    const ctm = svg.getScreenCTM && svg.getScreenCTM();
-    if (!ctm || !ctm.inverse) return (x,y) => ({ x, y }); // graceful fallback
-    const inv = ctm.inverse();
-    return (x,y) => {
-      const pt = svg.createSVGPoint();
-      pt.x = x; pt.y = y;
-      const p = pt.matrixTransform(inv);
-      return { x: p.x, y: p.y };
-    };
-  }
-
-  // Bounding box in SVG/world units (includes existing transforms)
-  function worldBBox(svg, el) {
-    try {
-      const r  = el.getBoundingClientRect();
-      const to = makeCssToSvg(svg);
-      const tl = to(r.left,  r.top);
-      const br = to(r.right, r.bottom);
-      return { x: tl.x, y: tl.y, width: br.x - tl.x, height: br.y - tl.y };
-    } catch { return { x:0, y:0, width:0, height:0 }; }
-  }
-
-  // Page inner rectangles (in SVG units)
-  function innerPad(f)     { return Math.max(14, Math.floor(f.width * 0.04)); }
-  function pageInnerTop(f) { return f.top + 12; }
-  function innerRect(f) {
-    const pad = innerPad(f);
-    return {
-      left:   f.left + pad,
-      top:    f.top  + 12,
-      right:  f.right - pad,
-      bottom: f.bottom - 12,
-      width:  Math.max(0, f.width  - pad*2),
-      height: Math.max(0, f.height - 24),
-    };
-  }
-  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-
-  // Discovery paths
-  function findSystemsNative(svg) {
-    const pages = svg.querySelectorAll('g[id^="page"]');
-    if (!pages.length) return [];
-    const systems = [];
-    pages.forEach(pg => {
-      const sysKids = Array.from(pg.children)
-        .filter(ch => /System|system|osmd-system/i.test(ch.id || ch.getAttribute("class") || ""));
-      if (sysKids.length) systems.push(...sysKids);
-    });
-    if (systems.length) return systems;
-    const fallback = svg.querySelectorAll('g[id*="System"], g[class*="system"]');
-    return Array.from(fallback || []);
-  }
-
-  function synthesizeSystemsFromVexStaves(svg) {
-    const staves = Array.from(svg.querySelectorAll('g[class*="vf-stave"], g[class*="vf-stavenote"]'));
-    if (!staves.length) return [];
-    const rects   = staves.map(g => ({ g, bb: worldBBox(svg, g) }));
-    const yThresh = estimateYThresh(rects.map(r => r.bb.height));
-    const rows    = clusterNearest(rects.map(r=>r.bb), yThresh);
-    const systems = [];
-    rows.forEach((row, idx) => {
-      const nodes = staves.filter((g, i) => row.items.includes(rects[i].bb));
-      const grp   = wrapAsGroup(svg, nodes, `m10-synth-sys-${idx}`);
-      if (grp) systems.push(grp);
-    });
-    return systems;
-  }
-
-  function synthesizeSystemsBroad(svg) {
-    const candidates = Array.from(svg.querySelectorAll('g[class*="vf-"], g[id*="System"], g[class*="system"], g[class*="measure"]'));
-    if (!candidates.length) return [];
-    const rects   = candidates.map(g => ({ g, bb: worldBBox(svg, g) }));
-    const yThresh = estimateYThresh(rects.map(r => r.bb.height));
-    const rows    = clusterNearest(rects.map(r=>r.bb), yThresh);
-    const systems = [];
-    rows.forEach((row, idx) => {
-      const nodes = candidates.filter((g, i) => row.items.includes(rects[i].bb));
-      const grp   = wrapAsGroup(svg, nodes, `m10-broad-sys-${idx}`);
-      if (grp) systems.push(grp);
-    });
-    return systems;
-  }
-
-  // Clustering helpers (rows by near-equal Y)
-  function estimateYThresh(heights) {
-    if (!heights.length) return 24;
-    const sorted = heights.slice().sort((a,b)=>a-b);
-    const med = sorted[Math.floor(sorted.length/2)] || 24;
-    return Math.max(12, Math.min(Math.round(med * 0.75), 60));
-  }
-  function clusterNearest(rects, yThresh) {
-    const rows = [];
-    rects.sort((a,b) => (a.y === b.y ? a.x - b.x : a.y - b.y));
-    for (const r of rects) {
-      let row = rows[rows.length-1];
-      if (!row || Math.abs(r.y - row.y) > yThresh) rows.push({ y: r.y, items: [r] });
-      else row.items.push(r);
-    }
-    return rows.map(row => {
-      const items = row.items;
-      let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
-      items.forEach(it => {
-        minX = Math.min(minX, it.x);
-        minY = Math.min(minY, it.y);
-        maxX = Math.max(maxX, it.x + it.width);
-        maxY = Math.max(maxY, it.y + it.height);
-      });
-      return { x:minX, y:minY, width:maxX-minX, height:maxY-minY, items };
-    });
-  }
-
-  // Transform helpers
-  function cleanupOld(svg) {
-    // restore transforms
-    svg.querySelectorAll("[data-m10-transform-orig]").forEach(g => {
-      const orig = g.getAttribute("data-m10-transform-orig");
-      if (orig != null) g.setAttribute("transform", orig); else g.removeAttribute("transform");
-      g.removeAttribute("data-m10-transform-orig");
-    });
-    // unwrap previous M10 wrappers
-    svg.querySelectorAll("g[data-m10-wrap]").forEach(w => {
-      while (w.firstChild) w.parentNode.insertBefore(w.firstChild, w);
-      w.remove();
-    });
-  }
-  function ensureWrapper(svg, node) {
-    if (node && node.getAttribute && node.getAttribute("data-m10-wrap") === "inner") {
-      return node; // already a wrapper (shouldn’t normally happen)
-    }
-    const parent = node.parentNode;
+    // 2) Create a wrapper around all visible content (avoid touching <defs>)
     const wrap = document.createElementNS(svg.namespaceURI, "g");
-    wrap.setAttribute("data-m10-wrap", "inner");
-    parent.insertBefore(wrap, node);
-    wrap.appendChild(node);
-    // remember original transform on the wrapper target for later cleanup
-    if (!node.hasAttribute("data-m10-transform-orig")) {
-      const orig = node.getAttribute("transform");
-      node.setAttribute("data-m10-transform-orig", orig != null ? orig : "");
-    }
-    return wrap;
-  }
-  // Apply transform to wrapper: scale FIRST, then translate (translation not scaled)
-  function applyTransform(wrap, sx, tx, ty) {
-    wrap.setAttribute("transform", `scale(${sx},1) translate(${tx},${ty})`);
+    wrap.setAttribute("data-m10-leftwrap", "1");
+    const children = Array.from(svg.childNodes).filter(n =>
+      n.nodeType === 1 && n.tagName.toLowerCase() !== "defs"
+    );
+    const anchor = children[0] || null;
+    if (anchor) svg.insertBefore(wrap, anchor);
+    children.forEach(n => wrap.appendChild(n));
+
+    // 3) Compute the left-most X of the music (in SVG units)
+    const leftX = contentLeftSvg(svg, wrap);
+
+    // 4) Compute the left edge of the first page frame (in SVG units)
+    const frame0 = framesWrap.querySelector(".aa-pageframe");
+    if (!frame0) return;
+    const firstLeft = cssPointToSvg(svg, frame0.getBoundingClientRect().left, 0).x;
+
+    // 5) Translate so music's left aligns to the frame's inner-left padding
+    //    Tweak 'pad' if you want a wider margin inside the rounded frame.
+    const pad = Math.max(10, Math.round(frame0.getBoundingClientRect().width * 0.03));
+    const padSvg = cssDeltaToSvgX(svg, pad);
+    const targetLeft = firstLeft + padSvg;
+
+    const dx = targetLeft - leftX;
+    wrap.setAttribute("transform", `translate(${dx},0)`);
+
+    // Ensure viewport is scrolled to page 1
+    host.scrollLeft = 0;
   }
 
-  // Grouping helper (for synthesized systems)
-  function wrapAsGroup(svg, nodes, id) {
-    if (!nodes || !nodes.length) return null;
-    const parent = nodes[0].parentNode; if (!parent) return null;
-    const g = document.createElementNS(svg.namespaceURI, "g");
-    g.setAttribute("id", id);
-    parent.insertBefore(g, nodes[0]);
-    for (const n of nodes) g.appendChild(n);
-    return g;
+  // ---------- helpers (CSS↔SVG conversion + geometry) ----------
+  function cssPointToSvg(svg, xCss, yCss) {
+    const ctm = svg.getScreenCTM && svg.getScreenCTM();
+    if (!ctm || !ctm.inverse) return { x: xCss, y: yCss };
+    const inv = ctm.inverse();
+    const pt = svg.createSVGPoint();
+    pt.x = xCss; pt.y = yCss;
+    const p = pt.matrixTransform(inv);
+    return { x: p.x, y: p.y };
   }
-
-  // Diagnostics
-  function debugSelectorReport(svg) {
-    const count = (sel) => svg.querySelectorAll(sel).length;
-    console.log("[M10] selector report:", {
-      'g[id^="page"]':            count('g[id^="page"]'),
-      'g[id*="System"]':          count('g[id*="System"]'),
-      'g[class*="system"]':       count('g[class*="system"]'),
-      'g[class*="vf-stave"]':     count('g[class*="vf-stave"]'),
-      'g[class*="vf-stavenote"]': count('g[class*="vf-stavenote"]'),
-      'g[class*="measure"]':      count('g[class*="measure"]'),
+  function cssDeltaToSvgX(svg, dxCss) {
+    const a = cssPointToSvg(svg, 0, 0);
+    const b = cssPointToSvg(svg, dxCss, 0);
+    return b.x - a.x;
+  }
+  function contentLeftSvg(svg, node) {
+    let minX = Infinity;
+    const items = node ? Array.from(node.children) : [];
+    items.forEach(el => {
+      try {
+        const r = el.getBoundingClientRect();
+        const left = cssPointToSvg(svg, r.left, r.top).x;
+        if (isFinite(left)) minX = Math.min(minX, left);
+      } catch(_) {}
     });
+    if (!isFinite(minX)) minX = 0;
+    return minX;
   }
 })();
 
