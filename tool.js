@@ -3211,20 +3211,20 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M10) Sequential pagination fit (v2, self-contained)
-        - Find systems (native → vf-stave clustering → broad clustering)
-        - Stretch each system to the page’s inner width (incl. last system)
-        - Anchor left edge to page-1 frame (under overlays)
-        - Center vertically on page 1 only
+   M10) Sequential pagination fit (v3, self-contained; CSS→SVG fix)
+        - Convert page-frame rects from CSS pixels to SVG units
+        - Stretch each system to the page inner width (incl. last)
+        - Anchor flush-left under page 1 overlays; center vertically on page 1
    ------------------------------------------------------------------------- */
 ;(function () {
-  // Run after OSMD paints (wired by your render pipeline)
+  // Run after OSMD paints
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => {
       try { m10_run(host); } catch (e) { console.warn("[M10] error:", e); }
     });
   }
-  // Keep things fitted when the container resizes
+
+  // Re-fit on container resize
   const ro = new ResizeObserver(() => {
     const host = document.getElementById("aa-osmd-box");
     if (host && host.querySelector("svg")) {
@@ -3236,7 +3236,7 @@ function ensureXmlHeader(xml) {
     ? document.addEventListener("DOMContentLoaded", bootRO)
     : bootRO();
 
-  // ---------------- core ----------------
+  // ---------------- main ----------------
   function m10_run(host) {
     if (!host) return;
     const svg        = host.querySelector("svg");
@@ -3249,28 +3249,22 @@ function ensureXmlHeader(xml) {
     svg.style.position = "relative"; svg.style.zIndex = "2";
     if (ov) ov.style.zIndex = "3";
 
-    // Clear previous transforms from M10
+    // Clear prior transforms
     cleanupOld(svg);
 
-    const frames = collectFrames(framesWrap);
-    if (!frames.length) return;
-
-    // --- discover systems ---------------------------------------------------
-    let systems = findSystemsNative(svg);
-    let mode = "native";
-    if (!systems.length) {
-      systems = synthesizeSystemsFromVexStaves(svg);
-      mode = systems.length ? "stave-cluster" : "none";
-    }
-    if (!systems.length) {
-      systems = synthesizeSystemsBroad(svg);
-      if (systems.length) mode = "broad-cluster";
-    }
-    if (!systems.length) {
-      debugSelectorReport(svg);
-      console.info("[M10] no systems found — skipping.");
+    // Convert page frames to SVG coordinate space
+    const frames = collectFrames(svg, framesWrap);
+    if (!frames.length) {
+      console.info("[M10] no frames found");
       return;
     }
+
+    // Discover systems
+    let systems = findSystemsNative(svg);
+    let mode = "native";
+    if (!systems.length) { systems = synthesizeSystemsFromVexStaves(svg); mode = systems.length ? "stave-cluster" : "none"; }
+    if (!systems.length) { systems = synthesizeSystemsBroad(svg); if (systems.length) mode = "broad-cluster"; }
+    if (!systems.length) { debugSelectorReport(svg); console.info("[M10] no systems found — skipping."); return; }
 
     // Normalize + order
     const items = systems
@@ -3278,9 +3272,9 @@ function ensureXmlHeader(xml) {
       .filter(it => it.bb.width > 0 && it.bb.height > 0)
       .sort((a,b) => (a.bb.y === b.bb.y ? a.bb.x - b.bb.x : a.bb.y - b.bb.y));
 
-    console.log(`[M10 v2] mode=${mode}; systems=${items.length}; frames=${frames.length}`);
+    console.log(`[M10 v3] mode=${mode}; systems=${items.length}; frames=${frames.length}`);
 
-    // --- paginate & fit -----------------------------------------------------
+    // ------------- paginate & fit -------------
     let pageIdx = 0;
     const vGap  = 14;
 
@@ -3302,7 +3296,7 @@ function ensureXmlHeader(xml) {
       const bb0  = it.bb;
       const sysH = bb0.height;
 
-      // move to next page if vertical overflow would occur
+      // Next page if vertical overflow
       if ((cursorY + sysH) > (inner.top + inner.height)) {
         pageIdx++;
         if (!frames[pageIdx]) break;
@@ -3310,19 +3304,20 @@ function ensureXmlHeader(xml) {
         cursorY = pageInnerTop(frames[pageIdx]);
       }
 
-      // Stretch horizontally to fill the frame’s inner width
+      // Stretch to exactly the inner width (SVG units on both sides now)
       const sx = clamp(inner.width / Math.max(1, bb0.width), 0.5, 3.0);
 
-      // IMPORTANT: translate is scaled by the following scale(sx,1).
-      // Pre-divide X translation by sx so the left edge anchors to inner.left.
+      // *** Critical fix ***
+      // translate(...) is affected by the following scale(sx,1).
+      // Pre-divide X translation by sx so the left edge pins to inner.left.
       const tx = (inner.left - bb0.x) / sx;
-      const ty = (cursorY   - bb0.y); // Y is not scaled
+      const ty = (cursorY   - bb0.y); // Y not scaled
 
       applyTransform(it.g, tx, ty, sx);
       cursorY += sysH + vGap;
     }
 
-    // Ensure we’re on page 1 and flush-left under overlays
+    // Snap view to page 1 left (under overlays)
     host.scrollLeft = 0;
     svg.style.marginLeft = "0";
     svg.style.left = "0";
@@ -3330,14 +3325,39 @@ function ensureXmlHeader(xml) {
   }
 
   // ---------------- utils (self-contained) ----------------
-  function collectFrames(framesWrap) {
+
+  // Convert CSS pixel rects to SVG user units using screenCTM inverse
+  function collectFrames(svg, framesWrap) {
+    const toSvg = makeCssToSvg(svg);
     const out = [];
     framesWrap.querySelectorAll(".aa-pageframe").forEach(el => {
       const r = el.getBoundingClientRect();
-      out.push({ el, left:r.left, top:r.top, right:r.right, bottom:r.bottom, width:r.width, height:r.height });
+      const tl = toSvg(r.left,  r.top);
+      const br = toSvg(r.right, r.bottom);
+      out.push({
+        el,
+        left: tl.x, top: tl.y, right: br.x, bottom: br.y,
+        width: br.x - tl.x, height: br.y - tl.y
+      });
     });
     return out;
   }
+
+  function makeCssToSvg(svg) {
+    const ctm = svg.getScreenCTM && svg.getScreenCTM();
+    if (!ctm || !ctm.inverse) {
+      // fallback: assume 1:1 when CTM not available
+      return (x,y) => ({ x, y });
+    }
+    const inv = ctm.inverse();
+    return (x,y) => {
+      const pt = svg.createSVGPoint();
+      pt.x = x; pt.y = y;
+      const p = pt.matrixTransform(inv);
+      return { x: p.x, y: p.y };
+    };
+  }
+
   function innerPad(f)     { return Math.max(14, Math.floor(f.width * 0.04)); }
   function pageInnerTop(f) { return f.top + 12; }
   function innerRect(f) {
@@ -3351,9 +3371,53 @@ function ensureXmlHeader(xml) {
       height: Math.max(0, f.height - 24),
     };
   }
-  function safeBBox(el) { try { return el.getBBox(); } catch(_) { return { x:0, y:0, width:0, height:0 }; } }
-  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
+  // Discovery paths
+  function findSystemsNative(svg) {
+    const pages = svg.querySelectorAll('g[id^="page"]');
+    if (!pages.length) return [];
+    const systems = [];
+    pages.forEach(pg => {
+      const sysKids = Array.from(pg.children)
+        .filter(ch => /System|system|osmd-system/i.test(ch.id || ch.getAttribute("class") || ""));
+      if (sysKids.length) systems.push(...sysKids);
+    });
+    if (systems.length) return systems;
+    const fallback = svg.querySelectorAll('g[id*="System"], g[class*="system"]');
+    return Array.from(fallback || []);
+  }
+
+  function synthesizeSystemsFromVexStaves(svg) {
+    const staves = Array.from(svg.querySelectorAll('g[class*="vf-stave"], g[class*="vf-stavenote"]'));
+    if (!staves.length) return [];
+    const rects   = staves.map(g => safeBBox(g));
+    const yThresh = estimateYThresh(rects.map(r => r.height));
+    const rows    = clusterNearest(rects, yThresh);
+    const systems = [];
+    rows.forEach((row, idx) => {
+      const nodes = staves.filter((g, i) => row.items.includes(rects[i]));
+      const grp   = wrapAsGroup(svg, nodes, `m10-synth-sys-${idx}`);
+      if (grp) systems.push(grp);
+    });
+    return systems;
+  }
+
+  function synthesizeSystemsBroad(svg) {
+    const candidates = Array.from(svg.querySelectorAll('g[class*="vf-"], g[id*="System"], g[class*="system"], g[class*="measure"]'));
+    if (!candidates.length) return [];
+    const rects   = candidates.map(g => safeBBox(g));
+    const yThresh = estimateYThresh(rects.map(r => r.height));
+    const rows    = clusterNearest(rects, yThresh);
+    const systems = [];
+    rows.forEach((row, idx) => {
+      const nodes = candidates.filter((g, i) => row.items.includes(rects[i]));
+      const grp   = wrapAsGroup(svg, nodes, `m10-broad-sys-${idx}`);
+      if (grp) systems.push(grp);
+    });
+    return systems;
+  }
+
+  // Clustering helpers
   function estimateYThresh(heights) {
     if (!heights.length) return 24;
     const sorted = heights.slice().sort((a,b)=>a-b);
@@ -3365,11 +3429,8 @@ function ensureXmlHeader(xml) {
     rects.sort((a,b) => (a.y === b.y ? a.x - b.x : a.y - b.y));
     for (const r of rects) {
       let row = rows[rows.length-1];
-      if (!row || Math.abs(r.y - row.y) > yThresh) {
-        rows.push({ y: r.y, items: [r] });
-      } else {
-        row.items.push(r);
-      }
+      if (!row || Math.abs(r.y - row.y) > yThresh) rows.push({ y: r.y, items: [r] });
+      else row.items.push(r);
     }
     return rows.map(row => {
       const items = row.items;
@@ -3384,81 +3445,11 @@ function ensureXmlHeader(xml) {
     });
   }
 
-  // ---- native (preferred) --------------------------------------------------
-  function findSystemsNative(svg) {
-    const pages = svg.querySelectorAll('g[id^="page"]');
-    if (!pages.length) return [];
-
-    const systems = [];
-    pages.forEach(pg => {
-      const sysKids = Array.from(pg.children)
-        .filter(ch => /System|system|osmd-system/i.test(ch.id || ch.getAttribute("class") || ""));
-      if (sysKids.length) systems.push(...sysKids);
-    });
-
-    if (systems.length) return systems;
-
-    // other OSMD shapes
-    const fallback = svg.querySelectorAll('g[id*="System"], g[class*="system"]');
-    return Array.from(fallback || []);
-  }
-
-  // ---- VexFlow stave clustering (secondary) --------------------------------
-  function synthesizeSystemsFromVexStaves(svg) {
-    const staves = Array.from(svg.querySelectorAll('g[class*="vf-stave"], g[class*="vf-stavenote"]'));
-    if (!staves.length) return [];
-
-    const rects   = staves.map(g => safeBBox(g));
-    const yThresh = estimateYThresh(rects.map(r => r.height));
-    const rows    = clusterNearest(rects, yThresh);
-
-    // wrap original stave children into row groups (preserve z-order)
-    const systems = [];
-    rows.forEach((row, idx) => {
-      const nodes = staves.filter((g, i) => row.items.includes(rects[i]));
-      const grp   = wrapAsGroup(svg, nodes, `m10-synth-sys-${idx}`);
-      if (grp) systems.push(grp);
-    });
-    return systems;
-  }
-
-  // ---- Broad clustering across note heads/measures (last resort) -----------
-  function synthesizeSystemsBroad(svg) {
-    const candidates = Array.from(svg.querySelectorAll('g[class*="vf-"], g[id*="System"], g[class*="system"], g[class*="measure"]'));
-    if (!candidates.length) return [];
-
-    const rects   = candidates.map(g => safeBBox(g));
-    const yThresh = estimateYThresh(rects.map(r => r.height));
-    const rows    = clusterNearest(rects, yThresh);
-
-    const systems = [];
-    rows.forEach((row, idx) => {
-      const nodes = candidates.filter((g, i) => row.items.includes(rects[i]));
-      const grp   = wrapAsGroup(svg, nodes, `m10-broad-sys-${idx}`);
-      if (grp) systems.push(grp);
-    });
-    return systems;
-  }
-
-  // ---- Diag helper ---------------------------------------------------------
-  function debugSelectorReport(svg) {
-    const count = (sel) => svg.querySelectorAll(sel).length;
-    console.log("[M10] selector report:", {
-      'g[id^="page"]':            count('g[id^="page"]'),
-      'g[id*="System"]':          count('g[id*="System"]'),
-      'g[class*="system"]':       count('g[class*="system"]'),
-      'g[class*="vf-stave"]':     count('g[class*="vf-stave"]'),
-      'g[class*="vf-stavenote"]': count('g[class*="vf-stavenote"]'),
-      'g[class*="measure"]':      count('g[class*="measure"]'),
-    });
-  }
-
-  // ---- transform helpers ---------------------------------------------------
+  // Misc utils
   function cleanupOld(svg) {
     svg.querySelectorAll("[data-m10]").forEach(g => {
       const orig = g.getAttribute("data-m10-transform-orig");
-      if (orig != null) g.setAttribute("transform", orig);
-      else g.removeAttribute("transform");
+      if (orig != null) g.setAttribute("transform", orig); else g.removeAttribute("transform");
       g.removeAttribute("data-m10-transform-orig");
       g.removeAttribute("data-m10");
     });
@@ -3473,12 +3464,25 @@ function ensureXmlHeader(xml) {
   }
   function wrapAsGroup(svg, nodes, id) {
     if (!nodes || !nodes.length) return null;
-    const parent = nodes[0].parentNode;
-    const grp = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    grp.setAttribute("id", id);
-    nodes.forEach(n => grp.appendChild(n));
-    parent.appendChild(grp);
-    return grp;
+    const parent = nodes[0].parentNode; if (!parent) return null;
+    const g = document.createElementNS(svg.namespaceURI, "g");
+    g.setAttribute("id", id);
+    parent.insertBefore(g, nodes[0]);
+    for (const n of nodes) g.appendChild(n);
+    return g;
+  }
+  function safeBBox(el) { try { return el.getBBox(); } catch(_) { return { x:0, y:0, width:0, height:0 }; } }
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  function debugSelectorReport(svg) {
+    const count = (sel) => svg.querySelectorAll(sel).length;
+    console.log("[M10] selector report:", {
+      'g[id^="page"]':            count('g[id^="page"]'),
+      'g[id*="System"]':          count('g[id*="System"]'),
+      'g[class*="system"]':       count('g[class*="system"]'),
+      'g[class*="vf-stave"]':     count('g[class*="vf-stave"]'),
+      'g[class*="vf-stavenote"]': count('g[class*="vf-stavenote"]'),
+      'g[class*="measure"]':      count('g[class*="measure"]'),
+    });
   }
 })();
 
