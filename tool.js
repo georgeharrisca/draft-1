@@ -3210,31 +3210,35 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M10) Left-justify score into the first (left-most) page frame
-        - No re-pagination or scaling, only a horizontal translate
-        - Safe wrapper so OSMD’s own transforms are untouched
-        - CSS→SVG conversion so frame coords match music coords
+   M10) Left+Top justify into the first (left-most) page frame
+        - No scaling or re-pagination — pure translate
+        - Safe wrapper so OSMD's own transforms remain untouched
+        - Converts frame CSS pixels → SVG units
+        - Verbose console logging for diagnostics
    ------------------------------------------------------------------------- */
 ;(function () {
-  // Run after OSMD paints
+  const MODULE = "[M10 LT-justify]";
+  const VER = "v1.0";
+
+  // Run after OSMD paints (your pipeline emits this)
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => {
-      try { m10_leftJustify(host); } catch (e) { console.warn("[M10] error:", e); }
+      try { m10_alignLeftTop(host, MODULE, VER); } catch (e) { console.warn(MODULE, "error:", e); }
     });
   } else {
     document.addEventListener("DOMContentLoaded", () => {
       const host = document.getElementById("aa-osmd-box");
       if (host && host.querySelector("svg")) {
-        try { m10_leftJustify(host); } catch (e) { console.warn("[M10] error:", e); }
+        try { m10_alignLeftTop(host, MODULE, VER); } catch (e) { console.warn(MODULE, "error:", e); }
       }
     });
   }
 
-  // Re-apply on resize
+  // Re-apply on container resize
   const ro = new ResizeObserver(() => {
     const host = document.getElementById("aa-osmd-box");
     if (host && host.querySelector("svg")) {
-      try { m10_leftJustify(host); } catch (_) {}
+      try { m10_alignLeftTop(host, MODULE, VER); } catch (_) {}
     }
   });
   const bootRO = () => { const h = document.getElementById("aa-osmd-box"); if (h) ro.observe(h); };
@@ -3242,53 +3246,89 @@ function ensureXmlHeader(xml) {
     ? document.addEventListener("DOMContentLoaded", bootRO)
     : bootRO();
 
-  function m10_leftJustify(host) {
+  function m10_alignLeftTop(host, MODULE, VER) {
+    const t0 = performance.now();
     const svg        = host.querySelector("svg");
     const framesWrap = host.querySelector(".aa-pageframes");
-    if (!svg || !framesWrap) return;
+    if (!svg || !framesWrap) { console.info(MODULE, "no svg/frames found"); return; }
 
-    // 1) Remove any prior wrapper we added
-    const prev = svg.querySelector('g[data-m10-leftwrap="1"]');
+    // ---- unwrap any previous run
+    const prev = svg.querySelector('g[data-m10-ltwrap="1"]');
     if (prev) {
       while (prev.firstChild) prev.parentNode.insertBefore(prev.firstChild, prev);
       prev.remove();
     }
 
-    // 2) Create a wrapper around all visible content (avoid touching <defs>)
+    // ---- wrap all visible SVG nodes (avoid <defs>)
     const wrap = document.createElementNS(svg.namespaceURI, "g");
-    wrap.setAttribute("data-m10-leftwrap", "1");
-    const children = Array.from(svg.childNodes).filter(n =>
-      n.nodeType === 1 && n.tagName.toLowerCase() !== "defs"
-    );
-    const anchor = children[0] || null;
+    wrap.setAttribute("data-m10-ltwrap", "1");
+    const kids = Array.from(svg.childNodes).filter(n => n.nodeType === 1 && n.tagName.toLowerCase() !== "defs");
+    const anchor = kids[0] || null;
     if (anchor) svg.insertBefore(wrap, anchor);
-    children.forEach(n => wrap.appendChild(n));
+    kids.forEach(n => wrap.appendChild(n));
 
-    // 3) Compute the left-most X of the music (in SVG units)
-    const leftX = contentLeftSvg(svg, wrap);
+    // ---- compute content bbox (in SVG user units)
+    const contentBB = bboxWorld(svg, wrap);
 
-    // 4) Compute the left edge of the first page frame (in SVG units)
-    const frame0 = framesWrap.querySelector(".aa-pageframe");
-    if (!frame0) return;
-    const firstLeft = cssPointToSvg(svg, frame0.getBoundingClientRect().left, 0).x;
+    // ---- first page frame (DOM order is left→right)
+    const firstFrame = framesWrap.querySelector(".aa-pageframe");
+    if (!firstFrame) { console.info(MODULE, "no .aa-pageframe found"); return; }
 
-    // 5) Translate so music's left aligns to the frame's inner-left padding
-    //    Tweak 'pad' if you want a wider margin inside the rounded frame.
-    const pad = Math.max(10, Math.round(frame0.getBoundingClientRect().width * 0.03));
-    const padSvg = cssDeltaToSvgX(svg, pad);
-    const targetLeft = firstLeft + padSvg;
+    // frame outer rect in CSS px
+    const frCSS = firstFrame.getBoundingClientRect();
 
-    const dx = targetLeft - leftX;
-    wrap.setAttribute("transform", `translate(${dx},0)`);
+    // convert frame edges to SVG units
+    const frTopLeftSVG     = cssPointToSvg(svg, frCSS.left,  frCSS.top);
+    const frWidthSVGDelta  = cssDeltaToSvgX(svg, frCSS.width);
+    const frHeightSVGDelta = cssDeltaToSvgY(svg, frCSS.height);
 
-    // Ensure viewport is scrolled to page 1
+    // inner padding (tweak if you want): 3% of frame width, min 10px; top pad 12px
+    const padX_css = Math.max(10, Math.round(frCSS.width * 0.03));
+    const padY_css = 12;
+
+    const padX_svg = cssDeltaToSvgX(svg, padX_css);
+    const padY_svg = cssDeltaToSvgY(svg, padY_css);
+
+    const innerLeftSVG = frTopLeftSVG.x + padX_svg;
+    const innerTopSVG  = frTopLeftSVG.y + padY_svg;
+
+    // ---- translation needed (no scaling)
+    const dx = innerLeftSVG - contentBB.x;
+    const dy = innerTopSVG  - contentBB.y;
+
+    // apply
+    wrap.setAttribute("transform", `translate(${dx},${dy})`);
+
+    // anchor the viewport to page 1
     host.scrollLeft = 0;
+
+    // ---- logging
+    const t1 = performance.now();
+    console.groupCollapsed(`${MODULE} ${VER} :: applied`);
+    console.log("contentBB (SVG):", num(contentBB));
+    console.log("frame CSS (px):", neat(frCSS));
+    console.log("frame top-left (SVG):", num(frTopLeftSVG));
+    console.log("frame size (SVG deltas):", { width: r2(frWidthSVGDelta), height: r2(frHeightSVGDelta) });
+    console.log("padding  css(px):", { padX_css, padY_css }, "  svg:", { padX_svg: r2(padX_svg), padY_svg: r2(padY_svg) });
+    console.log("targets (SVG):", { innerLeftSVG: r2(innerLeftSVG), innerTopSVG: r2(innerTopSVG) });
+    console.log("translate applied:", { dx: r2(dx), dy: r2(dy) });
+    console.log("time:", `${r2(t1 - t0)} ms`);
+    console.groupEnd();
   }
 
-  // ---------- helpers (CSS↔SVG conversion + geometry) ----------
+  // ---------- helpers: geometry & CSS↔SVG conversions ----------
+  function bboxWorld(svg, el) {
+    try {
+      const r  = el.getBoundingClientRect();
+      const tl = cssPointToSvg(svg, r.left,  r.top);
+      const br = cssPointToSvg(svg, r.right, r.bottom);
+      return { x: tl.x, y: tl.y, width: br.x - tl.x, height: br.y - tl.y };
+    } catch { return { x:0, y:0, width:0, height:0 }; }
+  }
+
   function cssPointToSvg(svg, xCss, yCss) {
     const ctm = svg.getScreenCTM && svg.getScreenCTM();
-    if (!ctm || !ctm.inverse) return { x: xCss, y: yCss };
+    if (!ctm || !ctm.inverse) return { x: xCss, y: yCss }; // fallback (rare)
     const inv = ctm.inverse();
     const pt = svg.createSVGPoint();
     pt.x = xCss; pt.y = yCss;
@@ -3300,19 +3340,15 @@ function ensureXmlHeader(xml) {
     const b = cssPointToSvg(svg, dxCss, 0);
     return b.x - a.x;
   }
-  function contentLeftSvg(svg, node) {
-    let minX = Infinity;
-    const items = node ? Array.from(node.children) : [];
-    items.forEach(el => {
-      try {
-        const r = el.getBoundingClientRect();
-        const left = cssPointToSvg(svg, r.left, r.top).x;
-        if (isFinite(left)) minX = Math.min(minX, left);
-      } catch(_) {}
-    });
-    if (!isFinite(minX)) minX = 0;
-    return minX;
+  function cssDeltaToSvgY(svg, dyCss) {
+    const a = cssPointToSvg(svg, 0, 0);
+    const b = cssPointToSvg(svg, 0, dyCss);
+    return b.y - a.y;
   }
-})();
 
+  // ---------- helpers: nicer logging ----------
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const num = (o) => ({ x: r2(o.x), y: r2(o.y), width: r2(o.width), height: r2(o.height) });
+  const neat = (r) => ({ left: r2(r.left), top: r2(r.top), width: r2(r.width), height: r2(r.height) });
+})();
 
