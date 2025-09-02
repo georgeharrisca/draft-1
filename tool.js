@@ -3212,19 +3212,28 @@ function ensureXmlHeader(xml) {
 
 /* =========================================================================
    M10) Sequential pagination fit (v2)
-        - Find systems (native OSMD -> vex-stave cluster -> broad cluster)
-        - Stretch each system to the page’s inner width (including last)
-        - Anchor left edge to page 1 frame; keep pages stacked top→bottom
+        - Find systems (native → vex-stave cluster → broad cluster)
+        - Stretch each system to the page’s inner width (incl. the last)
+        - Anchor left edge to page 1 frame; center vertically on page 1
+        - Keep pages stacked top→bottom and align under overlays
    ------------------------------------------------------------------------- */
 ;(function () {
-  // Re-run after OSMD paints (wired from M7)
+  // Run after OSMD paints (wired from your render pipeline)
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => {
       try { m10_run(host); } catch (e) { console.warn("[M10] error:", e); }
     });
+  } else {
+    // Fallback if AA bus isn't present
+    document.addEventListener("DOMContentLoaded", () => {
+      const host = document.getElementById("aa-osmd-box");
+      if (host && host.querySelector("svg")) {
+        try { m10_run(host); } catch (e) { console.warn("[M10] error:", e); }
+      }
+    });
   }
 
-  // Re-fit when the host resizes (keeps the “fit to height” feel)
+  // Re-fit on container resize (maintains fit feel)
   const ro = new ResizeObserver(() => {
     const host = document.getElementById("aa-osmd-box");
     if (host && host.querySelector("svg")) {
@@ -3236,74 +3245,84 @@ function ensureXmlHeader(xml) {
     ? document.addEventListener("DOMContentLoaded", bootRO)
     : bootRO();
 
+  // ---- main ----
   function m10_run(host) {
     if (!host) return;
-    const svg        = host.querySelector("svg");
+    const svg = host.querySelector("svg");
     const framesWrap = host.querySelector(".aa-pageframes");
     if (!svg || !framesWrap) return;
 
-    // Clear any previous M10 transforms
-    cleanupOld(svg); // keeps originals, then removes our prior transform  ✔
-    // (helpers already in your file)
+    // z-order: frames (1) < svg (2) < overlays (3)
+    const ov = host.querySelector(".aa-overlay");
+    framesWrap.style.zIndex = "1";
+    svg.style.position = "relative"; svg.style.zIndex = "2";
+    if (ov) ov.style.zIndex = "3";
+
+    // --- inline cleanup of prior M10 transforms ---
+    svg.querySelectorAll("[data-m10]").forEach(g => {
+      const orig = g.getAttribute("data-m10-transform-orig");
+      if (orig != null) g.setAttribute("transform", orig);
+      else g.removeAttribute("transform");
+      g.removeAttribute("data-m10-transform-orig");
+      g.removeAttribute("data-m10");
+    });
 
     const frames = collectFrames(framesWrap);
     if (!frames.length) return;
 
-    // --- discover systems ---------------------------------------------------
-    let systems = findSystemsNative(svg);          // native
+    // --- discover systems (using your existing helpers) ---
+    let systems = findSystemsNative(svg);
     let mode = "native";
-    if (!systems.length) {
-      systems = synthesizeSystemsFromVexStaves(svg);   // vf-stave cluster
-      mode = systems.length ? "stave-cluster" : "none";
-    }
-    if (!systems.length) {
-      systems = synthesizeSystemsBroad(svg);           // broad cluster
-      if (systems.length) mode = "broad-cluster";
-    }
-    if (!systems.length) {
-      debugSelectorReport(svg);                        // fast diagnostics
-      console.info("[M10] no systems found — skipping.");
-      return;
-    }
+    if (!systems.length) { systems = synthesizeSystemsFromVexStaves(svg); mode = systems.length ? "stave-cluster" : "none"; }
+    if (!systems.length) { systems = synthesizeSystemsBroad(svg); if (systems.length) mode = "broad-cluster"; }
+    if (!systems.length) { debugSelectorReport(svg); console.info("[M10] no systems found — skipping."); return; }
 
-    console.log(`[M10 v2] mode=${mode}; systems=${systems.length}; frames=${frames.length}`);
-
-    // Sort by reading order and cache bboxes
-    const items = systems.map(g => ({ g, bb: safeBBox(g) }))
+    // normalize + order
+    const items = systems
+      .map(g => ({ g, bb: safeBBox(g) }))
       .filter(it => it.bb.width > 0 && it.bb.height > 0)
       .sort((a,b) => (a.bb.y === b.bb.y ? a.bb.x - b.bb.x : a.bb.y - b.bb.y));
 
+    console.log(`[M10 v2] mode=${mode}; systems=${items.length}; frames=${frames.length}`);
+
     // --- paginate & fit -----------------------------------------------------
     let pageIdx = 0;
-    let cursorY = pageInnerTop(frames[0]);   // top inside the first frame
-    const vGap  = 14;                        // space between systems
+    const vGap = 14;
+
+    // Center vertically on page 1 (only)
+    const firstInner = innerRect(frames[0]);
+    let used = 0;
+    for (const it of items) {
+      const add = (used === 0 ? 0 : vGap) + it.bb.height;
+      if (used + add <= firstInner.height) used += add; else break;
+    }
+    let cursorY = (used > 0 && used < firstInner.height)
+      ? firstInner.top + Math.floor((firstInner.height - used) / 2)
+      : pageInnerTop(frames[0]);
 
     for (const it of items) {
       if (!frames[pageIdx]) break;
+      let inner = innerRect(frames[pageIdx]);
 
-      const frame = frames[pageIdx];
-      const inner = innerRect(frame);        // page inner box (left/top/width/height)
+      const bb0  = it.bb;
+      const sysH = bb0.height;
 
-      const bb0   = it.bb;
-      const sysH  = bb0.height;
-
-      // send to next page if vertical overflow would occur
+      // Next page if vertical overflow
       if ((cursorY + sysH) > (inner.top + inner.height)) {
         pageIdx++;
         if (!frames[pageIdx]) break;
+        inner = innerRect(frames[pageIdx]);
         cursorY = pageInnerTop(frames[pageIdx]);
       }
 
-      // scale horizontally to fill the frame’s inner width
+      // Stretch to exactly the inner width of the frame
       const sx = clamp(inner.width / Math.max(1, bb0.width), 0.5, 3.0);
 
-      // IMPORTANT:
-      // because we use translate(...) scale(sx,1), the translation gets scaled too.
-      // To keep the left edge anchored at inner.left, pre-divide by sx.
+      // Key: translate gets scaled by sx; pre-divide to anchor left edge
       const tx = (inner.left - bb0.x) / sx;
-      const ty = (cursorY   - bb0.y);        // y is not scaled
+      const ty = (cursorY - bb0.y); // y not scaled
 
-      // apply transform (stores original once via data-m10-transform-orig)
+      // Apply transform (remember original for future cleanup)
       const orig = it.g.getAttribute("transform");
       if (!it.g.hasAttribute("data-m10-transform-orig")) {
         it.g.setAttribute("data-m10-transform-orig", orig != null ? orig : "");
@@ -3314,12 +3333,11 @@ function ensureXmlHeader(xml) {
       cursorY += sysH + vGap;
     }
 
-    // Ensure the viewer starts on page 1 under the left-most frame/overlay
+    // Snap viewing position to page 1, flush left under overlays
     host.scrollLeft = 0;
-    const s = svg.style;
-    s.marginLeft = "0";
-    s.left = "0";
-    s.position = "relative";
+    svg.style.marginLeft = "0";
+    svg.style.left = "0";
+    svg.style.position = "relative";
   }
 })();
 
