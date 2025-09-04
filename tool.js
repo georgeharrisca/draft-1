@@ -3211,16 +3211,16 @@ function ensureXmlHeader(xml) {
 
 /* =========================================================================
    M10) Left+Top justify & width-fit into the first page frame (shrink-only)
-        - No pagination changes
-        - Uniform scale S ≤ 1 so content fits frame inner width
-        - Safe wrapper; OSMD transforms untouched
-        - CSS→SVG conversions; verbose logging
+        - Uniform scale S ≤ 1 (fit inner width), then position
+        - Use wrapper; do not touch OSMD’s own transforms
+        - CSS→SVG conversions; verbose logs
+        - IMPORTANT: SVG transforms are applied right→left, so we use
+          translate(...) scale(S)  ⇒ scale first, then translate (not scaled)
    ------------------------------------------------------------------------- */
 ;(function () {
   const MODULE = "[M10 Fit-LeftTop]";
-  const VER = "v1.1";
+  const VER = "v1.2";
 
-  // Run after OSMD paints
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => {
       try { m10_fitLeftTop(host); } catch (e) { console.warn(MODULE, "error:", e); }
@@ -3234,7 +3234,6 @@ function ensureXmlHeader(xml) {
     });
   }
 
-  // Re-apply on container resize
   const ro = new ResizeObserver(() => {
     const host = document.getElementById("aa-osmd-box");
     if (host && host.querySelector("svg")) {
@@ -3242,9 +3241,7 @@ function ensureXmlHeader(xml) {
     }
   });
   const bootRO = () => { const h = document.getElementById("aa-osmd-box"); if (h) ro.observe(h); };
-  (document.readyState === "loading")
-    ? document.addEventListener("DOMContentLoaded", bootRO)
-    : bootRO();
+  (document.readyState === "loading") ? document.addEventListener("DOMContentLoaded", bootRO) : bootRO();
 
   function m10_fitLeftTop(host) {
     const t0 = performance.now();
@@ -3252,14 +3249,11 @@ function ensureXmlHeader(xml) {
     const framesWrap = host.querySelector(".aa-pageframes");
     if (!svg || !framesWrap) { console.info(MODULE, "no svg/frames found"); return; }
 
-    // ---- unwrap our previous wrapper (if any)
+    // unwrap any previous run
     const prev = svg.querySelector('g[data-m10-fitwrap="1"]');
-    if (prev) {
-      while (prev.firstChild) prev.parentNode.insertBefore(prev.firstChild, prev);
-      prev.remove();
-    }
+    if (prev) { while (prev.firstChild) prev.parentNode.insertBefore(prev.firstChild, prev); prev.remove(); }
 
-    // ---- wrap *visible* SVG children (avoid <defs>)
+    // wrap visible svg nodes (avoid <defs>)
     const wrap = document.createElementNS(svg.namespaceURI, "g");
     wrap.setAttribute("data-m10-fitwrap", "1");
     const kids = Array.from(svg.childNodes).filter(n => n.nodeType === 1 && n.tagName.toLowerCase() !== "defs");
@@ -3267,52 +3261,49 @@ function ensureXmlHeader(xml) {
     if (anchor) svg.insertBefore(wrap, anchor);
     kids.forEach(n => wrap.appendChild(n));
 
-    // ---- current content bounds (SVG units)
+    // content bounds (SVG units)
     const contentBB = bboxWorld(svg, wrap);
-    if (!isFinite(contentBB.width) || contentBB.width <= 0) {
-      console.info(MODULE, "content width is zero; aborting"); return;
-    }
+    if (!(contentBB.width > 0 && contentBB.height > 0)) { console.info(MODULE, "empty content bbox"); return; }
 
-    // ---- first page frame + inner box
+    // first page frame + inner box
     const firstFrame = framesWrap.querySelector(".aa-pageframe");
     if (!firstFrame) { console.info(MODULE, "no .aa-pageframe found"); return; }
     const frCSS = firstFrame.getBoundingClientRect();
-
-    // Convert frame edges to SVG units
     const frTopLeftSVG = cssPointToSvg(svg, frCSS.left, frCSS.top);
+    const frBottomRightSVG = cssPointToSvg(svg, frCSS.right, frCSS.bottom);
 
-    // Inner padding (adjust to taste)
-    const padX_css = Math.max(10, Math.round(frCSS.width * 0.03)); // ~3% horizontal
-    const padY_css = 12;                                           // ~12px top
+    // inner padding
+    const padX_css = Math.max(10, Math.round(frCSS.width * 0.03));
+    const padY_css = 12;
     const padX_svg = cssDeltaToSvgX(svg, padX_css);
     const padY_svg = cssDeltaToSvgY(svg, padY_css);
 
-    const innerLeftSVG = frTopLeftSVG.x + padX_svg;
-    const innerTopSVG  = frTopLeftSVG.y + padY_svg;
-    const innerRightSVG = cssPointToSvg(svg, frCSS.right, frCSS.bottom).x - padX_svg;
+    const innerLeftSVG  = frTopLeftSVG.x + padX_svg;
+    const innerTopSVG   = frTopLeftSVG.y + padY_svg;
+    const innerRightSVG = frBottomRightSVG.x - padX_svg;
     const innerWidthSVG = Math.max(0, innerRightSVG - innerLeftSVG);
 
-    // ---- compute uniform scale (shrink-only)
+    // uniform scale (shrink only)
     let S = innerWidthSVG > 0 ? innerWidthSVG / contentBB.width : 1;
-    S = Math.min(1, S);              // shrink only (never enlarge)
-    S = Math.max(0.1, Math.min(S, 2)); // keep within sane bounds
+    S = Math.min(1, Math.max(0.1, S));
 
-    // We will apply: scale(S) translate(tx, ty)
-    // After scale(S), the left becomes S*contentBB.x, so:
-    //   tx = innerLeftSVG - S*contentBB.x
-    //   ty = innerTopSVG  - S*contentBB.y
+    // SVG applies transforms right→left, so with:
+    //   translate(tx, ty) scale(S)
+    // the scale happens FIRST, then translation (not scaled).
+    // We want:  S*contentBB.x + tx = innerLeft   ⇒ tx = innerLeft - S*contentBB.x
+    //           S*contentBB.y + ty = innerTop    ⇒ ty = innerTop  - S*contentBB.y
     const tx = innerLeftSVG - S * contentBB.x;
     const ty = innerTopSVG  - S * contentBB.y;
 
-    wrap.setAttribute("transform", `scale(${S}) translate(${tx},${ty})`);
+    wrap.setAttribute("transform", `translate(${tx},${ty}) scale(${S})`);
     host.scrollLeft = 0;
 
-    // ---- logging
+    // logs
     const t1 = performance.now();
     console.groupCollapsed(`${MODULE} ${VER} :: applied`);
     console.log("contentBB (SVG):", round4(contentBB));
     console.log("frame CSS (px):", round4Rect(frCSS));
-    console.log("frame top-left (SVG):", round2(frTopLeftSVG));
+    console.log("frame top-left/bottom-right (SVG):", round2(frTopLeftSVG), round2(frBottomRightSVG));
     console.log("padding css(px):", { padX_css, padY_css }, "svg:", round2({ padX_svg, padY_svg }));
     console.log("inner (SVG):", { innerLeftSVG: r2(innerLeftSVG), innerTopSVG: r2(innerTopSVG), innerWidthSVG: r2(innerWidthSVG) });
     console.log("scale S:", r4(S));
@@ -3332,7 +3323,7 @@ function ensureXmlHeader(xml) {
   }
   function cssPointToSvg(svg, xCss, yCss) {
     const ctm = svg.getScreenCTM && svg.getScreenCTM();
-    if (!ctm || !ctm.inverse) return { x: xCss, y: yCss }; // fallback
+    if (!ctm || !ctm.inverse) return { x: xCss, y: yCss };
     const inv = ctm.inverse();
     const pt = svg.createSVGPoint();
     pt.x = xCss; pt.y = yCss;
@@ -3355,3 +3346,4 @@ function ensureXmlHeader(xml) {
   const round4 = (o) => Object.fromEntries(Object.entries(o).map(([k,v]) => [k, r4(v)]));
   function round4Rect(r){ return { left:r4(r.left), top:r4(r.top), width:r4(r.width), height:r4(r.height) }; }
 })();
+
