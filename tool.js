@@ -3206,8 +3206,6 @@ function ensureXmlHeader(xml) {
 
 
 
-
-
 /* =========================================================================
    M10) Fit left/top (shrink-only) + FORCE last system horizontal stretch
         - Step 1: Uniform scale S ≤ 1 so the whole score fits first frame
@@ -3316,7 +3314,6 @@ function ensureXmlHeader(xml) {
     // —— FINAL PASS: stretch last system to fill the frame it overlaps most
     try {
       forceStretchLastSystem(host
-
 
 
 
