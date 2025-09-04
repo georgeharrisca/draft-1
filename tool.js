@@ -3367,47 +3367,66 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M11) Prune empty page frames
-        - After M10 aligns/scales, remove any .aa-pageframe that doesn't
-          overlap the visible rendered music
-        - Uses CSS pixel space via getBoundingClientRect (fast + robust)
+   M11) Prune empty page frames (+ overlay pruning, hide-not-remove, resilient)
+        - After M10 aligns/scales, hide any page frames with no overlap
+          with the actually rendered music bounds
+        - Also hides overlay "page frames" (common selectors)
+        - Uses CSS pixel space via getBoundingClientRect()
+        - Re-applies on resize and when frames/overlays are reinserted
         - Verbose logs
    ------------------------------------------------------------------------- */
 ;(function () {
   const MODULE = "[M11 PruneFrames]";
-  const VER = "v1.0";
+  const VER = "v1.1";
 
-  // fire after render (and after M10), and on resize
+  // Fire after render (and after M10), and on resize
   if (typeof AA !== "undefined" && AA.on) {
-    AA.on("viewer:rendered", ({ host }) => {
-      try { schedule(host); } catch (e) { console.warn(MODULE, "error:", e); }
-    });
+    AA.on("viewer:rendered", ({ host }) => defer(() => run(host)));
   } else {
     document.addEventListener("DOMContentLoaded", () => {
       const host = document.getElementById("aa-osmd-box");
-      if (host && host.querySelector("svg")) schedule(host);
+      if (host && host.querySelector("svg")) defer(() => run(host));
     });
   }
 
   const ro = new ResizeObserver(() => {
     const host = document.getElementById("aa-osmd-box");
-    if (host && host.querySelector("svg")) schedule(host);
+    if (host && host.querySelector("svg")) defer(() => run(host));
   });
   const bootRO = () => { const h = document.getElementById("aa-osmd-box"); if (h) ro.observe(h); };
-  (document.readyState === "loading")
-    ? document.addEventListener("DOMContentLoaded", bootRO)
-    : bootRO();
+  (document.readyState === "loading") ? document.addEventListener("DOMContentLoaded", bootRO) : bootRO();
 
-  // --- run one tick after M10 so its wrapper/transform is in place
-  function schedule(host) { requestAnimationFrame(() => pruneFrames(host)); }
+  // Watch for nodes being re-inserted by other modules; re-apply pruning.
+  let mo;
+  function ensureObserver(host) {
+    if (mo) return;
+    mo = new MutationObserver((muts) => {
+      for (const m of muts) {
+        if (m.type === "childList" && (m.addedNodes && m.addedNodes.length)) {
+          defer(() => run(host));
+          break;
+        }
+      }
+    });
+    const target = host || document.getElementById("aa-osmd-box");
+    if (!target) return;
+    mo.observe(target, { childList: true, subtree: true });
+  }
 
-  function pruneFrames(host) {
+  function defer(fn) {
+    // Two ticks to get behind layout/other modules (M9/M10)
+    requestAnimationFrame(() => setTimeout(fn, 0));
+  }
+
+  function run(host) {
     const svg        = host.querySelector("svg");
     const framesWrap = host.querySelector(".aa-pageframes");
-    if (!svg || !framesWrap) { console.info(MODULE, "no svg/frames"); return; }
+    const overlay    = host.querySelector(".aa-overlay");
+    if (!svg) { console.info(MODULE, "no SVG"); return; }
+
+    ensureObserver(host);
 
     // Prefer the wrapper M10 creates (so transforms are captured).
-    // Fallback: union of all visible non-defs children.
     const wrap = svg.querySelector('g[data-m10-fitwrap="1"], g[data-m10-ltwrap="1"]');
     const contentRect = wrap ? wrap.getBoundingClientRect() : unionContentRect(svg);
     if (!contentRect || contentRect.width <= 0 || contentRect.height <= 0) {
@@ -3415,23 +3434,37 @@ function ensureXmlHeader(xml) {
       return;
     }
 
-    const frames = Array.from(framesWrap.querySelectorAll(".aa-pageframe"));
-    if (!frames.length) { console.info(MODULE, "no .aa-pageframe elements"); return; }
+    // Collect frames (primary container and any strays inside host)
+    const frameEls = [];
+    if (framesWrap) frameEls.push(...framesWrap.querySelectorAll(".aa-pageframe"));
+    frameEls.push(...host.querySelectorAll(":scope > .aa-pageframe, .aa-pageframes .aa-pageframe")); // fallback sweep
 
-    const padInnerPx = 6;      // ignore a little of the frame’s border
-    const minArea    = 4;      // px^2 threshold to consider "drawn on"
+    // Collect overlay "frames" using common selectors
+    const overlayEls = [];
+    if (overlay) {
+      overlayEls.push(...overlay.querySelectorAll(".aa-pageoverlay, .aa-pageframe, :scope > *"));
+    }
 
-    let kept = 0, removed = 0;
-    frames.forEach((frame, idx) => {
-      const r  = frame.getBoundingClientRect();
-      const fr = shrinkRect(r, padInnerPx);
-      const ov = intersectionArea(fr, contentRect);
+    const padInnerPx = 6;   // ignore frame border
+    const minArea    = 4;   // px^2 threshold
+
+    let keptF = 0, hidF = 0;
+    let keptO = 0, hidO = 0;
+
+    // Hide or show frames based on overlap
+    frameEls.forEach((frame, idx) => {
+      const r = shrinkRect(frame.getBoundingClientRect(), padInnerPx);
+      const ov = intersectionArea(r, contentRect);
       const keep = ov >= minArea;
 
-      if (keep) kept++;
-      else {
-        frame.remove();
-        removed++;
+      if (keep) {
+        frame.style.display = "";      // unhide if previously hidden
+        frame.dataset.m11Hidden = "0";
+        keptF++;
+      } else {
+        frame.style.display = "none";  // hide instead of remove
+        frame.dataset.m11Hidden = "1";
+        hidF++;
       }
 
       console.log(`${MODULE} frame #${idx+1}`, {
@@ -3439,7 +3472,27 @@ function ensureXmlHeader(xml) {
       });
     });
 
-    console.info(`${MODULE} ${VER}: kept=${kept}, removed=${removed}`);
+    // Same logic for overlays (if any); use their own rects
+    overlayEls.forEach((el, idx) => {
+      // Only treat rectangle-like overlay children (skip controls)
+      if (!(el instanceof HTMLElement) || el.matches(".aa-controls, .aa-toolbar, .aa-legend")) return;
+
+      const r = shrinkRect(el.getBoundingClientRect(), padInnerPx);
+      const ov = intersectionArea(r, contentRect);
+      const keep = ov >= minArea;
+
+      if (keep) {
+        el.style.display = "";
+        el.dataset.m11Hidden = "0";
+        keptO++;
+      } else {
+        el.style.display = "none";
+        el.dataset.m11Hidden = "1";
+        hidO++;
+      }
+    });
+
+    console.info(`${MODULE} ${VER}: frames kept=${keptF}, hidden=${hidF} | overlays kept=${keptO}, hidden=${hidO}`);
   }
 
   // ----- helpers (CSS space) -----
