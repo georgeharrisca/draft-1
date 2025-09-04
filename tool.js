@@ -3209,18 +3209,17 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M10) Left+Top justify & width-fit (shrink-only) + last-system stretch
+   M10) Left+Top justify & width-fit (shrink-only) + robust last-line stretch
         - Uniform scale S ≤ 1 for whole score into first frame
         - Align top-left to first frame’s inner box
-        - FINAL PASS: stretch the last visible system horizontally to exactly
-          fill the inner width of the frame it overlaps most
-        - Uses a safe wrapper for the whole score (SVG transform)
-          and a CSS transform for the last system (pixel space)
+        - FINAL PASS: find bottom-most "line-like" <g> by geometry (no class/id
+          assumptions) and stretch it horizontally to its page frame inner width
+        - Leaves OSMD transforms untouched (SVG wrapper + CSS transform on last line)
         - Verbose logs
    ------------------------------------------------------------------------- */
 ;(function () {
   const MODULE = "[M10 Fit-LeftTop+LastStretch]";
-  const VER = "v1.3.2";
+  const VER = "v1.4";
 
   // Hook after render
   if (typeof AA !== "undefined" && AA.on) {
@@ -3256,7 +3255,7 @@ function ensureXmlHeader(xml) {
     const prev = svg.querySelector('g[data-m10-fitwrap="1"]');
     if (prev) { while (prev.firstChild) prev.parentNode.insertBefore(prev.firstChild, prev); prev.remove(); }
 
-    // clear any prior "last system" CSS transforms
+    // clear any prior last-line CSS transforms
     svg.querySelectorAll('[data-m10-lastcss="1"]').forEach(el => {
       el.style.transform = "";
       el.style.transformOrigin = "";
@@ -3295,8 +3294,9 @@ function ensureXmlHeader(xml) {
     let S = innerWidthSVG > 0 ? innerWidthSVG / contentBB.width : 1;
     S = Math.min(1, Math.max(0.1, S));
 
-    // IMPORTANT: SVG applies transform lists right→left.
-    // translate(...) scale(S) => scale first, then translate (translation NOT scaled)
+    // translate (post-scale) so top-left aligns with inner box
+    // SVG transforms are applied right→left, so translate(...) scale(S):
+    // scale first, then translation (translation is NOT scaled)
     const tx = innerLeftSVG - S * contentBB.x;
     const ty = innerTopSVG  - S * contentBB.y;
     wrap.setAttribute("transform", `translate(${tx},${ty}) scale(${S})`);
@@ -3313,45 +3313,61 @@ function ensureXmlHeader(xml) {
     console.log("time:", `${r2(t1 - t0)} ms`);
     console.groupEnd();
 
-    // FINAL PASS: stretch last visible system horizontally to fill its frame
+    // FINAL PASS: stretch last visible line horizontally
     try {
-      stretchLastSystem(host, svg);
+      stretchLastLineByGeometry(host, svg);
     } catch (e) {
-      console.warn(MODULE, "last-system stretch error:", e);
+      console.warn(MODULE, "last-line stretch error:", e);
     }
 
-    // Nudge M11 (if present) to re-prune after our stretch
-    try {
-      document.dispatchEvent(new CustomEvent("aa:layout-updated", { detail: { host } }));
-    } catch {}
+    // Hint M11 to re-prune after we touch layout
+    try { document.dispatchEvent(new CustomEvent("aa:layout-updated", { detail: { host } })); } catch {}
   }
 
-  // ------------------------------------------------------------- last system
-  function stretchLastSystem(host, svg) {
-    const TAG = "[M10 LastStretch]";
+  // ---------------------------------------------------------- robust last-line
+  function stretchLastLineByGeometry(host, svg) {
+    const TAG = "[M10 LastStretch v1.4]";
     const framesWrap = host.querySelector(".aa-pageframes");
     if (!framesWrap) { console.info(TAG, "no framesWrap"); return; }
 
-    // Collect OSMD system groups (several patterns); fall back to staves.
-    let systems = Array.from(svg.querySelectorAll(
-      'g[id*="System"], g[class*="system"], g[class*="osmd-system"], g[class*="vf-system"]'
-    ));
-    if (!systems.length) systems = Array.from(svg.querySelectorAll('g[class*="vf-stave"]'));
-    systems = systems.filter(el => {
-      const r = el.getBoundingClientRect(); return r.width > 2 && r.height > 2;
-    });
-    if (!systems.length) { console.info(TAG, "no visible systems"); return; }
-
-    // Bottom-most system on screen
-    systems.sort((a,b) => a.getBoundingClientRect().bottom - b.getBoundingClientRect().bottom);
-    const lastSys = systems[systems.length - 1];
-    const sysRect = lastSys.getBoundingClientRect();
-
-    // Choose the visible frame it overlaps most
+    // visible page frames (not hidden by M11)
     const frames = Array.from(framesWrap.querySelectorAll(".aa-pageframe"))
       .filter(fr => fr.style.display !== "none");
     if (!frames.length) { console.info(TAG, "no visible frames"); return; }
 
+    // Content rect (CSS px) for bottom-zone heuristic
+    const contentRect = svg.getBoundingClientRect();
+
+    // 1) collect visible <g> candidates
+    let gs = Array.from(svg.querySelectorAll("g"))
+      .filter(el => {
+        const r = el.getBoundingClientRect();
+        return r.width > 2 && r.height > 6 && isFinite(r.left); // non-trivial, visible-ish
+      });
+
+    if (!gs.length) { console.info(TAG, "no <g> elements visible"); return; }
+
+    // 2) focus on bottom zone of the drawing (last ~45% of content height)
+    const bottomCut = contentRect.bottom - contentRect.height * 0.45;
+    gs = gs.filter(el => el.getBoundingClientRect().top >= bottomCut);
+
+    if (!gs.length) { console.info(TAG, "no candidates in bottom zone"); return; }
+
+    // 3) prefer “line-like” shapes: wide relative to height
+    gs = gs.filter(el => {
+      const r = el.getBoundingClientRect();
+      const aspect = r.width / Math.max(1, r.height);
+      return aspect >= 3 && r.width >= 80; // tweak as needed
+    });
+
+    if (!gs.length) { console.info(TAG, "no wide-enough groups; aborting stretch"); return; }
+
+    // 4) choose the bottom-most by .bottom
+    gs.sort((a,b) => a.getBoundingClientRect().bottom - b.getBoundingClientRect().bottom);
+    const last = gs[gs.length - 1];
+    const sysRect = last.getBoundingClientRect();
+
+    // 5) choose the visible frame that overlaps this "system" most
     let best = null;
     for (const fr of frames) {
       const r = fr.getBoundingClientRect();
@@ -3359,7 +3375,7 @@ function ensureXmlHeader(xml) {
       const ov = intersectionArea(inner, sysRect);
       if (!best || ov > best.ov) best = { inner, ov, frame: fr };
     }
-    if (!best) { console.info(TAG, "no best frame"); return; }
+    if (!best || best.ov <= 0) { console.info(TAG, "no overlapping frame"); return; }
 
     const innerLeftPx   = best.inner.left;
     const innerWidthPx  = Math.max(1, best.inner.width);
@@ -3367,14 +3383,14 @@ function ensureXmlHeader(xml) {
     const fx            = innerWidthPx / sysWidthPx;  // allow enlarge to fill
     const dxPx          = innerLeftPx - sysRect.left; // pin left edge
 
-    // Apply CSS transform in pixel space to the last system.
-    lastSys.style.transformOrigin = "0 0";
-    lastSys.style.transform       = `translate(${dxPx}px, 0) scaleX(${fx})`;
-    lastSys.setAttribute("data-m10-lastcss", "1");
+    // 6) apply CSS transform in pixel space to the chosen <g>
+    last.style.transformOrigin = "0 0";
+    last.style.transform       = `translate(${dxPx}px, 0) scaleX(${fx})`;
+    last.setAttribute("data-m10-lastcss", "1");
 
     console.groupCollapsed(`${TAG} applied`);
-    console.log("system rect (px):", rectNeat(sysRect));
-    console.log("chosen frame inner (px):", rectNeat(best.inner));
+    console.log("picked <g> rect (px):", rectNeat(sysRect));
+    console.log("target frame inner (px):", rectNeat(best.inner));
     console.log("scaleX fx:", r4(fx), " translateX dx(px):", r2(dxPx));
     console.groupEnd();
   }
@@ -3416,12 +3432,10 @@ function ensureXmlHeader(xml) {
   }
   const r2 = (n) => Math.round(n * 100) / 100;
   const r4 = (n) => Math.round(n * 10000) / 10000;
-  const round2 = (o) => Object.fromEntries(Object.entries(o).map(([k,v]) => [k, r2(v)]));
   const round4 = (o) => Object.fromEntries(Object.entries(o).map(([k,v]) => [k, r4(v)]));
   function round4Rect(r){ return { left:r4(r.left), top:r4(r.top), width:r4(r.width), height:r4(r.height) }; }
   function rectNeat(r){ return { left:r2(r.left), top:r2(r.top), width:r2(r.width), height:r2(r.height) }; }
 })();
-
 
 
 
