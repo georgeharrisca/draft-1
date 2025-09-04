@@ -3347,3 +3347,147 @@ function ensureXmlHeader(xml) {
   function round4Rect(r){ return { left:r4(r.left), top:r4(r.top), width:r4(r.width), height:r4(r.height) }; }
 })();
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* =========================================================================
+   M11) Prune empty page frames
+        - After M10 aligns/scales, remove any .aa-pageframe that doesn't
+          overlap the visible rendered music
+        - Uses CSS pixel space via getBoundingClientRect (fast + robust)
+        - Verbose logs
+   ------------------------------------------------------------------------- */
+;(function () {
+  const MODULE = "[M11 PruneFrames]";
+  const VER = "v1.0";
+
+  // fire after render (and after M10), and on resize
+  if (typeof AA !== "undefined" && AA.on) {
+    AA.on("viewer:rendered", ({ host }) => {
+      try { schedule(host); } catch (e) { console.warn(MODULE, "error:", e); }
+    });
+  } else {
+    document.addEventListener("DOMContentLoaded", () => {
+      const host = document.getElementById("aa-osmd-box");
+      if (host && host.querySelector("svg")) schedule(host);
+    });
+  }
+
+  const ro = new ResizeObserver(() => {
+    const host = document.getElementById("aa-osmd-box");
+    if (host && host.querySelector("svg")) schedule(host);
+  });
+  const bootRO = () => { const h = document.getElementById("aa-osmd-box"); if (h) ro.observe(h); };
+  (document.readyState === "loading")
+    ? document.addEventListener("DOMContentLoaded", bootRO)
+    : bootRO();
+
+  // --- run one tick after M10 so its wrapper/transform is in place
+  function schedule(host) { requestAnimationFrame(() => pruneFrames(host)); }
+
+  function pruneFrames(host) {
+    const svg        = host.querySelector("svg");
+    const framesWrap = host.querySelector(".aa-pageframes");
+    if (!svg || !framesWrap) { console.info(MODULE, "no svg/frames"); return; }
+
+    // Prefer the wrapper M10 creates (so transforms are captured).
+    // Fallback: union of all visible non-defs children.
+    const wrap = svg.querySelector('g[data-m10-fitwrap="1"], g[data-m10-ltwrap="1"]');
+    const contentRect = wrap ? wrap.getBoundingClientRect() : unionContentRect(svg);
+    if (!contentRect || contentRect.width <= 0 || contentRect.height <= 0) {
+      console.info(MODULE, "empty content; nothing to prune");
+      return;
+    }
+
+    const frames = Array.from(framesWrap.querySelectorAll(".aa-pageframe"));
+    if (!frames.length) { console.info(MODULE, "no .aa-pageframe elements"); return; }
+
+    const padInnerPx = 6;      // ignore a little of the frame’s border
+    const minArea    = 4;      // px^2 threshold to consider "drawn on"
+
+    let kept = 0, removed = 0;
+    frames.forEach((frame, idx) => {
+      const r  = frame.getBoundingClientRect();
+      const fr = shrinkRect(r, padInnerPx);
+      const ov = intersectionArea(fr, contentRect);
+      const keep = ov >= minArea;
+
+      if (keep) kept++;
+      else {
+        frame.remove();
+        removed++;
+      }
+
+      console.log(`${MODULE} frame #${idx+1}`, {
+        frameLeft: r2(r.left), frameWidth: r2(r.width), overlapArea: r2(ov), keep
+      });
+    });
+
+    console.info(`${MODULE} ${VER}: kept=${kept}, removed=${removed}`);
+  }
+
+  // ----- helpers (CSS space) -----
+  function shrinkRect(r, pad) {
+    const left = r.left + pad, top = r.top + pad;
+    const right = r.right - pad, bottom = r.bottom - pad;
+    return { left, top, right, bottom, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+  }
+
+  function intersectionArea(a, b) {
+    const left = Math.max(a.left, b.left);
+    const top = Math.max(a.top, b.top);
+    const right = Math.min(a.right, b.right);
+    const bottom = Math.min(a.bottom, b.bottom);
+    const w = Math.max(0, right - left);
+    const h = Math.max(0, bottom - top);
+    return w * h;
+  }
+
+  function unionContentRect(svg) {
+    const kids = Array.from(svg.childNodes).filter(n => n.nodeType === 1 && n.tagName.toLowerCase() !== "defs");
+    let u = null;
+    for (const el of kids) {
+      const r = el.getBoundingClientRect();
+      if (!u) u = { left:r.left, top:r.top, right:r.right, bottom:r.bottom };
+      else {
+        u.left   = Math.min(u.left, r.left);
+        u.top    = Math.min(u.top, r.top);
+        u.right  = Math.max(u.right, r.right);
+        u.bottom = Math.max(u.bottom, r.bottom);
+      }
+    }
+    if (!u) return null;
+    u.width = Math.max(0, u.right - u.left);
+    u.height = Math.max(0, u.bottom - u.top);
+    return u;
+  }
+
+  const r2 = (n) => Math.round(n * 100) / 100;
+})();
+
+
+
+
+
+
+
+
+
+
+
