@@ -3210,17 +3210,19 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M10) Left+Top justify & width-fit into the first page frame (shrink-only)
-        - Uniform scale S ≤ 1 (fit inner width), then position
-        - Use wrapper; do not touch OSMD’s own transforms
-        - CSS→SVG conversions; verbose logs
-        - IMPORTANT: SVG transforms are applied right→left, so we use
-          translate(...) scale(S)  ⇒ scale first, then translate (not scaled)
+   M10) Left+Top justify & width-fit (shrink-only) + last-system stretch
+        - Uniform scale S ≤ 1 to fit the whole score inside first frame
+        - Left+Top align to first frame's inner box
+        - FINAL PASS: stretch the last system horizontally so it fills the
+          inner width of whichever visible page frame it overlaps the most
+        - Safe: leaves OSMD transforms alone (wrapper + CSS transforms)
+        - Verbose logs
    ------------------------------------------------------------------------- */
 ;(function () {
-  const MODULE = "[M10 Fit-LeftTop]";
-  const VER = "v1.2";
+  const MODULE = "[M10 Fit-LeftTop+LastStretch]";
+  const VER = "v1.3";
 
+  // —————————————————— hooks
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => {
       try { m10_fitLeftTop(host); } catch (e) { console.warn(MODULE, "error:", e); }
@@ -3243,15 +3245,29 @@ function ensureXmlHeader(xml) {
   const bootRO = () => { const h = document.getElementById("aa-osmd-box"); if (h) ro.observe(h); };
   (document.readyState === "loading") ? document.addEventListener("DOMContentLoaded", bootRO) : bootRO();
 
+  // —————————————————— main
   function m10_fitLeftTop(host) {
     const t0 = performance.now();
     const svg        = host.querySelector("svg");
     const framesWrap = host.querySelector(".aa-pageframes");
     if (!svg || !framesWrap) { console.info(MODULE, "no svg/frames found"); return; }
 
-    // unwrap any previous run
+    // unwrap our previous wrapper if present
     const prev = svg.querySelector('g[data-m10-fitwrap="1"]');
     if (prev) { while (prev.firstChild) prev.parentNode.insertBefore(prev.firstChild, prev); prev.remove(); }
+
+    // clear any previous "last system" CSS transform wrapper
+    svg.querySelectorAll('[data-m10-lastwrap="1"]').forEach(w => {
+      // move child out and remove wrapper
+      while (w.firstChild) w.parentNode.insertBefore(w.firstChild, w);
+      w.remove();
+    });
+    // also clear any prior css transform markers
+    svg.querySelectorAll('[data-m10-lastcss="1"]').forEach(el => {
+      el.style.transform = "";
+      el.style.transformOrigin = "";
+      el.removeAttribute("data-m10-lastcss");
+    });
 
     // wrap visible svg nodes (avoid <defs>)
     const wrap = document.createElementNS(svg.namespaceURI, "g");
@@ -3269,7 +3285,7 @@ function ensureXmlHeader(xml) {
     const firstFrame = framesWrap.querySelector(".aa-pageframe");
     if (!firstFrame) { console.info(MODULE, "no .aa-pageframe found"); return; }
     const frCSS = firstFrame.getBoundingClientRect();
-    const frTopLeftSVG = cssPointToSvg(svg, frCSS.left, frCSS.top);
+    const frTopLeftSVG     = cssPointToSvg(svg, frCSS.left,  frCSS.top);
     const frBottomRightSVG = cssPointToSvg(svg, frCSS.right, frCSS.bottom);
 
     // inner padding
@@ -3287,32 +3303,104 @@ function ensureXmlHeader(xml) {
     let S = innerWidthSVG > 0 ? innerWidthSVG / contentBB.width : 1;
     S = Math.min(1, Math.max(0.1, S));
 
-    // SVG applies transforms right→left, so with:
-    //   translate(tx, ty) scale(S)
-    // the scale happens FIRST, then translation (not scaled).
-    // We want:  S*contentBB.x + tx = innerLeft   ⇒ tx = innerLeft - S*contentBB.x
-    //           S*contentBB.y + ty = innerTop    ⇒ ty = innerTop  - S*contentBB.y
+    // translate (post-scale) so top-left aligns with inner box
     const tx = innerLeftSVG - S * contentBB.x;
     const ty = innerTopSVG  - S * contentBB.y;
 
+    // IMPORTANT: translate(...) scale(S) => scale first, then translate (not scaled)
     wrap.setAttribute("transform", `translate(${tx},${ty}) scale(${S})`);
     host.scrollLeft = 0;
 
     // logs
     const t1 = performance.now();
-    console.groupCollapsed(`${MODULE} ${VER} :: applied`);
+    console.groupCollapsed(`${MODULE} ${VER} :: base-fit applied`);
     console.log("contentBB (SVG):", round4(contentBB));
     console.log("frame CSS (px):", round4Rect(frCSS));
-    console.log("frame top-left/bottom-right (SVG):", round2(frTopLeftSVG), round2(frBottomRightSVG));
     console.log("padding css(px):", { padX_css, padY_css }, "svg:", round2({ padX_svg, padY_svg }));
     console.log("inner (SVG):", { innerLeftSVG: r2(innerLeftSVG), innerTopSVG: r2(innerTopSVG), innerWidthSVG: r2(innerWidthSVG) });
     console.log("scale S:", r4(S));
     console.log("translate tx, ty:", { tx: r2(tx), ty: r2(ty) });
     console.log("time:", `${r2(t1 - t0)} ms`);
     console.groupEnd();
+
+    // FINAL PASS: stretch last system horizontally to fill its page frame
+    try {
+      stretchLastSystem(host, svg);
+    } catch (e) {
+      console.warn(MODULE, "last-system stretch error:", e);
+    }
   }
 
-  // ---------- helpers ----------
+  // —————————————————— final pass: stretch last system (CSS space)
+  function stretchLastSystem(host, svg) {
+    const MODULE2 = "[M10 LastStretch]";
+    const framesWrap = host.querySelector(".aa-pageframes");
+    if (!framesWrap) { console.info(MODULE2, "no framesWrap"); return; }
+
+    // find candidate "system" nodes
+    let systems = Array.from(svg.querySelectorAll('g[id*="System"], g[class*="system"], g[class*="osmd-system"]'));
+    if (!systems.length) {
+      // fallback: use staves as a proxy
+      systems = Array.from(svg.querySelectorAll('g[class*="vf-stave"]'));
+    }
+    if (!systems.length) { console.info(MODULE2, "no system-like nodes found"); return; }
+
+    // pick the lowest (bottom-most) system by screen Y
+    systems = systems.filter(el => el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0);
+    if (!systems.length) { console.info(MODULE2, "no visible systems"); return; }
+    systems.sort((a, b) => (a.getBoundingClientRect().bottom - b.getBoundingClientRect().bottom));
+    const lastSys = systems[systems.length - 1];
+
+    const sysRect = lastSys.getBoundingClientRect();
+
+    // choose the visible frame that overlaps this system the most
+    const frames = Array.from(framesWrap.querySelectorAll(".aa-pageframe"))
+      .filter(fr => fr.style.display !== "none");
+    if (!frames.length) { console.info(MODULE2, "no visible frames"); return; }
+
+    let bestFrame = frames[0], bestArea = -1, bestInner = null;
+    for (const fr of frames) {
+      const r = fr.getBoundingClientRect();
+      const ov = intersectionArea(r, sysRect);
+      if (ov > bestArea) {
+        bestArea = ov;
+        bestFrame = fr;
+        bestInner = shrinkRect(r, Math.max(10, Math.round(r.width * 0.03)), 12);
+      }
+    }
+    if (!bestInner) { console.info(MODULE2, "no inner rect"); return; }
+
+    const innerLeftPx = bestInner.left;
+    const innerWidthPx = Math.max(0, bestInner.width);
+    const sysWidthPx = Math.max(1, sysRect.width);
+
+    // desired horizontal scale (can ENLARGE here — that's the point)
+    const fx = innerWidthPx / sysWidthPx;
+
+    // We use CSS transforms (screen space).
+    // Set origin to top-left of the system so scaling keeps the left anchored.
+    // Then translate so left aligns to the frame's inner-left.
+    const dxPx = innerLeftPx - sysRect.left;
+
+    // wrap the last system to isolate css transform (optional but safer)
+    const wrap = document.createElementNS(svg.namespaceURI, "g");
+    wrap.setAttribute("data-m10-lastwrap", "1");
+    lastSys.parentNode.insertBefore(wrap, lastSys);
+    wrap.appendChild(lastSys);
+
+    // apply CSS transform to the last system itself (not the wrapper) for better bbox behavior
+    lastSys.style.transformOrigin = "0 0";
+    lastSys.style.transform = `translate(${dxPx}px, 0) scaleX(${fx})`;
+    lastSys.setAttribute("data-m10-lastcss", "1");
+
+    console.groupCollapsed(`${MODULE2} applied`);
+    console.log("system rect (px):", rectNeat(sysRect));
+    console.log("chosen frame inner (px):", rectNeat(bestInner));
+    console.log("fx (scaleX):", r4(fx), " dxPx:", r2(dxPx));
+    console.groupEnd();
+  }
+
+  // —————————————————— helpers
   function bboxWorld(svg, el) {
     try {
       const r  = el.getBoundingClientRect();
@@ -3340,13 +3428,29 @@ function ensureXmlHeader(xml) {
     const b = cssPointToSvg(svg, 0, dyCss);
     return b.y - a.y;
   }
+  function shrinkRect(r, padX, padY) {
+    const left = r.left + (padX ?? 0), top = r.top + (padY ?? 0);
+    const right = r.right - (padX ?? 0), bottom = r.bottom - (padY ?? 0);
+    return { left, top, right, bottom, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+  }
+  function intersectionArea(a, b) {
+    const left = Math.max(a.left, b.left);
+    const top = Math.max(a.top, b.top);
+    const right = Math.min(a.right, b.right);
+    const bottom = Math.min(a.bottom, b.bottom);
+    const w = Math.max(0, right - left);
+    const h = Math.max(0, bottom - top);
+    return w * h;
+  }
+
+  // logging helpers
   const r2 = (n) => Math.round(n * 100) / 100;
   const r4 = (n) => Math.round(n * 10000) / 10000;
   const round2 = (o) => Object.fromEntries(Object.entries(o).map(([k,v]) => [k, r2(v)]));
   const round4 = (o) => Object.fromEntries(Object.entries(o).map(([k,v]) => [k, r4(v)]));
   function round4Rect(r){ return { left:r4(r.left), top:r4(r.top), width:r4(r.width), height:r4(r.height) }; }
+  function rectNeat(r){ return { left:r2(r.left), top:r2(r.top), width:r2(r.width), height:r2(r.height) }; }
 })();
-
 
 
 
