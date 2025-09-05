@@ -3207,15 +3207,15 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M10 v2.2) Left+Top justify (first frame) + shrink-to-fit + LAST SYSTEM stretch
-     - Detects the *whole* bottom system (multiple staves), not just one staff
-     - Picks the page frame that overlaps that system the most
-     - Stretches based on content width but applies to the entire system cluster
+   M10 v2.3) Left+Top justify (first frame) + shrink-to-fit + LAST SYSTEM stretch
+     - Base: shrink & pin to first frame inner box
+     - Detect whole bottom system (multi-stave) via gap clustering
+     - Stretch maps SYSTEM union (Uall) → target frame inner (so stave left aligns)
      - Detailed logging
    ------------------------------------------------------------------------- */
 ;(function () {
   const MODULE = "[M10 Fit-LeftTop+LastSystemStretch]";
-  const VER = "v2.2";
+  const VER = "v2.3";
 
   // --- lifecycle -----------------------------------------------------------
   if (typeof AA !== "undefined" && AA.on) {
@@ -3235,6 +3235,7 @@ function ensureXmlHeader(xml) {
 
   // --- main ---------------------------------------------------------------
   function m10_run(host) {
+    const t0 = performance.now();
     const svg = host.querySelector("svg");
     const framesWrap = host.querySelector(".aa-pageframes");
     if (!svg || !framesWrap) { console.info(MODULE, "no svg/frames found"); return; }
@@ -3280,13 +3281,14 @@ function ensureXmlHeader(xml) {
     wrap.setAttribute("transform", `translate(${tx},${ty}) scale(${S})`);
     host.scrollLeft = 0;
 
+    const t1 = performance.now();
     console.groupCollapsed(`${MODULE} ${VER} :: base-fit`);
     console.log("inner(px):", neat(inner1));
     console.log("contentBB(SVG):", r4o(bb));
-    console.log("S:", r4(S), " tx:", r2(tx), " ty:", r2(ty));
+    console.log("S:", r4(S), " tx:", r2(tx), " ty:", r2(ty), "time(ms):", r2(t1 - t0));
     console.groupEnd();
 
-    // Stretch the *last system* to its *own* frame’s inner width
+    // Stretch the *last system* to its best-overlap frame’s inner width
     try { stretchLastSystemToOwnFrame(svg, wrap, framesWrap); } catch (e) { console.warn(MODULE, "stretch error:", e); }
 
     try { document.dispatchEvent(new CustomEvent("aa:layout-updated", { detail: { host } })); } catch {}
@@ -3316,30 +3318,30 @@ function ensureXmlHeader(xml) {
     }
     if (!staves.length) { console.info(TAG, "no stave-like groups"); return; }
 
-    // Sort by top; compute vertical gaps (top to previous bottom)
+    // Sort by top; compute vertical gaps
     const Srects = staves.map(el => ({ el, r: el.getBoundingClientRect() }))
                          .sort((a,b) => a.r.top - b.r.top);
 
     // Bottom-most stave index
     let i = Srects.length - 1;
 
-    // Estimate a gap threshold: take the 6 smallest positive gaps to approximate within-system spacing
+    // Gap threshold from small gaps
     const gaps = [];
     for (let k = 1; k < Srects.length; k++) {
-      const g = Srects[k].r.top - Srects[k-1].r.bottom; // can be negative if overlapping
+      const g = Srects[k].r.top - Srects[k-1].r.bottom;
       if (g > 0) gaps.push(g);
     }
     gaps.sort((a,b) => a - b);
     const small = gaps.slice(0, Math.min(6, gaps.length));
     const medSmall = small.length ? median(small) : 40;
-    const GAP_TH = Math.max(60, medSmall * 1.8); // conservative threshold between staves *within the same system*
+    const GAP_TH = Math.max(60, medSmall * 1.8);
 
-    // Walk upward aggregating *the whole system* until a big gap appears
+    // Walk upward aggregating *the whole system*
     const sysStaves = [Srects[i]];
     while (i > 0) {
       const cur = Srects[i].r, prev = Srects[i-1].r;
       const gap = cur.top - prev.bottom;
-      if (gap > GAP_TH) break;   // crossed into previous system
+      if (gap > GAP_TH) break;
       sysStaves.push(Srects[i-1]);
       i--;
     }
@@ -3362,27 +3364,15 @@ function ensureXmlHeader(xml) {
       });
     if (!systemCluster.length) { console.info(TAG, "no elements in system band"); return; }
 
-    // (3) CONTENT cluster for width: drop page-wide thin lines & stave lines
-    const contentCluster = systemCluster.filter(el => {
-      const r = el.getBoundingClientRect();
-      const isLine = el.tagName.toLowerCase() === "line";
-      const nearPageWide = r.width >= worldRect.width * 0.9 && r.height < 5;
-      const name = ((el.getAttribute("class") || "") + " " + (el.getAttribute("id") || "")).toLowerCase();
-      const looksStave = name.includes("stave");
-      return !isLine && !nearPageWide && !looksStave;
-    });
-    const clusterForWidth = contentCluster.length ? contentCluster : systemCluster;
-
     // Unions
-    const Uall = unionRect(systemCluster);
-    const Ucnt = unionRect(clusterForWidth);
-    if (!(Ucnt.width > 0)) { console.info(TAG, "content union zero width"); return; }
+    const Uall = unionRect(systemCluster);   // ← use SYSTEM union for mapping (stave included)
+    if (!(Uall.width > 0)) { console.info(TAG, "system union zero width"); return; }
 
-    // (4) Choose the page frame whose INNER rect overlaps Uall the most
+    // (3) Pick the page frame whose INNER rect overlaps Uall the most
     const frames = Array.from(framesWrap.querySelectorAll(".aa-pageframe"));
     if (!frames.length) { console.info(TAG, "no frames for targeting"); return; }
 
-    const frameInfos = frames.map(fr => {
+    let frameInfos = frames.map(fr => {
       const r = fr.getBoundingClientRect();
       const pX = Math.max(10, Math.round(r.width * 0.03));
       const pY = 12;
@@ -3395,18 +3385,19 @@ function ensureXmlHeader(xml) {
       return { fr, inner, overlap: ov };
     });
     frameInfos.sort((a,b) => b.overlap - a.overlap);
-    const target = frameInfos[0];
-    if (!target || target.overlap <= 0) { console.info(TAG, "no overlapping frame; using first"); target = frameInfos[0]; }
+    let target = frameInfos[0];
+    if (!target || target.overlap <= 0) { target = frameInfos[0]; }
 
-    // (5) Wrap whole system (so staff lines, barlines, slurs, all stay aligned)
+    // (4) Wrap whole system (so staff lines, barlines, slurs, all stay aligned)
     const sysWrap = document.createElementNS(svg.namespaceURI, "g");
     sysWrap.setAttribute("data-m10-syswrap", "1");
     const first = systemCluster[0];
     first.parentNode.insertBefore(sysWrap, first);
     systemCluster.forEach(el => sysWrap.appendChild(el));
 
-    // (6) Affine mapping in CSS px: map contentLeft→inner.left, contentRight→inner.right
-    const cL = Ucnt.left, cR = Ucnt.right;
+    // (5) Affine mapping in CSS px using SYSTEM union:
+    //     map Uall.left → target.inner.left, Uall.right → target.inner.right
+    const cL = Uall.left, cR = Uall.right;
     const tL = target.inner.left, tR = target.inner.left + target.inner.width;
     const a  = clamp((tR - tL) / Math.max(1, cR - cL), 0.5, 4.0);
     const b  = tL - a * cL;
@@ -3416,17 +3407,19 @@ function ensureXmlHeader(xml) {
     sysWrap.style.transform       = `translate(${b}px, 0) scale(${a}, 1)`;
     sysWrap.setAttribute("data-m10-css", "1");
 
-    // Verify & log
     requestAnimationFrame(() => {
       const final = sysWrap.getBoundingClientRect();
       console.groupCollapsed(`${TAG} applied`);
       console.log("system band(px):", neat(band), " GAP_TH(px):", r2(GAP_TH));
-      console.log("Uall(px):", neat(Uall), " Ucnt(px):", neat(Ucnt));
+      console.log("Uall(px):", neat(Uall));
       console.log("target inner(px):", neat(target.inner));
       console.log("affine a:", r4(a), " b(px):", r2(b));
       console.log("final system rect(px):", neat(final));
-      if (Math.abs(final.width - target.inner.width) > 1) {
-        console.warn(`${TAG} note: width mismatch ${r2(final.width)} vs ${r2(target.inner.width)} — nested CSS/SVG transforms may require a second pass.`);
+      if (Math.abs(final.left - tL) > 1) {
+        console.warn(`${TAG} note: left mismatch ${r2(final.left)} vs ${r2(tL)} (will still fill width).`);
+      }
+      if (Math.abs(final.width - (tR - tL)) > 1) {
+        console.warn(`${TAG} note: width mismatch ${r2(final.width)} vs ${r2(tR - tL)}.`);
       }
       console.groupEnd();
     });
@@ -3459,7 +3452,7 @@ function ensureXmlHeader(xml) {
     if (!U) return { left:0, top:0, right:0, bottom:0, width:0, height:0 };
     U.width = Math.max(0, U.right - U.left); U.height = Math.max(0, U.bottom - U.top);
     return U;
-    }
+  }
   function intersect(a, b) {
     return { left: Math.max(a.left, b.left), top: Math.max(a.top, b.top),
              right: Math.min(a.right, b.right), bottom: Math.min(a.bottom, b.bottom) };
@@ -3478,6 +3471,7 @@ function ensureXmlHeader(xml) {
   const neat = (r) => ({ left:r2(r.left), top:r2(r.top), width:r2(r.width), height:r2(r.height) });
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 })();
+
 
 
 
