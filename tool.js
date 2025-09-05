@@ -3208,18 +3208,17 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M10) Left+Top justify & width-fit (shrink-only) + robust last-line stretch
-        - Uniform scale S ≤ 1 for the whole score into the first frame
+   M10) Left+Top justify & width-fit (shrink-only) + last-system CLUSTER stretch
+        - Uniform scale S ≤ 1 for whole score into first frame
         - Align top-left to first frame’s inner box
-        - FINAL PASS: choose the visible page frame that overlaps the music
-          the most; find bottom-most <g> overlapping that frame and stretch
-          it horizontally to the frame’s inner width (CSS space)
-        - Leaves OSMD transforms untouched (SVG wrapper + CSS on last line)
+        - FINAL PASS: find the bottom-most vertical cluster of <g> elements
+          overlapping the chosen frame; wrap them and scale the cluster to fill
+        - Uses SVG transform on the whole score wrapper; CSS transform on cluster
         - Verbose logs
    ------------------------------------------------------------------------- */
 ;(function () {
-  const MODULE = "[M10 Fit-LeftTop+LastStretch]";
-  const VER = "v1.5";
+  const MODULE = "[M10 Fit-LeftTop+ClusterStretch]";
+  const VER = "v1.6";
 
   // Hook after render
   if (typeof AA !== "undefined" && AA.on) {
@@ -3251,11 +3250,15 @@ function ensureXmlHeader(xml) {
     const framesWrap = host.querySelector(".aa-pageframes");
     if (!svg || !framesWrap) { console.info(MODULE, "no svg/frames found"); return; }
 
-    // unwrap previous wrapper (whole score)
+    // unwrap previous whole-score wrapper
     const prev = svg.querySelector('g[data-m10-fitwrap="1"]');
     if (prev) { while (prev.firstChild) prev.parentNode.insertBefore(prev.firstChild, prev); prev.remove(); }
 
-    // clear any prior last-line CSS transforms
+    // clear prior last cluster wrappers & css transforms
+    svg.querySelectorAll('g[data-m10-lastcluster="1"]').forEach(w => {
+      while (w.firstChild) w.parentNode.insertBefore(w.firstChild, w);
+      w.remove();
+    });
     svg.querySelectorAll('[data-m10-lastcss="1"]').forEach(el => {
       el.style.transform = "";
       el.style.transformOrigin = "";
@@ -3295,8 +3298,7 @@ function ensureXmlHeader(xml) {
     let S = innerWidthSVG > 0 ? innerWidthSVG / contentBB.width : 1;
     S = Math.min(1, Math.max(0.1, S));
 
-    // SVG transform list is applied right→left:
-    // translate(...) scale(S)  ⇒ scale first, then unscaled translate
+    // SVG transforms are applied right→left: translate(...) scale(S) ⇒ scale first
     const tx = innerLeftSVG - S * contentBB.x;
     const ty = innerTopSVG  - S * contentBB.y;
     wrap.setAttribute("transform", `translate(${tx},${ty}) scale(${S})`);
@@ -3313,31 +3315,31 @@ function ensureXmlHeader(xml) {
     console.log("time:", `${r2(t1 - t0)} ms`);
     console.groupEnd();
 
-    // FINAL PASS: stretch last visible line horizontally (robust, geometry-only)
+    // FINAL PASS: robust cluster-based last-system stretch
     try {
-      stretchLastLineRobust(host, svg, wrap);
+      stretchLastSystemCluster(host, svg, wrap);
     } catch (e) {
-      console.warn(MODULE, "last-line stretch error:", e);
+      console.warn(MODULE, "cluster stretch error:", e);
     }
 
-    // Hint M11 to re-prune after we touch layout
+    // Nudge M11 (if present)
     try { document.dispatchEvent(new CustomEvent("aa:layout-updated", { detail: { host } })); } catch {}
   }
 
-  // ---------------------------------------------------------- robust last-line
-  function stretchLastLineRobust(host, svg, wrap) {
-    const TAG = "[M10 LastStretch v1.5]";
+  // ------------------------------------------------------- last system cluster
+  function stretchLastSystemCluster(host, svg, wrap) {
+    const TAG = "[M10 ClusterStretch]";
     const framesWrap = host.querySelector(".aa-pageframes");
     if (!framesWrap) { console.info(TAG, "no framesWrap"); return; }
 
-    // visible page frames (not hidden by M11)
+    // visible frames
     const frames = Array.from(framesWrap.querySelectorAll(".aa-pageframe"))
       .filter(fr => fr.style.display !== "none");
     if (!frames.length) { console.info(TAG, "no visible frames"); return; }
 
     const contentRect = wrap.getBoundingClientRect();
 
-    // Pick the frame that overlaps the music the most
+    // choose frame that overlaps the music most
     let chosen = null;
     for (const fr of frames) {
       const r = fr.getBoundingClientRect();
@@ -3346,51 +3348,90 @@ function ensureXmlHeader(xml) {
       if (!chosen || ov > chosen.ov) chosen = { frame: fr, inner, ov };
     }
     if (!chosen || chosen.ov <= 0) { console.info(TAG, "no frame overlaps content"); return; }
+    const targetInner = chosen.inner;
 
-    // Candidate <g> elements: visible, non-trivial size, overlapping chosen.inner
+    // candidate <g> nodes: visible, decent size, intersect target frame inner
     let gs = Array.from(svg.querySelectorAll("g")).filter(el => {
       const r = el.getBoundingClientRect();
       if (!(r.width > 8 && r.height > 6 && isFinite(r.left))) return false;
-      const ov = intersectionArea(r, chosen.inner);
-      return ov > 2; // must intersect target frame a bit
+      const ov = intersectionArea(r, targetInner);
+      return ov > 2;
     });
 
-    // Exclude our wrapper and defs containers if matched
-    gs = gs.filter(el => el.getAttribute("data-m10-fitwrap") !== "1");
+    // exclude our wrappers
+    gs = gs.filter(el => el.getAttribute("data-m10-fitwrap") !== "1" && el.getAttribute("data-m10-lastcluster") !== "1");
+    if (!gs.length) { console.info(TAG, "no <g> intersecting target frame"); return; }
 
-    if (!gs.length) { console.info(TAG, "no <g> overlapping chosen frame"); return; }
+    // sort bottom-most first (by bottom y)
+    gs.sort((a,b) => a.getBoundingClientRect().bottom - b.getBoundingClientRect().bottom);
 
-    // Prefer wide-ish groups (staff systems tend to be wide)
-    gs.sort((a, b) => {
-      const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-      const wa = ra.width / Math.max(1, ra.height);
-      const wb = rb.width / Math.max(1, rb.height);
-      // sort by vertical position first, then by aspect
-      return (ra.bottom - rb.bottom) || (wb - wa);
-    });
+    // start a band with the bottom-most element, then expand by vertical overlap
+    const seed = gs[gs.length - 1];
+    const seedR = seed.getBoundingClientRect();
+    const margin = Math.max(20, seedR.height * 0.15); // generous vertical margin
+    let bandTop = seedR.top - margin;
+    let bandBot = seedR.bottom + margin;
 
-    const last = gs[gs.length - 1];
-    const sysRect = last.getBoundingClientRect();
-    const inner   = chosen.inner;
+    // elements must intersect target frame and vertical band
+    const inBand = new Set([seed]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const el of gs) {
+        if (inBand.has(el)) continue;
+        const r = el.getBoundingClientRect();
+        const vertOverlap = Math.min(bandBot, r.bottom) - Math.max(bandTop, r.top);
+        if (vertOverlap > 4) {
+          inBand.add(el);
+          // expand the band
+          bandTop = Math.min(bandTop, r.top - margin);
+          bandBot = Math.max(bandBot, r.bottom + margin);
+          changed = true;
+        }
+      }
+    }
+    const cluster = Array.from(inBand).filter(el => intersectionArea(el.getBoundingClientRect(), targetInner) > 2);
+    if (!cluster.length) { console.info(TAG, "cluster empty"); return; }
 
-    const innerLeftPx  = inner.left;
-    const innerWidthPx = Math.max(1, inner.width);
-    const sysWidthPx   = Math.max(1, sysRect.width);
+    // compute union rect of the cluster
+    const union = cluster.reduce((U, el) => {
+      const r = el.getBoundingClientRect();
+      if (!U) return { left:r.left, top:r.top, right:r.right, bottom:r.bottom };
+      return {
+        left:   Math.min(U.left, r.left),
+        top:    Math.min(U.top, r.top),
+        right:  Math.max(U.right, r.right),
+        bottom: Math.max(U.bottom, r.bottom)
+      };
+    }, null);
+    union.width  = Math.max(0, union.right  - union.left);
+    union.height = Math.max(0, union.bottom - union.top);
 
-    // Desired horizontal scale (allow enlarge to fill)
-    const fx  = innerWidthPx / sysWidthPx;
-    const dx  = innerLeftPx - sysRect.left;  // pin left edge
+    // create a wrapper for the cluster
+    const clusterWrap = document.createElementNS(svg.namespaceURI, "g");
+    clusterWrap.setAttribute("data-m10-lastcluster", "1");
+    const first = cluster[0];
+    first.parentNode.insertBefore(clusterWrap, first);
+    cluster.forEach(el => clusterWrap.appendChild(el));
 
-    // Apply CSS transform (pixel space)
-    last.style.transformOrigin = "0 0";
-    last.style.transformBox    = "fill-box";
-    last.style.transform       = `translate(${dx}px, 0) scaleX(${fx})`;
-    last.setAttribute("data-m10-lastcss", "1");
+    // compute stretch to inner width, pin left edge
+    const innerLeftPx  = targetInner.left;
+    const innerWidthPx = Math.max(1, targetInner.width);
+    const sysWidthPx   = Math.max(1, union.width);
+    const fx           = innerWidthPx / sysWidthPx;
+    const dx           = innerLeftPx - union.left;
+
+    // apply CSS transform to the cluster wrapper
+    clusterWrap.style.transformOrigin = "0 0";
+    clusterWrap.style.transformBox    = "fill-box";
+    clusterWrap.style.transform       = `translate(${dx}px, 0) scaleX(${fx})`;
+    clusterWrap.setAttribute("data-m10-lastcss", "1");
 
     console.groupCollapsed(`${TAG} applied`);
-    console.log("chosen frame inner (px):", rectNeat(inner));
-    console.log("picked <g> rect (px):", rectNeat(sysRect));
-    console.log("fx (scaleX):", r4(fx), " dx(px):", r2(dx));
+    console.log("target frame inner (px):", rectNeat(targetInner));
+    console.log("cluster size:", cluster.length);
+    console.log("cluster union (px):", rectNeat(union));
+    console.log("scaleX fx:", r4(fx), " translateX dx(px):", r2(dx));
     console.groupEnd();
   }
 
@@ -3431,11 +3472,9 @@ function ensureXmlHeader(xml) {
   }
   const r2 = (n) => Math.round(n * 100) / 100;
   const r4 = (n) => Math.round(n * 10000) / 10000;
-  const round4 = (o) => Object.fromEntries(Object.entries(o).map(([k,v]) => [k, r4(v)]));
   function round4Rect(r){ return { left:r4(r.left), top:r4(r.top), width:r4(r.width), height:r4(r.height) }; }
   function rectNeat(r){ return { left:r2(r.left), top:r2(r.top), width:r2(r.width), height:r2(r.height) }; }
 })();
-
 
 
 
