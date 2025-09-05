@@ -3207,19 +3207,19 @@ function ensureXmlHeader(xml) {
 
 
 
-
 /* =========================================================================
    M10) Left+Top justify & width-fit (shrink-only) + robust last-line stretch
-        - Uniform scale S ≤ 1 for whole score into first frame
+        - Uniform scale S ≤ 1 for the whole score into the first frame
         - Align top-left to first frame’s inner box
-        - FINAL PASS: find bottom-most "line-like" <g> by geometry (no class/id
-          assumptions) and stretch it horizontally to its page frame inner width
-        - Leaves OSMD transforms untouched (SVG wrapper + CSS transform on last line)
+        - FINAL PASS: choose the visible page frame that overlaps the music
+          the most; find bottom-most <g> overlapping that frame and stretch
+          it horizontally to the frame’s inner width (CSS space)
+        - Leaves OSMD transforms untouched (SVG wrapper + CSS on last line)
         - Verbose logs
    ------------------------------------------------------------------------- */
 ;(function () {
   const MODULE = "[M10 Fit-LeftTop+LastStretch]";
-  const VER = "v1.4";
+  const VER = "v1.5";
 
   // Hook after render
   if (typeof AA !== "undefined" && AA.on) {
@@ -3259,6 +3259,7 @@ function ensureXmlHeader(xml) {
     svg.querySelectorAll('[data-m10-lastcss="1"]').forEach(el => {
       el.style.transform = "";
       el.style.transformOrigin = "";
+      el.style.transformBox = "";
       el.removeAttribute("data-m10-lastcss");
     });
 
@@ -3294,9 +3295,8 @@ function ensureXmlHeader(xml) {
     let S = innerWidthSVG > 0 ? innerWidthSVG / contentBB.width : 1;
     S = Math.min(1, Math.max(0.1, S));
 
-    // translate (post-scale) so top-left aligns with inner box
-    // SVG transforms are applied right→left, so translate(...) scale(S):
-    // scale first, then translation (translation is NOT scaled)
+    // SVG transform list is applied right→left:
+    // translate(...) scale(S)  ⇒ scale first, then unscaled translate
     const tx = innerLeftSVG - S * contentBB.x;
     const ty = innerTopSVG  - S * contentBB.y;
     wrap.setAttribute("transform", `translate(${tx},${ty}) scale(${S})`);
@@ -3313,9 +3313,9 @@ function ensureXmlHeader(xml) {
     console.log("time:", `${r2(t1 - t0)} ms`);
     console.groupEnd();
 
-    // FINAL PASS: stretch last visible line horizontally
+    // FINAL PASS: stretch last visible line horizontally (robust, geometry-only)
     try {
-      stretchLastLineByGeometry(host, svg);
+      stretchLastLineRobust(host, svg, wrap);
     } catch (e) {
       console.warn(MODULE, "last-line stretch error:", e);
     }
@@ -3325,8 +3325,8 @@ function ensureXmlHeader(xml) {
   }
 
   // ---------------------------------------------------------- robust last-line
-  function stretchLastLineByGeometry(host, svg) {
-    const TAG = "[M10 LastStretch v1.4]";
+  function stretchLastLineRobust(host, svg, wrap) {
+    const TAG = "[M10 LastStretch v1.5]";
     const framesWrap = host.querySelector(".aa-pageframes");
     if (!framesWrap) { console.info(TAG, "no framesWrap"); return; }
 
@@ -3335,63 +3335,62 @@ function ensureXmlHeader(xml) {
       .filter(fr => fr.style.display !== "none");
     if (!frames.length) { console.info(TAG, "no visible frames"); return; }
 
-    // Content rect (CSS px) for bottom-zone heuristic
-    const contentRect = svg.getBoundingClientRect();
+    const contentRect = wrap.getBoundingClientRect();
 
-    // 1) collect visible <g> candidates
-    let gs = Array.from(svg.querySelectorAll("g"))
-      .filter(el => {
-        const r = el.getBoundingClientRect();
-        return r.width > 2 && r.height > 6 && isFinite(r.left); // non-trivial, visible-ish
-      });
-
-    if (!gs.length) { console.info(TAG, "no <g> elements visible"); return; }
-
-    // 2) focus on bottom zone of the drawing (last ~45% of content height)
-    const bottomCut = contentRect.bottom - contentRect.height * 0.45;
-    gs = gs.filter(el => el.getBoundingClientRect().top >= bottomCut);
-
-    if (!gs.length) { console.info(TAG, "no candidates in bottom zone"); return; }
-
-    // 3) prefer “line-like” shapes: wide relative to height
-    gs = gs.filter(el => {
-      const r = el.getBoundingClientRect();
-      const aspect = r.width / Math.max(1, r.height);
-      return aspect >= 3 && r.width >= 80; // tweak as needed
-    });
-
-    if (!gs.length) { console.info(TAG, "no wide-enough groups; aborting stretch"); return; }
-
-    // 4) choose the bottom-most by .bottom
-    gs.sort((a,b) => a.getBoundingClientRect().bottom - b.getBoundingClientRect().bottom);
-    const last = gs[gs.length - 1];
-    const sysRect = last.getBoundingClientRect();
-
-    // 5) choose the visible frame that overlaps this "system" most
-    let best = null;
+    // Pick the frame that overlaps the music the most
+    let chosen = null;
     for (const fr of frames) {
       const r = fr.getBoundingClientRect();
       const inner = shrinkRect(r, Math.max(10, Math.round(r.width * 0.03)), 12);
-      const ov = intersectionArea(inner, sysRect);
-      if (!best || ov > best.ov) best = { inner, ov, frame: fr };
+      const ov = intersectionArea(inner, contentRect);
+      if (!chosen || ov > chosen.ov) chosen = { frame: fr, inner, ov };
     }
-    if (!best || best.ov <= 0) { console.info(TAG, "no overlapping frame"); return; }
+    if (!chosen || chosen.ov <= 0) { console.info(TAG, "no frame overlaps content"); return; }
 
-    const innerLeftPx   = best.inner.left;
-    const innerWidthPx  = Math.max(1, best.inner.width);
-    const sysWidthPx    = Math.max(1, sysRect.width);
-    const fx            = innerWidthPx / sysWidthPx;  // allow enlarge to fill
-    const dxPx          = innerLeftPx - sysRect.left; // pin left edge
+    // Candidate <g> elements: visible, non-trivial size, overlapping chosen.inner
+    let gs = Array.from(svg.querySelectorAll("g")).filter(el => {
+      const r = el.getBoundingClientRect();
+      if (!(r.width > 8 && r.height > 6 && isFinite(r.left))) return false;
+      const ov = intersectionArea(r, chosen.inner);
+      return ov > 2; // must intersect target frame a bit
+    });
 
-    // 6) apply CSS transform in pixel space to the chosen <g>
+    // Exclude our wrapper and defs containers if matched
+    gs = gs.filter(el => el.getAttribute("data-m10-fitwrap") !== "1");
+
+    if (!gs.length) { console.info(TAG, "no <g> overlapping chosen frame"); return; }
+
+    // Prefer wide-ish groups (staff systems tend to be wide)
+    gs.sort((a, b) => {
+      const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+      const wa = ra.width / Math.max(1, ra.height);
+      const wb = rb.width / Math.max(1, rb.height);
+      // sort by vertical position first, then by aspect
+      return (ra.bottom - rb.bottom) || (wb - wa);
+    });
+
+    const last = gs[gs.length - 1];
+    const sysRect = last.getBoundingClientRect();
+    const inner   = chosen.inner;
+
+    const innerLeftPx  = inner.left;
+    const innerWidthPx = Math.max(1, inner.width);
+    const sysWidthPx   = Math.max(1, sysRect.width);
+
+    // Desired horizontal scale (allow enlarge to fill)
+    const fx  = innerWidthPx / sysWidthPx;
+    const dx  = innerLeftPx - sysRect.left;  // pin left edge
+
+    // Apply CSS transform (pixel space)
     last.style.transformOrigin = "0 0";
-    last.style.transform       = `translate(${dxPx}px, 0) scaleX(${fx})`;
+    last.style.transformBox    = "fill-box";
+    last.style.transform       = `translate(${dx}px, 0) scaleX(${fx})`;
     last.setAttribute("data-m10-lastcss", "1");
 
     console.groupCollapsed(`${TAG} applied`);
+    console.log("chosen frame inner (px):", rectNeat(inner));
     console.log("picked <g> rect (px):", rectNeat(sysRect));
-    console.log("target frame inner (px):", rectNeat(best.inner));
-    console.log("scaleX fx:", r4(fx), " translateX dx(px):", r2(dxPx));
+    console.log("fx (scaleX):", r4(fx), " dx(px):", r2(dx));
     console.groupEnd();
   }
 
