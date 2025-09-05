@@ -3207,16 +3207,16 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M10 v2.7 — Fit to first frame (left+top) + shrink-to-fit (no grow),
-               then STRETCH the ENTIRE LAST SYSTEM using a vertical
-               density histogram (no stave classes required).
-   Logs detailed steps in the console.
+   M10 v2.8 — Fit to first frame (left+top) + shrink-to-fit (no grow),
+               then STRETCH the ENTIRE LAST SYSTEM (classless) using a
+               vertical density histogram + iterative CSS calibration.
+   Console logs included.
    ========================================================================= */
 ;(function () {
   const MOD = "[M10 Fit-LeftTop+LastSystemStretch]";
-  const VER = "v2.7";
+  const VER = "v2.8";
 
-  // Run after OSMD render
+  // Fire when OSMD finishes rendering
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => { try { runM10(host); } catch (e) { console.warn(MOD, "error:", e); } });
   } else {
@@ -3226,7 +3226,7 @@ function ensureXmlHeader(xml) {
     });
   }
 
-  // Re-apply on container resize (viewport/font zooms, etc.)
+  // Re-apply on container resize
   const ro = new ResizeObserver(() => {
     const host = document.getElementById("aa-osmd-box");
     if (host && host.querySelector("svg")) { try { runM10(host); } catch (_) {} }
@@ -3240,7 +3240,7 @@ function ensureXmlHeader(xml) {
     const framesWrap = host.querySelector(".aa-pageframes");
     if (!svg || !framesWrap) { console.info(MOD, "no svg or frames"); return; }
 
-    // ---------- Cleanup from previous runs
+    // ---------- Cleanup
     svg.querySelectorAll('g[data-m10-fitwrap="1"], g[data-m10-syswrap="1"]').forEach(w => {
       while (w.firstChild) w.parentNode.insertBefore(w.firstChild, w);
       w.remove();
@@ -3250,7 +3250,7 @@ function ensureXmlHeader(xml) {
       el.removeAttribute("data-m10-css");
     });
 
-    // ---------- Wrap the drawn content (not <defs/clipPath>) to transform once
+    // ---------- Single wrapper for all drawn content (not defs/clipPath)
     const fitWrap = document.createElementNS(svg.namespaceURI, "g");
     fitWrap.setAttribute("data-m10-fitwrap", "1");
     const kids = Array.from(svg.childNodes)
@@ -3258,7 +3258,7 @@ function ensureXmlHeader(xml) {
     if (kids[0]) svg.insertBefore(fitWrap, kids[0]);
     kids.forEach(n => fitWrap.appendChild(n));
 
-    // ---------- First page frame inner box (CSS px)
+    // ---------- First page frame inner rect in CSS px
     const firstFrame = framesWrap.querySelector(".aa-pageframe");
     if (!firstFrame) { console.info(MOD, "no .aa-pageframe"); return; }
     const fr = firstFrame.getBoundingClientRect();
@@ -3266,26 +3266,26 @@ function ensureXmlHeader(xml) {
     const padY = 12;
     const innerPx = {
       left: fr.left + padX,
-      top: fr.top + padY,
-      width: Math.max(1, fr.width - 2 * padX),
+      top:  fr.top  + padY,
+      width:  Math.max(1, fr.width  - 2 * padX),
       height: Math.max(1, fr.height - 2 * padY)
     };
 
-    // ---------- World bbox (SVG units) of content
+    // ---------- Content bbox in SVG units
     const bb = bboxWorld(svg, fitWrap);
 
-    // Map inner width (CSS) to SVG units
+    // Map inner width to SVG units
     const tl = cssToSvg(svg, innerPx.left, innerPx.top);
     const tr = cssToSvg(svg, innerPx.left + innerPx.width, innerPx.top);
     const innerWsvg = Math.max(1e-6, tr.x - tl.x);
 
-    // ---------- Uniform SHRINK to fit width (never grow), left/top pinned
+    // ---------- Uniform SHRINK to fit width (never grow), pin left/top
     let S = innerWsvg / Math.max(1e-6, bb.width);
     S = Math.min(1, Math.max(0.1, S));
     const tx = tl.x - S * bb.x;
     const ty = tl.y - S * bb.y;
     fitWrap.setAttribute("transform", `translate(${tx},${ty}) scale(${S})`);
-    host.scrollLeft = 0; // keep left aligned inside scroller
+    host.scrollLeft = 0;
 
     const t1 = performance.now();
     console.groupCollapsed(`${MOD} ${VER} :: base-fit`);
@@ -3294,22 +3294,21 @@ function ensureXmlHeader(xml) {
     console.log("S:", r4(S), " tx:", r2(tx), " ty:", r2(ty), " time(ms):", r2(t1 - t0));
     console.groupEnd();
 
-    // ---------- Stretch the entire last system using vertical histogram
-    try { stretchLastSystemByHistogram(svg, fitWrap, framesWrap); }
+    // ---------- Stretch last system
+    try { stretchLastSystem(svg, fitWrap, framesWrap); }
     catch (e) { console.warn(MOD, "LastSystemStretch error:", e); }
   }
 
-  /* ===================== LAST SYSTEM via VERTICAL HISTOGRAM ===================== */
-  function stretchLastSystemByHistogram(svg, fitWrap, framesWrap) {
+  /* ========================= LAST SYSTEM (histogram) ========================= */
+  function stretchLastSystem(svg, fitWrap, framesWrap) {
     const TAG = "[M10 LastSystemStretch/Histogram]";
 
-    // 1) Gather drawable nodes (skip the wrappers we created)
+    // Collect drawable nodes
     const nodes = Array.from(fitWrap.querySelectorAll("*")).filter(el => {
       if (el === fitWrap) return false;
       if (el.getAttribute("data-m10-fitwrap") === "1" || el.getAttribute("data-m10-syswrap") === "1") return false;
       if (!el.getBoundingClientRect) return false;
       const r = el.getBoundingClientRect();
-      // Ignore tiny specks; systems are made of many sizeable elements.
       return r.width >= 3 && r.height >= 3;
     });
     if (!nodes.length) { console.info(TAG, "no nodes"); return; }
@@ -3317,45 +3316,37 @@ function ensureXmlHeader(xml) {
     const contentU = unionRect(nodes);
     if (!(contentU.width > 0 && contentU.height > 0)) { console.info(TAG, "union zero"); return; }
 
-    // 2) Build vertical density histogram (sum of horizontal coverage per y-bin).
+    // Build vertical histogram
     const BIN = 4; // px per bin
     const { bins, minY, binH, maxCount } = buildYHistogram(nodes, contentU, BIN);
-
-    // smooth a bit to remove spiky holes
     const smooth = smooth3(bins);
-
-    // thresholds relative to max density
     const tHigh = 0.25 * maxCount;
     const tLow  = 0.10 * maxCount;
 
-    // From bottom → find bottom-most dense band (the last system)
-    const gapBins = Math.round(24 / binH);   // gap that separates systems
-    const minBand = Math.round(100 / binH);  // minimal system thickness
-    const maxBand = Math.round(320 / binH);  // maximal (safety)
-
+    // Find bottom band
     const n = smooth.length;
     let i = n - 1;
-    // skip trailing whitespace
     while (i >= 0 && smooth[i] < tLow) i--;
-    if (i < 0) { console.info(TAG, "no dense content at bottom"); return; }
+    if (i < 0) { console.info(TAG, "no dense bottom content"); return; }
 
-    // walk upward while density is present (allow brief dips)
+    const gapBins = Math.round(24 / binH);
+    const minBand = Math.round(100 / binH);
+    const maxBand = Math.round(320 / binH);
+
     let dips = 0, start = i;
     for (; i >= 0; i--) {
       if (smooth[i] >= tHigh) dips = 0;
-      else if (++dips > gapBins) break; // large gap → passed above the system
+      else if (++dips > gapBins) break;
     }
-    let j = Math.max(0, i + gapBins); // band top index (approx)
-    // ensure min thickness
+    let j = Math.max(0, i + gapBins);
     if (start - j + 1 < minBand) j = Math.max(0, start - minBand + 1);
-    // clamp to max thickness (prefer bottom part)
     if (start - j + 1 > maxBand) j = start - maxBand + 1;
 
     const bandTop = minY + j * binH;
     const bandBot = minY + (start + 1) * binH;
     const bandPx  = { top: bandTop, bottom: bandBot, height: bandBot - bandTop };
 
-    // 3) Capture ALL elements whose vertical center lies inside that band
+    // Capture elements in band
     const sysElems = nodes.filter(el => {
       const r = el.getBoundingClientRect();
       const cy = (r.top + r.bottom) / 2;
@@ -3363,18 +3354,18 @@ function ensureXmlHeader(xml) {
     });
     if (!sysElems.length) { console.info(TAG, "no elements in last-system band"); return; }
 
-    // 4) Wrap system elements so we can transform them together using CSS
+    // Wrap system children
     const sysWrap = document.createElementNS(svg.namespaceURI, "g");
     sysWrap.setAttribute("data-m10-syswrap", "1");
     sysElems[0].parentNode.insertBefore(sysWrap, sysElems[0]);
     sysElems.forEach(el => sysWrap.appendChild(el));
 
-    const U = unionRect(Array.from(sysWrap.childNodes));
+    // System union before stretch (screen px)
+    let U = unionRect(Array.from(sysWrap.childNodes));
     if (!(U.width > 0)) { console.info(TAG, "system union zero"); return; }
 
-    // 5) Choose the best page frame inner rect (usually page 1)
+    // Select target page inner (choose the one with max overlap with system)
     const frames = Array.from(framesWrap.querySelectorAll(".aa-pageframe"));
-    if (!frames.length) return;
     let best = null;
     for (const fr of frames) {
       const r = fr.getBoundingClientRect();
@@ -3393,32 +3384,50 @@ function ensureXmlHeader(xml) {
     }
     if (!best) return;
 
-    // 6) Apply horizontal affine: x' = a*x + t (via CSS: translate then scale)
-    const L = best.inner.left, R = best.inner.left + best.inner.width;
-    const a = clamp((R - L) / Math.max(1, U.right - U.left), 0.5, 4.0);
-    const t = L - a * U.left;
-
+    // Iterative calibration in CSS space
+    // We measure → adjust → measure (3 passes) to land exactly on the frame.
     sysWrap.style.transformOrigin = "0px 0px";
-    sysWrap.style.transformBox = "fill-box";
-    sysWrap.style.transform = `translate(${t}px, 0) scale(${a}, 1)`;
-    sysWrap.setAttribute("data-m10-css", "1");
+    sysWrap.style.transformBox = "view-box"; // be explicit
+    let scaleX = clamp(best.inner.width / Math.max(1, U.width), 0.5, 4.0);
+    let translateX = best.inner.left - U.left * scaleX;
 
-    // Debug / verification
-    requestAnimationFrame(() => {
-      const final = sysWrap.getBoundingClientRect();
-      console.groupCollapsed(`${TAG} applied`);
-      console.log("hist bins:", smooth.length, "binH(px):", binH, "maxCount:", r2(maxCount));
-      console.log("thresholds → tHigh:", r2(tHigh), " tLow:", r2(tLow), "gapBins:", gapBins);
-      console.log("band(px):", neat({ top: bandPx.top, height: bandPx.height }));
-      console.log("captured nodes:", sysElems.length);
-      console.log("system union(px):", neat(U));
-      console.log("target inner(px):", neat(best.inner));
-      console.log("affine a:", r4(a), " t(px):", r2(t));
-      console.log("final rect(px):", neat(final));
-      if (Math.abs(final.left - L) > 1)   console.warn(`${TAG} left mismatch ${r2(final.left)} vs ${r2(L)}`);
-      if (Math.abs(final.width - (R-L))>1)console.warn(`${TAG} width mismatch ${r2(final.width)} vs ${r2(R-L)}`);
-      console.groupEnd();
-    });
+    const apply = () => {
+      sysWrap.style.transform = `translate(${translateX}px, 0) scale(${scaleX}, 1)`;
+      sysWrap.setAttribute("data-m10-css", "1");
+    };
+    apply();
+
+    for (let pass = 0; pass < 3; pass++) {
+      // Wait a frame so DOM reports final sizes after transform
+      // eslint-disable-next-line no-loop-func
+      const adjustOnce = () => {
+        const F = sysWrap.getBoundingClientRect();
+        const leftErr  = best.inner.left  - F.left;
+        const widthMul = best.inner.width / Math.max(1, F.width);
+
+        // update
+        scaleX    = clamp(scaleX * widthMul, 0.5, 4.0);
+        translateX += leftErr;
+        apply();
+      };
+      // Run synchronously (layout already flushed once)
+      adjustOnce();
+    }
+
+    // Final verification snapshot
+    const final = sysWrap.getBoundingClientRect();
+    console.groupCollapsed(`${TAG} applied`);
+    console.log("hist bins:", smooth.length, "binH(px):", binH, "maxCount:", r2(maxCount));
+    console.log("thresholds → tHigh:", r2(tHigh), " tLow:", r2(tLow), "gapBins:", gapBins);
+    console.log("band(px):", neat({ top: bandPx.top, height: bandPx.height }));
+    console.log("captured nodes:", sysElems.length);
+    console.log("system union(px) pre:", neat(U));
+    console.log("target inner(px):", neat(best.inner));
+    console.log("affine scaleX:", r4(scaleX), " translateX(px):", r2(translateX));
+    console.log("final rect(px):", neat(final));
+    if (Math.abs(final.left - best.inner.left) > 1)   console.warn(`${TAG} left mismatch ${r2(final.left)} vs ${r2(best.inner.left)}`);
+    if (Math.abs(final.width - best.inner.width) > 1) console.warn(`${TAG} width mismatch ${r2(final.width)} vs ${r2(best.inner.width)}`);
+    console.groupEnd();
   }
 
   /* ------------------------------- helpers -------------------------------- */
@@ -3434,7 +3443,6 @@ function ensureXmlHeader(xml) {
       if (y1 <= y0) continue;
       const i0 = Math.max(0, Math.floor((y0 - minY) / binH));
       const i1 = Math.min(binsCount, Math.ceil((y1 - minY) / binH));
-      // add horizontal coverage (favor systems with long lines/notes spread)
       for (let i = i0; i < i1; i++) {
         bins[i] += r.width;
         if (bins[i] > maxCount) maxCount = bins[i];
@@ -3448,7 +3456,6 @@ function ensureXmlHeader(xml) {
     const out = arr.slice();
     for (let i = 1; i < arr.length - 1; i++)
       out[i] = (arr[i-1] + arr[i] + arr[i+1]) / 3;
-    // keep edges
     out[0] = (arr[0] + arr[1]) / 2;
     out[arr.length-1] = (arr[arr.length-2] + arr[arr.length-1]) / 2;
     return out;
@@ -3486,7 +3493,7 @@ function ensureXmlHeader(xml) {
     return U;
   }
   function overlapArea(a, U) {
-    const L = Math.max(a.left, U.left),  R = Math.min(a.left+a.width,  U.right);
+    const L = Math.max(a.left, a.left),  R = Math.min(a.left+a.width,  U.right);
     const T = Math.max(a.top,  U.top),   B = Math.min(a.top +a.height, U.bottom);
     return Math.max(0, R-L) * Math.max(0, B-T);
   }
@@ -3496,6 +3503,7 @@ function ensureXmlHeader(xml) {
   const neat = (r) => ({ left:r2(r.left), top:r2(r.top), width:r2(r.width), height:r2(r.height) });
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 })();
+
 
 
 
