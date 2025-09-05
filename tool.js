@@ -3207,17 +3207,19 @@ function ensureXmlHeader(xml) {
 
 
 /* =========================================================================
-   M10 v2.3) Left+Top justify (first frame) + shrink-to-fit + LAST SYSTEM stretch
-     - Base: shrink & pin to first frame inner box
-     - Detect whole bottom system (multi-stave) via gap clustering
-     - Stretch maps SYSTEM union (Uall) → target frame inner (so stave left aligns)
-     - Detailed logging
-   ------------------------------------------------------------------------- */
+   M10 v2.4  — Fit to first frame (left + top) and stretch the LAST system
+               so its whole system (staves + notes) fills the frame width.
+   - Base: uniform shrink-to-fit into the first page frame inner box
+   - Last-system: cluster all elements in the last system band, then
+                  map SYSTEM union (Uall) → target frame-inner using
+                  x' = a*x + t with CSS transform **order = scale → translate**
+   - Lots of logging
+   ========================================================================= */
 ;(function () {
   const MODULE = "[M10 Fit-LeftTop+LastSystemStretch]";
-  const VER = "v2.3";
+  const VER = "v2.4";
 
-  // --- lifecycle -----------------------------------------------------------
+  // hook into your existing render signal
   if (typeof AA !== "undefined" && AA.on) {
     AA.on("viewer:rendered", ({ host }) => { try { m10_run(host); } catch (e) { console.warn(MODULE, "error:", e); } });
   } else {
@@ -3226,6 +3228,7 @@ function ensureXmlHeader(xml) {
       if (host && host.querySelector("svg")) { try { m10_run(host); } catch (e) { console.warn(MODULE, "error:", e); } }
     });
   }
+
   const ro = new ResizeObserver(() => {
     const host = document.getElementById("aa-osmd-box");
     if (host && host.querySelector("svg")) { try { m10_run(host); } catch (_) {} }
@@ -3233,14 +3236,13 @@ function ensureXmlHeader(xml) {
   const bootRO = () => { const h = document.getElementById("aa-osmd-box"); if (h) ro.observe(h); };
   (document.readyState === "loading") ? document.addEventListener("DOMContentLoaded", bootRO) : bootRO();
 
-  // --- main ---------------------------------------------------------------
   function m10_run(host) {
     const t0 = performance.now();
     const svg = host.querySelector("svg");
     const framesWrap = host.querySelector(".aa-pageframes");
-    if (!svg || !framesWrap) { console.info(MODULE, "no svg/frames found"); return; }
+    if (!svg || !framesWrap) { console.info(MODULE, "no svg or frames"); return; }
 
-    // Unwrap previous runs
+    // clean previous runs
     svg.querySelectorAll('g[data-m10-fitwrap="1"], g[data-m10-syswrap="1"]').forEach(w => {
       while (w.firstChild) w.parentNode.insertBefore(w.firstChild, w);
       w.remove();
@@ -3250,16 +3252,16 @@ function ensureXmlHeader(xml) {
       el.removeAttribute("data-m10-css");
     });
 
-    // Wrap everything (except <defs>) so we can uniformly shrink & pin
+    // wrap whole drawing (except defs) so we can shrink+pin once
     const wrap = document.createElementNS(svg.namespaceURI, "g");
     wrap.setAttribute("data-m10-fitwrap", "1");
     const kids = Array.from(svg.childNodes).filter(n => n.nodeType === 1 && n.tagName.toLowerCase() !== "defs");
     if (kids[0]) svg.insertBefore(wrap, kids[0]);
     kids.forEach(n => wrap.appendChild(n));
 
-    // First frame inner box (for base fit/pinning)
+    // first page frame inner box (CSS px)
     const firstFrame = framesWrap.querySelector(".aa-pageframe");
-    if (!firstFrame) { console.info(MODULE, "no .aa-pageframe"); return; }
+    if (!firstFrame) { console.info(MODULE, "no first .aa-pageframe"); return; }
     const fr = firstFrame.getBoundingClientRect();
     const padX = Math.max(10, Math.round(fr.width * 0.03));
     const padY = 12;
@@ -3267,18 +3269,22 @@ function ensureXmlHeader(xml) {
                      width: Math.max(1, fr.width - 2*padX),
                      height: Math.max(1, fr.height - 2*padY) };
 
-    // Whole score bbox (SVG) and target inner (SVG)
+    // world bbox of content (in SVG units)
     const bb = bboxWorld(svg, wrap);
+
+    // CSS px → SVG coords for target inner left/top & right
     const innerTL = cssPointToSvg(svg, inner1.left, inner1.top);
     const innerTR = cssPointToSvg(svg, inner1.left + inner1.width, inner1.top);
-    const innerWsvg = Math.max(0, innerTR.x - innerTL.x);
+    const innerWsvg = Math.max(1e-6, innerTR.x - innerTL.x);
 
-    // Uniform shrink-only
-    let S = innerWsvg > 0 ? innerWsvg / bb.width : 1;
+    // uniform shrink to fit width (no grow)
+    let S = innerWsvg / Math.max(1e-6, bb.width);
     S = Math.min(1, Math.max(0.1, S));
     const tx = innerTL.x - S * bb.x;
     const ty = innerTL.y - S * bb.y;
     wrap.setAttribute("transform", `translate(${tx},${ty}) scale(${S})`);
+
+    // left/top pinning in scroller
     host.scrollLeft = 0;
 
     const t1 = performance.now();
@@ -3288,91 +3294,89 @@ function ensureXmlHeader(xml) {
     console.log("S:", r4(S), " tx:", r2(tx), " ty:", r2(ty), "time(ms):", r2(t1 - t0));
     console.groupEnd();
 
-    // Stretch the *last system* to its best-overlap frame’s inner width
-    try { stretchLastSystemToOwnFrame(svg, wrap, framesWrap); } catch (e) { console.warn(MODULE, "stretch error:", e); }
+    // now stretch the LAST system to fill the width of its own frame inner
+    try { stretchLastSystemToOwnFrame(svg, wrap, framesWrap); } catch (e) { console.warn(MODULE, "LastSystemStretch error:", e); }
 
     try { document.dispatchEvent(new CustomEvent("aa:layout-updated", { detail: { host } })); } catch {}
   }
 
-  // --- stretch logic ------------------------------------------------------
+  // --------- Last-system stretch (cluster + correct transform order) -------
   function stretchLastSystemToOwnFrame(svg, wrap, framesWrap) {
     const TAG = "[M10 LastSystemStretch]";
-    const worldRect = wrap.getBoundingClientRect();
 
-    // (1) Gather stave-like groups
+    // all stave-like rows (VexFlow/OSMD)
     let staves = Array.from(svg.querySelectorAll('g[class*="Stave"], g[class*="vf-stave"], g[id*="Stave"]'))
       .filter(el => {
         const r = el.getBoundingClientRect();
-        return r.width > 80 && r.height > 6 && area(intersect(r, worldRect)) > 10;
+        return r.width > 80 && r.height > 6;
       });
 
-    // Fallback: wide groups as staves
+    // fallback wide groups if nothing matched
     if (!staves.length) {
+      const worldRect = wrap.getBoundingClientRect();
       const minW = Math.max(120, worldRect.width * 0.35);
       staves = Array.from(svg.querySelectorAll("g")).filter(el => {
         if (el.getAttribute("data-m10-fitwrap") === "1" || el.getAttribute("data-m10-syswrap") === "1") return false;
         const r = el.getBoundingClientRect();
         const aspect = r.width / Math.max(1, r.height);
-        return r.width >= minW && aspect >= 3 && area(intersect(r, worldRect)) > 10;
+        return r.width >= minW && aspect >= 3;
       });
     }
-    if (!staves.length) { console.info(TAG, "no stave-like groups"); return; }
+    if (!staves.length) { console.info(TAG, "no staves found"); return; }
 
-    // Sort by top; compute vertical gaps
-    const Srects = staves.map(el => ({ el, r: el.getBoundingClientRect() }))
-                         .sort((a,b) => a.r.top - b.r.top);
+    const rows = staves.map(el => ({ el, r: el.getBoundingClientRect() }))
+                       .sort((a,b) => a.r.top - b.r.top);
 
-    // Bottom-most stave index
-    let i = Srects.length - 1;
-
-    // Gap threshold from small gaps
+    // derive a robust gap threshold
     const gaps = [];
-    for (let k = 1; k < Srects.length; k++) {
-      const g = Srects[k].r.top - Srects[k-1].r.bottom;
+    for (let i = 1; i < rows.length; i++) {
+      const g = rows[i].r.top - rows[i-1].r.bottom;
       if (g > 0) gaps.push(g);
     }
-    gaps.sort((a,b) => a - b);
+    gaps.sort((a,b)=>a-b);
     const small = gaps.slice(0, Math.min(6, gaps.length));
     const medSmall = small.length ? median(small) : 40;
     const GAP_TH = Math.max(60, medSmall * 1.8);
 
-    // Walk upward aggregating *the whole system*
-    const sysStaves = [Srects[i]];
+    // aggregate the whole bottom system (walk upward until a big gap)
+    let i = rows.length - 1;
+    const sysRows = [rows[i]];
     while (i > 0) {
-      const cur = Srects[i].r, prev = Srects[i-1].r;
+      const cur = rows[i].r, prev = rows[i-1].r;
       const gap = cur.top - prev.bottom;
       if (gap > GAP_TH) break;
-      sysStaves.push(Srects[i-1]);
+      sysRows.push(rows[i-1]);
       i--;
     }
 
-    // Vertical band for the entire system
-    const sysTop = Math.min(...sysStaves.map(s => s.r.top));
-    const sysBot = Math.max(...sysStaves.map(s => s.r.bottom));
-    const bandPad = Math.max(20, (sysBot - sysTop) * 0.15);
-    const band = { top: sysTop - bandPad, bottom: sysBot + bandPad, left: worldRect.left, right: worldRect.right };
-    band.width = band.right - band.left; band.height = band.bottom - band.top;
+    // vertical band for system
+    const top = Math.min(...sysRows.map(s => s.r.top));
+    const bot = Math.max(...sysRows.map(s => s.r.bottom));
+    const bandPad = Math.max(20, (bot - top) * 0.15);
+    const band = { top: top - bandPad, bottom: bot + bandPad };
 
-    // (2) Collect *system cluster* within band (everything significant)
-    const systemCluster = Array.from(svg.querySelectorAll("g, path, rect, circle, ellipse, polygon, polyline, text"))
+    // collect *everything* whose vertical center is in the band
+    const worldRect = wrap.getBoundingClientRect();
+    const cluster = Array.from(svg.querySelectorAll("g, path, rect, circle, ellipse, polygon, polyline, text"))
       .filter(el => {
-        if (el.getAttribute && (el.getAttribute("data-m10-fitwrap") === "1" || el.getAttribute("data-m10-syswrap") === "1")) return false;
+        if (el.getAttribute("data-m10-fitwrap") === "1" || el.getAttribute("data-m10-syswrap") === "1") return false;
         const r = el.getBoundingClientRect();
-        if (!(r.width > 3 && r.height > 3)) return false;
+        if (r.width < 3 || r.height < 3) return false;
         const cy = (r.top + r.bottom) / 2;
         return cy >= band.top && cy <= band.bottom && area(intersect(r, worldRect)) > 1;
       });
-    if (!systemCluster.length) { console.info(TAG, "no elements in system band"); return; }
+    if (!cluster.length) { console.info(TAG, "no elements in system band"); return; }
 
-    // Unions
-    const Uall = unionRect(systemCluster);   // ← use SYSTEM union for mapping (stave included)
+    // union of the whole system (includes stave left edge)
+    const Uall = unionRect(cluster);
     if (!(Uall.width > 0)) { console.info(TAG, "system union zero width"); return; }
 
-    // (3) Pick the page frame whose INNER rect overlaps Uall the most
+    // choose the page frame whose inner overlaps Uall the most
     const frames = Array.from(framesWrap.querySelectorAll(".aa-pageframe"));
-    if (!frames.length) { console.info(TAG, "no frames for targeting"); return; }
+    if (!frames.length) return;
 
-    let frameInfos = frames.map(fr => {
+    let best = null;
+    for (const fr of frames) {
       const r = fr.getBoundingClientRect();
       const pX = Math.max(10, Math.round(r.width * 0.03));
       const pY = 12;
@@ -3382,41 +3386,42 @@ function ensureXmlHeader(xml) {
       inner.right = inner.left + inner.width;
       inner.bottom = inner.top + inner.height;
       const ov = area(intersectRect(inner, Uall));
-      return { fr, inner, overlap: ov };
-    });
-    frameInfos.sort((a,b) => b.overlap - a.overlap);
-    let target = frameInfos[0];
-    if (!target || target.overlap <= 0) { target = frameInfos[0]; }
+      if (!best || ov > best.overlap) best = { fr, inner, overlap: ov };
+    }
+    if (!best) return;
 
-    // (4) Wrap whole system (so staff lines, barlines, slurs, all stay aligned)
+    // wrap the system so barlines/staves/notes move together
     const sysWrap = document.createElementNS(svg.namespaceURI, "g");
     sysWrap.setAttribute("data-m10-syswrap", "1");
-    const first = systemCluster[0];
+    const first = cluster[0];
     first.parentNode.insertBefore(sysWrap, first);
-    systemCluster.forEach(el => sysWrap.appendChild(el));
+    cluster.forEach(el => sysWrap.appendChild(el));
 
-    // (5) Affine mapping in CSS px using SYSTEM union:
-    //     map Uall.left → target.inner.left, Uall.right → target.inner.right
+    // ----- Corrected transform order: SCALE → TRANSLATE -------------------
+    // We want x' = a*x + t mapping:
+    //   Uall.left  → best.inner.left
+    //   Uall.right → best.inner.right
     const cL = Uall.left, cR = Uall.right;
-    const tL = target.inner.left, tR = target.inner.left + target.inner.width;
+    const tL = best.inner.left, tR = best.inner.left + best.inner.width;
     const a  = clamp((tR - tL) / Math.max(1, cR - cL), 0.5, 4.0);
-    const b  = tL - a * cL;
+    const t  = tL - a * cL;  // translate AFTER scale
 
-    sysWrap.style.transformOrigin = "0 0";
+    sysWrap.style.transformOrigin = "0px 0px";
     sysWrap.style.transformBox    = "fill-box";
-    sysWrap.style.transform       = `translate(${b}px, 0) scale(${a}, 1)`;
+    // scale first, then translate → x' = a*x + t (desired)
+    sysWrap.style.transform       = `scale(${a}, 1) translate(${t}px, 0)`;
     sysWrap.setAttribute("data-m10-css", "1");
 
     requestAnimationFrame(() => {
       const final = sysWrap.getBoundingClientRect();
       console.groupCollapsed(`${TAG} applied`);
-      console.log("system band(px):", neat(band), " GAP_TH(px):", r2(GAP_TH));
+      console.log("system band(px):", neat({ left: worldRect.left, top, width: worldRect.width, height: bot - top }), " GAP_TH(px):", r2(GAP_TH));
       console.log("Uall(px):", neat(Uall));
-      console.log("target inner(px):", neat(target.inner));
-      console.log("affine a:", r4(a), " b(px):", r2(b));
+      console.log("target inner(px):", neat(best.inner));
+      console.log("affine a:", r4(a), " t(px):", r2(t));
       console.log("final system rect(px):", neat(final));
       if (Math.abs(final.left - tL) > 1) {
-        console.warn(`${TAG} note: left mismatch ${r2(final.left)} vs ${r2(tL)} (will still fill width).`);
+        console.warn(`${TAG} note: left mismatch ${r2(final.left)} vs ${r2(tL)}.`);
       }
       if (Math.abs(final.width - (tR - tL)) > 1) {
         console.warn(`${TAG} note: width mismatch ${r2(final.width)} vs ${r2(tR - tL)}.`);
@@ -3425,7 +3430,7 @@ function ensureXmlHeader(xml) {
     });
   }
 
-  // --- helpers ------------------------------------------------------------
+  // -------------------------- helpers -------------------------------------
   function bboxWorld(svg, el) {
     const r  = el.getBoundingClientRect();
     const tl = cssPointToSvg(svg, r.left,  r.top);
@@ -3458,10 +3463,8 @@ function ensureXmlHeader(xml) {
              right: Math.min(a.right, b.right), bottom: Math.min(a.bottom, b.bottom) };
   }
   function intersectRect(a, b) {
-    return { left: Math.max(a.left, b.left), top: Math.max(a.top, b.top),
-             right: Math.min(a.right, b.right), bottom: Math.min(a.bottom, b.bottom),
-             width: Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left)),
-             height: Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top)) };
+    const I = intersect(a, b);
+    return { ...I, width: Math.max(0, I.right - I.left), height: Math.max(0, I.bottom - I.top) };
   }
   function area(r){ return Math.max(0, (r.right - r.left)) * Math.max(0, (r.bottom - r.top)); }
   function median(arr){ const a=[...arr].sort((x,y)=>x-y); const m=Math.floor(a.length/2); return a.length%2?a[m]:(a[m-1]+a[m])/2; }
@@ -3471,7 +3474,6 @@ function ensureXmlHeader(xml) {
   const neat = (r) => ({ left:r2(r.left), top:r2(r.top), width:r2(r.width), height:r2(r.height) });
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 })();
-
 
 
 
